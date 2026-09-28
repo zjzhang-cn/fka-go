@@ -1,4 +1,4 @@
-// Command fka 是家庭知识管家（Go 版）的入口。
+// Command fka 是这个 agent 的入口。
 //
 // ## 子命令
 //
@@ -62,25 +62,20 @@ func run(args []string) int {
 }
 
 // build 装配一份 app。**每个子命令自己装**——CLI 不常驻，装一次就扔。
-func build() *app.App {
-	storageRoot, source := app.StorageRootFromEnv()
-	if source == "fallback" {
-		// 回退必须显式：静默回退会让「生产忘了挂 NAS」表现为「文件存在但找不到」
-		config.Log().Warn("NAS 挂载点不存在，原始文件将落到安装根下（这不是生产配置）",
-			config.Context{"root": storageRoot})
-	}
-	return app.Build(app.Options{StorageRoot: storageRoot, AdminWxid: os.Getenv("ADMIN_WXID")})
-}
+func build() *app.App { return app.Build(app.Options{}) }
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `fka —— 家庭知识管家（Go 版）
+	fmt.Fprint(os.Stderr, `fka —— 通用 agent
 
 用法：
   fka ask <问题>        无头跑一轮工具循环问答
   fka tools [--json]    列出模型现在能看到的工具与五类放行情况
   fka help              本帮助
 
-环境变量见 .env.example。必填的只有 LLM_API_KEY 与 LLM_MODEL；
-LLM_TOOL_EFFECTS 默认只放行 read，要用记忆/文档工具需显式加 external。
+fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安装根>/skills 下的技能。
+必填的环境变量只有 LLM_API_KEY 与 LLM_MODEL。
+LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要用得显式加上。
+
+  fka ask --principal <身份> --session <会话> "…"
 `)
 }

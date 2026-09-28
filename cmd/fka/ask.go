@@ -26,7 +26,7 @@ func runAsk(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 
-	viewer := flagOrEnv(args, "--viewer", "FKA_VIEWER", "cli")
+	principal := flagOrEnv(args, "--principal", "FKA_PRINCIPAL", "cli")
 	session := flagOrEnv(args, "--session", "FKA_SESSION", "cli")
 
 	application := build()
@@ -65,9 +65,9 @@ func runAsk(ctx context.Context, args []string) int {
 	}
 
 	result, err := application.Agent.Run(ctx, agent.RunnerInput{
-		SessionID:  session,
-		ViewerWxid: viewer,
-		Question:   question,
+		SessionID:   session,
+		PrincipalID: principal,
+		Question:    question,
 	})
 	if err != nil {
 		// 模型的错如实报，**不静默降级**——与原实现同一条理由：

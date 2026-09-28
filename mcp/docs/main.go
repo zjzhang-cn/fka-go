@@ -27,12 +27,13 @@
 // ## stdout 一个字都不能有
 //
 // stdout 是 JSON-RPC 通道。**任何** fmt.Println 都会插进协议流里把 server 打挂。
-// 诊断信息一律走 config.Log()（stderr + 按天轮转的日志文件）。
+// 诊断信息一律走 log.Log()（stderr + 按天轮转的日志文件）。
 package main
 
 import (
 	"context"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -41,9 +42,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/zjzhang-cn/fka-go/internal/config"
-	"github.com/zjzhang-cn/fka-go/internal/mcpboot"
-	"github.com/zjzhang-cn/fka-go/internal/nas"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/mcpboot"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/nas"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -70,8 +70,8 @@ func run(args []string) int {
 	if strings.TrimSpace(os.Getenv("FILE_STORE_PATH")) == "" {
 		root := nas.ResolveRoot()
 		if root.Source == nas.SourceFallback {
-			config.Log().Warn("NAS 挂载点不存在，原始文件与解析结果走安装根下的回退目录",
-				config.Context{"root": root.Path, "detail": root.Detail})
+			log.Log().Warn("NAS 挂载点不存在，原始文件与解析结果走安装根下的回退目录",
+				log.Context{"root": root.Path, "detail": root.Detail})
 		}
 	}
 
@@ -83,7 +83,7 @@ func run(args []string) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	config.Log().Info("文档 MCP server 就绪", config.Context{
+	log.Log().Info("文档 MCP server 就绪", log.Context{
 		"db": dbPath, "storage": storageRoot,
 	})
 

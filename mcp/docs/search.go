@@ -27,9 +27,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zjzhang-cn/fka-go/internal/nas"
-	"github.com/zjzhang-cn/fka-go/internal/searchterms"
-	"github.com/zjzhang-cn/fka-go/internal/store"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/nas"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/searchterms"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/store"
 )
 
 // SnippetRadius 上下文片段两侧各取多少字符。

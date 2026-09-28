@@ -27,14 +27,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	_ "modernc.org/sqlite" // 纯 Go 驱动，零 CGO
-
-	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // ErrNeedsMigration 库落后于当前代码。Hint 说明该做什么。
@@ -178,7 +177,7 @@ func Migrate(ctx context.Context, path string) (ReadState, error) {
 		}
 		state.Version = 1
 		version = 1
-		config.Log().Info("已认领现有数据库为 v1", config.Context{
+		log.Log().Info("已认领现有数据库为 v1", log.Context{
 			"path": path, "tables": strings.Join(tables, "、"),
 		})
 	}
@@ -216,7 +215,7 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 		return fmt.Errorf("迁移 v%d 提交失败：%w", m.Version, err)
 	}
 
-	config.Log().Info("已应用数据库迁移", config.Context{"version": m.Version, "note": m.Note})
+	log.Log().Info("已应用数据库迁移", log.Context{"version": m.Version, "note": m.Note})
 	return nil
 }
 

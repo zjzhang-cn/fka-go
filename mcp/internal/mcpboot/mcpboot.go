@@ -13,13 +13,29 @@ package mcpboot
 import (
 	"context"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/zjzhang-cn/fka-go/internal/config"
-	"github.com/zjzhang-cn/fka-go/internal/store"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/store"
 )
+
+// dataPath 解析安装根下的一个路径。见 internal/nas 里同名函数的说明——
+// 同一段逻辑在两个包里各写一份，好过为它引入跨仓库依赖。
+func dataPath(name string) string {
+	home := strings.TrimSpace(os.Getenv("FKA_HOME"))
+	if home == "" {
+		if exe, err := os.Executable(); err == nil {
+			home = filepath.Dir(exe)
+		} else if wd, err := os.Getwd(); err == nil {
+			home = wd
+		} else {
+			home = "."
+		}
+	}
+	return filepath.Join(home, "data", name)
+}
 
 // ResolveDBPath 定出库路径：--db 参数 > DB_PATH 环境变量 > <安装根>/data/db.sqlite。
 //
@@ -33,7 +49,7 @@ func ResolveDBPath(args []string) (string, error) {
 		path = strings.TrimSpace(os.Getenv("DB_PATH"))
 	}
 	if path == "" {
-		path = config.DataPath("db.sqlite")
+		path = dataPath("db.sqlite")
 	}
 	return filepath.Abs(path)
 }
@@ -60,7 +76,7 @@ func OpenAndMigrate(ctx context.Context, path string) (*store.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	config.Log().Info("数据库已就绪", config.Context{
+	log.Log().Info("数据库已就绪", log.Context{
 		"path": path, "version": state.Version, "adopted": state.Adoptable,
 	})
 

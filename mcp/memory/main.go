@@ -21,20 +21,20 @@
 // ## stdout 一个字都不能有
 //
 // stdout 是 JSON-RPC 通道。**任何** fmt.Println 都会插进协议流里把 server 打挂。
-// 诊断信息一律走 config.Log()（stderr + 按天轮转的日志文件）。
+// 诊断信息一律走 log.Log()（stderr + 按天轮转的日志文件）。
 package main
 
 import (
 	"context"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/zjzhang-cn/fka-go/internal/config"
-	"github.com/zjzhang-cn/fka-go/internal/mcpboot"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/mcpboot"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -59,7 +59,7 @@ func run(args []string) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	config.Log().Info("记忆 MCP server 就绪", config.Context{"path": path})
+	log.Log().Info("记忆 MCP server 就绪", log.Context{"path": path})
 
 	mcpServer := server.NewMCPServer("fka-memory", "0.1.0",
 		server.WithToolCapabilities(true))

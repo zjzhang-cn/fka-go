@@ -44,18 +44,39 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/zjzhang-cn/fka-go/internal/config"
-	"github.com/zjzhang-cn/fka-go/internal/ids"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/ids"
 )
 
 // NASSubdir 挂载点下的子目录名。
 const NASSubdir = "family-knowledge"
+
+// dataPath 解析安装根下的一个路径。
+//
+// ## 为什么在这里再写一遍
+//
+// 原来它借的是 agent 仓库的 config 包。现在两个仓库分开了，**为两个函数去共享一个
+// 仓库不划算**——所以这里与 mcpboot 各写一份。真的该抽出来的是「读一次 .env +
+// 定位安装根」这种更大的东西，而这两个小助手还不到那个体量。
+func dataPath(name string) string {
+	home := strings.TrimSpace(os.Getenv("FKA_HOME"))
+	if home == "" {
+		if exe, err := os.Executable(); err == nil {
+			home = filepath.Dir(exe)
+		} else if wd, err := os.Getwd(); err == nil {
+			home = wd
+		} else {
+			home = "."
+		}
+	}
+	return filepath.Join(home, "data", name)
+}
 
 // RootSource 存储根的来源。
 type RootSource string
@@ -92,7 +113,7 @@ func ResolveRoot() Root {
 		return Root{Path: filepath.Join(nasMount, NASSubdir), Source: SourceNAS}
 	}
 
-	fallback := config.DataPath("nas")
+	fallback := dataPath("nas")
 	return Root{
 		Path:   fallback,
 		Source: SourceFallback,
@@ -375,7 +396,7 @@ func SaveOriginal(options SaveOriginalOptions) (SavedOriginal, error) {
 	digest := md5.Sum(options.Data)
 	md5hex := hex.EncodeToString(digest[:])
 
-	config.Log().Info("原始文件已落盘", config.Context{
+	log.Log().Info("原始文件已落盘", log.Context{
 		"id": id, "ownerWxid": options.OwnerWxid, "path": path, "bytes": len(options.Data),
 	})
 
@@ -422,7 +443,7 @@ func SaveExtracted(root string, doc Location, markdown string, metadata map[stri
 		return "", fmt.Errorf("写解析结果失败（%s）：%w", path, err)
 	}
 
-	config.Log().Debug("解析结果已落盘", config.Context{
+	log.Log().Debug("解析结果已落盘", log.Context{
 		"id": doc.ID, "path": path, "bytes": len([]rune(markdown)),
 	})
 	return path, nil
@@ -510,7 +531,7 @@ func WriteAnnotationSummary(root string, doc Location, section string) error {
 		return fmt.Errorf("写批注小节失败（%s）：%w", path, err)
 	}
 
-	config.Log().Debug("用户批注已写入解析结果", config.Context{
+	log.Log().Debug("用户批注已写入解析结果", log.Context{
 		"id": doc.ID, "path": path, "bytes": len([]rune(block)),
 	})
 	return nil
@@ -541,14 +562,14 @@ func stripAnnotationSection(body string) string {
 func ReadExtracted(root string, doc Location) string {
 	path, err := ExtractedPath(root, doc)
 	if err != nil {
-		config.Log().Warn("解析结果路径算不出来", config.Context{"id": doc.ID, "error": err.Error()})
+		log.Log().Warn("解析结果路径算不出来", log.Context{"id": doc.ID, "error": err.Error()})
 		return ""
 	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			config.Log().Warn("解析结果读取失败", config.Context{"id": doc.ID, "error": err.Error()})
+			log.Log().Warn("解析结果读取失败", log.Context{"id": doc.ID, "error": err.Error()})
 		}
 		return ""
 	}

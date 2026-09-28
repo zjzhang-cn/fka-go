@@ -23,17 +23,16 @@ package app
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
 	llmopenai "github.com/zjzhang-cn/fka-go/internal/llm/openai"
+	"github.com/zjzhang-cn/fka-go/internal/prompts"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 	"github.com/zjzhang-cn/fka-go/internal/tools/mcp"
+	"github.com/zjzhang-cn/fka-go/internal/tools/skills"
 )
 
 // App 组装好的整体。
@@ -62,14 +61,12 @@ type App struct {
 	McpConfigPath string
 	// McpConfigured 有没有读到 MCP 配置
 	McpConfigured bool
+	// SkillsDir 技能目录（按配置顺序，后一个覆盖前一个的同名技能）
+	SkillsDir []string
 }
 
 // Options 装配的可选项。
 type Options struct {
-	// StorageRoot 存储根。给文档类工具定位原文件用
-	StorageRoot string
-	// AdminWxid 管理员微信 ID
-	AdminWxid string
 	// SkipEnv 不读 .env。测试与嵌入式用法
 	SkipEnv bool
 }
@@ -86,8 +83,14 @@ func Build(opts Options) *App {
 	app := &App{}
 
 	// ── 工具 ──────────────────────────────────────────────
+	//
+	// **只有两条能力来源：MCP 与技能。** 这个 agent 刻意不带任何内置能力——
+	// 文档、记忆、检索全在 MCP server 里，它自己不拥有任何数据。所以这里注册
+	// 的两个源就是它的全部「本事」。
 	app.Policy = tools.ReadToolPolicy()
 	app.Tools = tools.NewRegistry(nil, app.Policy)
+	app.SkillsDir = skills.ResolveDirs()
+	app.Tools.Use(skills.NewSource(app.SkillsDir))
 	app.registerMcp()
 
 	// ── 模型 ──────────────────────────────────────────────
@@ -114,9 +117,8 @@ func Build(opts Options) *App {
 	if app.LLMReady {
 		app.Agent = agent.NewRunner(app.Chat, app.Tools, agent.RunnerOptions{
 			ContextTokens:   app.LLMConfig.ContextTokens,
-			StorageRoot:     opts.StorageRoot,
-			AdminWxid:       opts.AdminWxid,
 			SessionHistory:  app.History,
+			SystemPrompt:    prompts.Agent,
 			Model:           app.LLMConfig.Model,
 			Host:            llmopenai.HostOf(app.LLMConfig.BaseURL),
 			TimeoutMs:       app.LLMConfig.TimeoutMs,
@@ -183,25 +185,6 @@ func (a *App) Close() {
 }
 
 func sortStrings(values []string) { sort.Strings(values) }
-
-func joinPath(base, name string) string { return filepath.Join(base, name) }
-
-// StorageRootFromEnv 按约定解析存储根：FILE_STORE_PATH 压倒一切，其次 NAS 挂载，
-// 最后退回安装根下的 data/nas。**回退必须显式**——静默回退会让「生产忘了挂 NAS」
-// 表现为「文件存在但找不到」。
-func StorageRootFromEnv() (string, string) {
-	if explicit := strings.TrimSpace(os.Getenv("FILE_STORE_PATH")); explicit != "" {
-		return explicit, "explicit"
-	}
-	nasMount := strings.TrimSpace(os.Getenv("NAS_MOUNT_PATH"))
-	if nasMount == "" {
-		nasMount = "/mnt/nas"
-	}
-	if info, err := os.Stat(nasMount); err == nil && info.IsDir() {
-		return joinPath(nasMount, "family-knowledge"), "nas"
-	}
-	return config.DataPath("nas"), "fallback"
-}
 
 // WarmMcp 在启动期就发起 MCP 连接。
 //

@@ -21,11 +21,11 @@ type RunnerInput struct {
 	SessionID string
 	// AccountID 渠道内的账号 id。**只用于会话日志的文件名**
 	AccountID string
-	// ViewerWxid 提问者。**MCP 服务器据此过滤**
+	// PrincipalID 提问者。**MCP 服务器据此过滤**
 	//
-	// ⚠️ 已接受的风险，见 tools.Context.ViewerWxid 的说明：文档与记忆走 MCP 之后，
+	// ⚠️ 已接受的风险，见 tools.Context.PrincipalID 的说明：文档与记忆走 MCP 之后，
 	// 这个值经由工具参数到达 server，模型可以改写它。
-	ViewerWxid string
+	PrincipalID string
 	// TurnID 这一轮接的是哪条消息
 	TurnID string
 	// History 该会话的历史
@@ -46,11 +46,7 @@ type Runner struct {
 	MaxSteps int
 	// ContextTokens 上下文预算
 	ContextTokens int
-	// StorageRoot 存储根，进 ToolContext
-	StorageRoot string
-	// AdminWxid 管理员微信 ID，可改任何人的文档
-	AdminWxid string
-	// SystemPrompt 覆盖系统提示。空 = 取 AGENT 那条
+	// SystemPrompt 覆盖系统提示。空 = 取工具循环那条
 	SystemPrompt string
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
@@ -86,8 +82,6 @@ func NewRunner(
 	return &Runner{
 		MaxSteps:        maxSteps,
 		ContextTokens:   opts.ContextTokens,
-		StorageRoot:     opts.StorageRoot,
-		AdminWxid:       opts.AdminWxid,
 		SystemPrompt:    opts.SystemPrompt,
 		Model:           opts.Model,
 		Host:            opts.Host,
@@ -104,8 +98,6 @@ func NewRunner(
 type RunnerOptions struct {
 	MaxSteps      int
 	ContextTokens int
-	StorageRoot   string
-	AdminWxid     string
 	SystemPrompt  string
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
@@ -149,9 +141,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 		QuotedText:    input.QuotedText,
 		ContextTokens: r.ContextTokens,
 		ToolContext: tools.Context{
-			ViewerWxid:  input.ViewerWxid,
-			StorageRoot: r.StorageRoot,
-			AdminWxid:   r.AdminWxid,
+			PrincipalID: input.PrincipalID,
 			Reply:       input.Reply,
 		},
 	}, Deps{

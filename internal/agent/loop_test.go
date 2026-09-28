@@ -86,7 +86,7 @@ func TestRun_一轮工具调用后给出答案(t *testing.T) {
 	result, err := Run(context.Background(), RunInput{
 		SessionID:   "s1",
 		Question:    "房产证在哪",
-		ToolContext: tools.Context{ViewerWxid: "wx1"},
+		ToolContext: tools.Context{PrincipalID: "wx1"},
 	}, Deps{Chat: chat, Tools: registry})
 	if err != nil {
 		t.Fatalf("Run 返错：%v", err)
@@ -147,7 +147,7 @@ func TestRun_工具失败也喂回去让模型改(t *testing.T) {
 	}
 
 	result, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "查不到", ToolContext: tools.Context{ViewerWxid: "wx1"},
+		SessionID: "s1", Question: "查不到", ToolContext: tools.Context{PrincipalID: "wx1"},
 	}, Deps{Chat: chat, Tools: registry})
 	if err != nil {
 		t.Fatalf("工具失败不该让整轮返错：%v", err)
@@ -179,7 +179,7 @@ func TestRun_到步数上限用无工具收尾(t *testing.T) {
 	}
 
 	result, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "整理所有资料", ToolContext: tools.Context{ViewerWxid: "wx1"},
+		SessionID: "s1", Question: "整理所有资料", ToolContext: tools.Context{PrincipalID: "wx1"},
 	}, Deps{Chat: chat, Tools: registry, MaxSteps: 2})
 	if err != nil {
 		t.Fatalf("Run 返错：%v", err)
@@ -221,7 +221,7 @@ func TestRun_收尾失败也返回实话(t *testing.T) {
 	}
 
 	result, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "q", ToolContext: tools.Context{ViewerWxid: "wx1"},
+		SessionID: "s1", Question: "q", ToolContext: tools.Context{PrincipalID: "wx1"},
 	}, Deps{Chat: chat, Tools: registry, MaxSteps: 1})
 	if err != nil {
 		t.Fatalf("收尾失败不该往上抛：%v", err)
@@ -241,7 +241,7 @@ func TestRun_模型的错往上抛(t *testing.T) {
 	}
 
 	if _, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "q", ToolContext: tools.Context{ViewerWxid: "wx1"},
+		SessionID: "s1", Question: "q", ToolContext: tools.Context{PrincipalID: "wx1"},
 	}, Deps{Chat: chat, Tools: registry}); err == nil {
 		t.Fatal("模型失败应当往上抛，让调用方决定降级")
 	}
@@ -365,7 +365,7 @@ func TestDeps_工具声明不参与消息历史(t *testing.T) {
 	}
 
 	if _, err := Run(context.Background(), RunInput{
-		SessionID: "s", Question: "q", ToolContext: tools.Context{ViewerWxid: "wx"},
+		SessionID: "s", Question: "q", ToolContext: tools.Context{PrincipalID: "wx"},
 	}, Deps{Chat: chat, Tools: registry}); err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}

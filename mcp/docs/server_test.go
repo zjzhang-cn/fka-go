@@ -10,8 +10,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/zjzhang-cn/fka-go/internal/nas"
-	"github.com/zjzhang-cn/fka-go/internal/store"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/nas"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/store"
 )
 
 const (

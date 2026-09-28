@@ -23,14 +23,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/zjzhang-cn/fka-go/internal/config"
-	"github.com/zjzhang-cn/fka-go/internal/domain"
-	"github.com/zjzhang-cn/fka-go/internal/store"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/domain"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/store"
 )
 
 // Tools 的名字。**刻意不带前缀**——前缀由上层的工具注册表加（`memory__`）。
@@ -105,7 +105,7 @@ func (s *serverImpl) handleSearch(ctx context.Context, request mcp.CallToolReque
 		Limit:      limit,
 	})
 	if err != nil {
-		config.Log().Warn("记忆检索失败", config.Context{"error": err.Error()})
+		log.Log().Warn("记忆检索失败", log.Context{"error": err.Error()})
 		return fail("记忆检索失败：" + err.Error()), nil
 	}
 
@@ -160,7 +160,7 @@ func (s *serverImpl) handleRemember(ctx context.Context, request mcp.CallToolReq
 		Visibility: visibility,
 		CreatedAt:  nowMs(),
 	}); err != nil {
-		config.Log().Warn("记忆写入失败", config.Context{"error": err.Error()})
+		log.Log().Warn("记忆写入失败", log.Context{"error": err.Error()})
 		return fail("记忆写入失败：" + err.Error()), nil
 	}
 
@@ -218,5 +218,3 @@ func atoiSafe(raw string) int {
 func IsUnavailable(err error) bool {
 	return errors.Is(err, sql.ErrConnDone) || strings.Contains(err.Error(), "no such table")
 }
-
-var _ = config.Log

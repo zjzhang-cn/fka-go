@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/zjzhang-cn/fka-go/internal/config"
-	"github.com/zjzhang-cn/fka-go/internal/nas"
-	"github.com/zjzhang-cn/fka-go/internal/store"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/nas"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/store"
 )
 
 // 工具名。**刻意不带前缀**——前缀由上层的工具注册表加（`docs__`）。
@@ -128,7 +128,7 @@ func (s *impl) handleSearch(ctx context.Context, request mcp.CallToolRequest) (*
 		Limit:       readLimit(request, "limit", defaultSearchLimit),
 	})
 	if err != nil {
-		config.Log().Warn("文档检索失败", config.Context{"error": err.Error()})
+		log.Log().Warn("文档检索失败", log.Context{"error": err.Error()})
 		return fail("文档检索失败：" + err.Error()), nil
 	}
 
@@ -156,7 +156,7 @@ func (s *impl) handleList(ctx context.Context, request mcp.CallToolRequest) (*mc
 		Limit:      readLimit(request, "limit", 10),
 	})
 	if err != nil {
-		config.Log().Warn("列文档失败", config.Context{"error": err.Error()})
+		log.Log().Warn("列文档失败", log.Context{"error": err.Error()})
 		return fail("列文档失败：" + err.Error()), nil
 	}
 
@@ -202,7 +202,7 @@ func (s *impl) handleGet(ctx context.Context, request mcp.CallToolRequest) (*mcp
 		if strings.Contains(err.Error(), "没有找到") {
 			return fail(fmt.Sprintf("没有找到 id 以 %s 开头的文档。可以用 search_documents 找找。", id)), nil
 		}
-		config.Log().Warn("取文档失败", config.Context{"id": id, "error": err.Error()})
+		log.Log().Warn("取文档失败", log.Context{"id": id, "error": err.Error()})
 		return fail("取文档失败：" + err.Error()), nil
 	}
 

@@ -106,24 +106,21 @@ func FailResult(format string, args ...any) Result {
 // 刻意**不含会话历史与用户问题**：工具要的是「以谁的身份查什么」，把对话塞进来会
 // 让工具开始依赖上下文，那就不再是能被单独测试的东西了。
 type Context struct {
-	// ViewerWxid 提问者。MCP 服务器据此过滤——**漏了就是数据泄漏**
+	// PrincipalID **这次调用是谁发起的**。渠道决定它是什么——iLink 是微信 id，
+	// 别的渠道可能是别的标识，所以刻意不叫 wxid、不叫 user。
 	//
-	// ⚠️ **已接受的风险**：文档与记忆走 MCP 之后，这个值是**模型填的工具参数**，
-	// 而不再是代码构造的。Node 版里它是结构性保证（穿到 SQL 的 WHERE）。
-	// 详见 go/README.md 的「权限边界」一节。
-	ViewerWxid string
+	// 这个 agent 自己不拥有数据，但**它选的 MCP server 可能有**。server 据此做
+	// 权限过滤，所以**漏了就是数据泄漏**。
+	//
+	// ⚠️ **已接受的风险**：下游 server 认的身份参数是**模型填的工具参数**，
+	// 不是这里由代码塞进去的。收紧的做法（进程级身份 / 签名参数）见 docs/permissions.md。
+	PrincipalID string
 
-	// StorageRoot 存储根，定位原文件用
-	StorageRoot string
-
-	// AdminWxid 管理员微信 ID（.env 的 ADMIN_WXID）。**可改任何人的文档**
-	AdminWxid string
-
-	// Reply 以 Bot 的身份回话（发文件）。**逐条消息提供**，nil = 当前渠道发不了
+	// Reply 以自己的身份回话。**逐条消息提供**，nil = 当前渠道回不了话
 	Reply Reply
 
-	// Extra 由组装根注入的窄端口。**刻意不给 ORM、不给文件路径**——
-	// 工具不认识「数据存在哪」，那让具体实现去实现这些窄接口。
+	// Extra 由组装根注入的窄端口。**刻意不给 ORM、不给文件路径、不给存储根**——
+	// 这个 agent 不拥有任何数据，「数据存在哪」是 MCP server 的事，不是它的事。
 	Extra map[string]any
 }
 

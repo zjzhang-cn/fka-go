@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zjzhang-cn/fka-go/internal/searchterms"
+	"github.com/zjzhang-cn/fka-go/mcp/internal/searchterms"
 )
 
 // ErrNotFound 找不到。**调用方据此区分「没有」与「坏了」**。

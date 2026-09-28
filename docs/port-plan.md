@@ -6,14 +6,17 @@
 
 ## 当前状态
 
-**Agent 能力 + 存储层 + 记忆 MCP server + NAS 布局已端到端可用。**
+**Agent 侧（循环 / LLM / 放行 / MCP client / 技能 / 渠道接缝）与 MCP 侧（记忆 + 文档两个
+server + 存储 + NAS）都已端到端可用，两侧之间只有 `mcp.json` 一个接口。**
+
+**agent 自己不拥有任何数据。** 它的能力只有两条来源：MCP server 与 skill。
 
 已验证的真实链路：
 
 ```
 fka ask "记一条：2026年3月全家去了三亚"
   → agent 决定调 mcp__memory__remember_memory
-  → MCP client 拉起 fka-memory 子进程（stdio）
+  → MCP client 拉起 bin/fka-memory 子进程（stdio）
   → server 写入 SQLite
   → 下一轮 mcp__memory__search_memories 查回来
   → 模型作答
@@ -35,9 +38,12 @@ fka ask "记一条：2026年3月全家去了三亚"
 | **提示词** | `internal/prompts` | — | 宪法 + 拒答话术 + 注入防护 + **工具参数真实性** |
 | **会话历史** | `internal/llm` | 14 | 按组丢弃不拆散 tool_calls、留下的逐字不动、文件空时播种 |
 | **装配 + CLI** | `internal/app`、`cmd/fka` | — | 构造函数链替代 cordis.yml；`fka ask` / `fka tools` |
-| **存储 + 迁移** | `internal/store` | 8 | **真库认领 v0→v1，330 条消息一行未动**；认领失败不重建 |
+| **技能源** | `internal/tools/skills` | 16 | 极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录不声明工具 |
+| **渠道接缝** | `internal/channels` | 14 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；两个 server 自成一体 |
+| **MCP 侧边界** | `mcp` | 2 | `mcp/**` 不许 import `fka-go/internal/**`（编译器管不到，由测试守）；两个 server 必须都是 `main` 包 |
+| **存储 + 迁移** | `mcp/internal/store` | 8 | **真库认领 v0→v1，330 条消息一行未动**；认领失败不重建 |
 | **记忆 MCP server** | `mcp/memory` | — | 独立可执行程序，3 步端到端落库 |
-| **NAS 布局** | `internal/nas` | 24 | 冒号/扩展名/字节截断/标记行定位，路径推导与往返 |
+| **NAS 布局** | `mcp/internal/nas` | 24 | 冒号/扩展名/字节截断/标记行定位，路径推导与往返 |
 | **文档 MCP server**（只读） | `mcp/docs` | 14 | **权限过滤按 viewer**（属主/他人/陌生人三种身份）、前缀歧义给候选、语义模式如实说不可用 |
 
 ### ⬜ 未开始
@@ -51,8 +57,9 @@ fka ask "记一条：2026年3月全家去了三亚"
 | 3 | **混合检索** | 上面 | 全文扫 `extracted/*.md` + 向量；关键词之间是「且」；`LIKE` 通配符要转义 |
 | 4 | **文档 MCP server**（归档 + send + delete） | 上面 | 决定 8 要求归档流水线一起搬：去重 → 落盘 → 转换 → 入库 → 索引 |
 | 5 | **消息处理** | 上面 | `classify()` 五意图（顺序：文件 > 图片 > 命令 > 提问 > 说明）+ `handleInbound` 穷尽分发 + 批注 + 命令 |
-| 6 | **渠道 iLink** | 消息处理 | 13 个协议文件；goroutine 代替 worker；真机验证 |
-| 7 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
+| 6 | **iLink provider** | **渠道接缝（已有）** | 接缝已就位，**provider 还没写**：13 个协议文件；goroutine 代替 worker；真机验证。业务层不 import 具体渠道 |
+| 7 | **装配 + 常驻** | 上面 | 接缝进 `internal/app` 与 `serve` 子命令；订阅 → `agent.Run` 的那条链路 |
+| 8 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
 
 ---
 
@@ -72,17 +79,18 @@ fka ask "记一条：2026年3月全家去了三亚"
 
 | 不变量 | 在哪 | 破了会怎样 |
 |---|---|---|
-| 权限过滤在 SQL 的 `WHERE` 里，不在查完再筛 | `store` 每个查询 | 别人的 private 数据进结果 |
+| 权限过滤在 SQL 的 `WHERE` 里，不在查完再筛 | `mcp/internal/store` 每个查询 | 别人的 private 数据进结果 |
+| **`mcp/**` 不许 import agent 的 `internal/**`** | `mcp/boundary_test.go` | server 与 agent 绑死，不再是「能单独换掉的能力」（**编译器管不到这条**） |
 | 未放行的工具**不告诉模型** | `tools/registry` | 模型以为工具「暂时不可用」，换名字再试，白烧一轮 |
 | 两种「没有」是不同的话：名字错了 vs 权限门 | `tools/registry` | 部署的人查错方向——以为工具不存在，实际是没打开 |
 | 工具调用后的失败**变成一句话喂回**，不抛 | `agent/loop` | 模型看不到失败，就不会换个方式再试 |
 | 模型的错**往上抛**，不静默降级 | `agent/loop` | 「接口没配好」被伪装成「模型偶尔不回」 |
 | 历史按**整组**丢弃，绝不改写留下的 | `llm/history` | provider 前缀缓存从改动点起全部失效；留下孤儿 `tool` 消息直接 400 |
-| 记忆用 `id 生成器`而非时间戳 | `store`、`mcp/memory` | id 撞了会**静默丢掉一条记忆** |
-| 文件名去掉冒号 | `nas` | 容器挂载错位，症状是「找不到文件」 |
-| 解析结果保留**原扩展名** | `nas` | `房产证.pdf` 与 `房产证.docx` 撞成同一落点 |
-| 批注小节用 **HTML 注释标记**而不是标题 | `nas` | 正文里同名标题被误删 |
-| 属主 / 会话 / 文件名走**同一套字符集校验** | `ids` | 两个不同的东西清洗后别名到同一路径 |
+| 记忆用 `id 生成器`而非时间戳 | `mcp/internal/store`、`mcp/memory` | id 撞了会**静默丢掉一条记忆** |
+| 文件名去掉冒号 | `mcp/internal/nas` | 容器挂载错位，症状是「找不到文件」 |
+| 解析结果保留**原扩展名** | `mcp/internal/nas` | `房产证.pdf` 与 `房产证.docx` 撞成同一落点 |
+| 批注小节用 **HTML 注释标记**而不是标题 | `mcp/internal/nas` | 正文里同名标题被误删 |
+| 属主 / 会话 / 文件名走**同一套字符集校验** | `mcp/internal/ids` | 两个不同的东西清洗后别名到同一路径 |
 | MCP server 是**独立可执行程序** | `mcp/*` | 共享逻辑会长进 server 里，「独立」名存实亡 |
 | MCP server 启动后 **stdout 一个字都不能有** | `mcp/*` | 一个 `fmt.Println` 插进 JSON-RPC 流，把 server 打挂 |
 

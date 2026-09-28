@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/mark3labs/mcp-go v0.40.0
 	github.com/sashabaranov/go-openai v1.42.1
+	modernc.org/sqlite v1.59.0
 )
 
 require (
@@ -25,5 +26,4 @@ require (
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.59.0 // indirect
 )
