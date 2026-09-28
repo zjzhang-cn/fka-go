@@ -38,6 +38,7 @@ fka ask "记一条：2026年3月全家去了三亚"
 | **存储 + 迁移** | `internal/store` | 8 | **真库认领 v0→v1，330 条消息一行未动**；认领失败不重建 |
 | **记忆 MCP server** | `mcp/memory` | — | 独立可执行程序，3 步端到端落库 |
 | **NAS 布局** | `internal/nas` | 24 | 冒号/扩展名/字节截断/标记行定位，路径推导与往返 |
+| **文档 MCP server**（只读） | `mcp/docs` | 14 | **权限过滤按 viewer**（属主/他人/陌生人三种身份）、前缀歧义给候选、语义模式如实说不可用 |
 
 ### ⬜ 未开始
 
@@ -45,14 +46,13 @@ fka ask "记一条：2026年3月全家去了三亚"
 
 | # | 模块 | 依赖 | 验收标准 |
 |---|---|---|---|
-| 1 | **文档 MCP server**（查询侧） | store + nas（都有） | `search_documents` / `list_documents` / `get_document` 三个工具，权限过滤在 WHERE 里；`mcp/docs/` 独立可执行程序 |
-| 2 | **文档转换** | nas + docker | parsers 接缝（按扩展名路由、显式优先 `*` 兜底、重叠拒绝启动）；PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、`--network=none`、只看 exit code）；SCNet 异步 OCR；ExifTool 走系统命令 |
-| 3 | **切片 + 嵌入 + 向量薄层** | 文档转换 | 切片、SCNet 嵌入（batch ≤5、按 index 重排、429/5xx 退避）、手写向量层（暴力余弦 + 阈值）。**阈值必须重标** |
-| 4 | **混合检索** | 上面 | 全文扫 `extracted/*.md` + 向量；关键词之间是「且」；`LIKE` 通配符要转义 |
-| 5 | **文档 MCP server**（归档侧） | 上面 | 决定 8 要求归档流水线一起搬：去重 → 落盘 → 转换 → 入库 → 索引 |
-| 6 | **消息处理** | 上面 | `classify()` 五意图（顺序：文件 > 图片 > 命令 > 提问 > 说明）+ `handleInbound` 穷尽分发 + 批注 + 命令 |
-| 7 | **渠道 iLink** | 消息处理 | 13 个协议文件；goroutine 代替 worker；真机验证 |
-| 8 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
+| 1 | **文档转换** | nas + docker | parsers 接缝（按扩展名路由、显式优先 `*` 兜底、重叠拒绝启动）；PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、`--network=none`、只看 exit code）；SCNet 异步 OCR；ExifTool 走系统命令 |
+| 2 | **切片 + 嵌入 + 向量薄层** | 文档转换 | 切片、SCNet 嵌入（batch ≤5、按 index 重排、429/5xx 退避）、手写向量层（暴力余弦 + 阈值）。**阈值必须重标** |
+| 3 | **混合检索** | 上面 | 全文扫 `extracted/*.md` + 向量；关键词之间是「且」；`LIKE` 通配符要转义 |
+| 4 | **文档 MCP server**（归档 + send + delete） | 上面 | 决定 8 要求归档流水线一起搬：去重 → 落盘 → 转换 → 入库 → 索引 |
+| 5 | **消息处理** | 上面 | `classify()` 五意图（顺序：文件 > 图片 > 命令 > 提问 > 说明）+ `handleInbound` 穷尽分发 + 批注 + 命令 |
+| 6 | **渠道 iLink** | 消息处理 | 13 个协议文件；goroutine 代替 worker；真机验证 |
+| 7 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
 
 ---
 
@@ -103,6 +103,9 @@ fka ask "记一条：2026年3月全家去了三亚"
 
 ## 下一步
 
-做**文档 MCP server 的查询侧**（清单第 1 项）。它依赖的两个底座（store + nas）都齐了，
-是当前性价比最高的一块，而且做完就有 `mcp__docs__search_documents` 可以真机验——
-**第一次能让 agent 搜到真实家庭文档**。
+做**文档转换**（清单第 1 项）：parsers 接缝（按扩展名路由、显式扩展名优先 `*` 兜底、
+重叠即拒绝启动）+ PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、
+`--network=none`、只看 exit code）+ SCNet 异步 OCR + ExifTool 走系统命令。
+
+它是「文档 MCP server 的归档侧」的必要前置——归档流水线是「去重 → 落盘 → 转换 →
+入库 → 索引」，而**转换**在其中占最重的一块。

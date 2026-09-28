@@ -20,6 +20,7 @@ go build ./...
 go test ./...
 CGO_ENABLED=0 go build -o bin/fka        ./cmd/fka      # 主程序
 CGO_ENABLED=0 go build -o bin/fka-memory ./mcp/memory   # 记忆 MCP server
+CGO_ENABLED=0 go build -o bin/fka-docs   ./mcp/docs     # 文档 MCP server
 ```
 
 ```bash
@@ -43,6 +44,10 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external,memory \
     "memory": {
       "command": "/path/to/fka-go/bin/fka-memory",
       "args": ["--db", "/path/to/fka/data/db.sqlite"]
+    },
+    "docs": {
+      "command": "/path/to/fka-go/bin/fka-docs",
+      "args": ["--db", "/path/to/fka/data/db.sqlite", "--storage", "/path/to/fka/data/nas"]
     }
   }
 }
@@ -96,8 +101,8 @@ fka ask "…"
         ▼                             ▼
 ┌────────────────────┐   ┌──────────────────────┐
 │ mcp/memory         │   │ mcp/docs             │
-│ 家庭记忆 server     │   │ 文档管理 server ⬜     │
-│ bin/fka-memory     │   │ （含归档流水线 ⬜）    │
+│ 家庭记忆 server     │   │ 文档管理 server（只读）│
+│ bin/fka-memory     │   │ bin/fka-docs         │
 └─────────┬──────────┘   └──────────┬───────────┘
           │                          │
           ▼                          ▼

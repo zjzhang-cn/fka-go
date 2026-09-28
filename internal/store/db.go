@@ -52,6 +52,26 @@ type Memory struct {
 // DefaultMemoryLimit 记忆列表默认返回多少条。
 const DefaultMemoryLimit = 10
 
+// capacityHint 预分配时的容量提示**上限**。
+//
+// 调用方可以传一个很大的 limit 来表达「都要」（检索就是这么做：先把候选全过一遍，
+// 截断交给最后一步）。而 `make([]T, 0, limit)` 会**按 limit 预分配**——传 1<<30
+// 就是当场申请几十 GB 然后被 OOM kill。
+//
+// 库函数不能因为调用方传了个大数就炸，所以容量提示单独封顶：**真正 append 时 Go
+// 会按需扩容**，多几次拷贝而已。
+const capacityHint = 64
+
+func capacityFor(limit int) int {
+	if limit <= 0 {
+		return capacityHint
+	}
+	if limit < capacityHint {
+		return limit
+	}
+	return capacityHint
+}
+
 // InsertMemory 记一条记忆。
 func (d *DB) InsertMemory(ctx context.Context, m Memory) error {
 	visibility := m.Visibility
@@ -123,7 +143,7 @@ func (d *DB) FindMemories(ctx context.Context, in FindMemoriesInput) (FindMemori
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := make([]Memory, 0, limit)
+	out := make([]Memory, 0, capacityFor(limit))
 	for rows.Next() {
 		var m Memory
 		if err := rows.Scan(&m.ID, &m.Type, &m.Content, &m.OwnerWxid, &m.Visibility, &m.CreatedAt); err != nil {
@@ -227,7 +247,7 @@ func (d *DB) ListDocuments(ctx context.Context, in ListDocumentsInput) (ListDocu
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := make([]Document, 0, limit)
+	out := make([]Document, 0, capacityFor(limit))
 	for rows.Next() {
 		doc, err := scanDocument(rows)
 		if err != nil {
@@ -251,9 +271,13 @@ func (d *DB) FindDocument(ctx context.Context, idOrPrefix string) (Document, err
 		return Document{}, err
 	}
 
-	// 前缀匹配。`%` 与 `_` 要转义，否则用户输入里带上它们会扩大匹配范围
+	// 前缀匹配。`%` 与 `_` 要转义，否则用户输入里带上它们会扩大匹配范围。
+	//
+	// **通配的 `%` 在 Go 里拼好传进去，不写进 SQL**：写成 `ESCAPE '\' || '%'` 时
+	// SQLite 会把 `ESCAPE` 的参数解析成 `'\' || '%'` 这个两字符的拼接表达式，
+	// 然后报 "ESCAPE expression must be a single character"。
 	rows, err := d.db.QueryContext(ctx,
-		"SELECT "+documentColumns+" FROM documents WHERE id LIKE ? ESCAPE '\\' || '%' ORDER BY created_at DESC LIMIT 10",
+		`SELECT `+documentColumns+` FROM documents WHERE id LIKE ? ESCAPE '\' ORDER BY created_at DESC LIMIT 10`,
 		searchterms.EscapeLike(idOrPrefix)+"%")
 	if err != nil {
 		return Document{}, fmt.Errorf("查文档失败：%w", err)
