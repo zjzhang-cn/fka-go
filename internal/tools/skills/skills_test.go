@@ -105,30 +105,72 @@ func TestFirstLine_跳过标题与列表符(t *testing.T) {
 	}
 }
 
-// TestNewSource_有技能才声明工具 一个技能都没有时返回空——不声明 list/load。
-// 空不等于错，但让模型去调一个必然失败的工具是白烧一轮。
-func TestNewSource_有技能才声明工具(t *testing.T) {
+// Test没有技能也声明工具 技能是**内建的能力路径**（只有两条：MCP 与技能），
+// 在不在只该由「有没有技能」回答，不该由「目录碰巧是空的」决定。
+//
+// 目录随时会从空变成有——而工具要是启动时不存在，模型连「看一眼有哪些技能」
+// 都做不到，只能凭空猜有没有这回事。
+func Test没有技能也声明工具(t *testing.T) {
 	dir := t.TempDir()
 
-	// 空目录 → 不声明
-	if specs := list(t, NewSource([]string{dir})); len(specs) != 0 {
-		t.Errorf("没有技能时不该声明工具：%+v", specs)
-	}
-
-	writeSkill(t, dir, "backup", "---\nname: 备份\ndescription: 归档照片\n---\n步骤")
 	specs := list(t, NewSource([]string{dir}))
 	if len(specs) != 2 {
-		t.Fatalf("有技能时应声明 list 与 load：%+v", specs)
+		t.Fatalf("没有技能时也该声明 list 与 load：%+v", specs)
 	}
 	if specs[0].Name != ToolList || specs[1].Name != ToolLoad {
 		t.Errorf("声明的顺序/名字不对：%s / %s", specs[0].Name, specs[1].Name)
 	}
+	// 有技能时声明的**是同两个**——工具集合不随目录内容变
+	writeSkill(t, dir, "backup", "---\nname: 备份\ndescription: 归档照片\n---\n步骤")
+	withSkill := list(t, NewSource([]string{dir}))
+	if len(withSkill) != 2 || withSkill[0].Name != ToolList || withSkill[1].Name != ToolLoad {
+		t.Errorf("工具集合不该随目录内容变：%+v", withSkill)
+	}
 }
 
-func TestNewSource_目录不存在是正常状态(t *testing.T) {
+func Test目录不存在也声明工具(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "根本没有这个目录")
-	if specs := list(t, NewSource([]string{missing})); len(specs) != 0 {
-		t.Errorf("目录不存在不该报错也不该声明工具：%+v", specs)
+	if specs := list(t, NewSource([]string{missing})); len(specs) != 2 {
+		t.Errorf("目录不存在不该报错、也不该少声明工具：%+v", specs)
+	}
+}
+
+// Test空目录下列清单是合法答案 不是失败——失败的话模型只会说「技能用不了」，
+// 而真相是「还没有而已」。
+func Test空目录下列清单是合法答案(t *testing.T) {
+	source := NewSource([]string{t.TempDir()})
+
+	result, err := source.Call(context.Background(), ToolList, nil, tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
+		t.Fatalf("列清单不该失败：%s", result.Content)
+	}
+	if strings.TrimSpace(result.Content) != "[]" {
+		t.Errorf("该是空清单，实际 %q", result.Content)
+	}
+}
+
+// Test空目录时取技能要说清放哪 「没有技能」对用户没用；说清目录之后，
+// 模型能告诉对方「放这儿就行」。
+func Test空目录时取技能要说清放哪(t *testing.T) {
+	dir := t.TempDir()
+	source := NewSource([]string{dir})
+
+	result, err := source.Call(context.Background(), ToolLoad,
+		map[string]any{"name": "随便什么"}, tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OK {
+		t.Fatal("取一个不存在的技能该失败")
+	}
+	if !strings.Contains(result.Content, dir) {
+		t.Errorf("该把目录说清楚，模型才能告诉用户放哪：%q", result.Content)
+	}
+	if !strings.Contains(result.Content, "SKILL.md") {
+		t.Errorf("该说清文件叫什么：%q", result.Content)
 	}
 }
 

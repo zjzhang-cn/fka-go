@@ -325,15 +325,21 @@ func (s *source) load() []Skill {
 	return loaded
 }
 
+// List **无条件**声明这两个工具。
+//
+// ## 为什么「没有技能」也要有工具
+//
+// 技能是**内建的能力路径**（只有两条：MCP 与技能），在不在只该由「有没有技能」
+// 回答，不该由「目录碰巧是空的」决定。空目录是**部署事实**，不是能力缺失。
+//
+// 更实际的理由：**目录随时会从空变成有**。往里丢一个 SKILL.md 下一轮就生效
+// ——而如果工具在启动时不存在，模型连「看一眼有哪些技能」都做不到，
+// 于是只能凭空猜有没有这回事。
+//
+// 早先的版本是「一个技能都没有就不声明」，理由是「让模型去调一个必然失败的
+// 工具是白烧一轮」。那句话本身没错，可它把工具**藏起来**的代价更大：
+// 用户问「你能用技能吗」，模型连查都查不了。
 func (s *source) List(ctx context.Context, tc tools.Context) ([]tools.Spec, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// **一个技能都没有时返回空**——不声明 list/load。空不等于错，但让模型去调
-	// 一个必然失败的工具是白烧一轮
-	if len(s.load()) == 0 {
-		return nil, nil
-	}
 	return []tools.Spec{listSpec, loadSpec}, nil
 }
 
@@ -363,12 +369,18 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 	skills := s.load()
 	s.mu.Unlock()
 
-	if len(skills) == 0 {
-		return tools.FailResult("这份安装里没有技能。"), nil
+	if name == ToolList {
+		// 空列表是**合法答案**，不是失败——所以 list 永远成功。
+		// 失败的话模型只会说「技能用不了」，而真相是「还没有而已」
+		return tools.OKResult(marshalSkills(skills)), nil
 	}
 
-	if name == ToolList {
-		return tools.OKResult(marshalSkills(skills)), nil
+	if len(skills) == 0 {
+		// load 一个不存在的技能是**真的失败**。而答不出来时把目录说清楚：
+		// 模型据此能告诉用户「放这儿就行」，而不是只说「没有技能」
+		return tools.FailResult("这份安装里还没有技能。要加一个的话，在下面任一目录下建"+
+			"<名字>/SKILL.md（允许一段极简 front matter：name 与 description）：%s",
+			strings.Join(s.dirs, "、")), nil
 	}
 
 	wanted, _ := args["name"].(string)
