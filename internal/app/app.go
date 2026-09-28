@@ -23,12 +23,16 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
+	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
 	llmopenai "github.com/zjzhang-cn/fka-go/internal/llm/openai"
+	"github.com/zjzhang-cn/fka-go/internal/messages"
 	"github.com/zjzhang-cn/fka-go/internal/prompts"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 	"github.com/zjzhang-cn/fka-go/internal/tools/mcp"
@@ -63,12 +67,27 @@ type App struct {
 	McpConfigured bool
 	// SkillsDir 技能目录（按配置顺序，后一个覆盖前一个的同名技能）
 	SkillsDir []string
+
+	// Channels 渠道接缝。**永远非 nil**——没有配任何渠道时它是个空接缝，
+	// 不是缺席。接缝是「渠道从哪来」的唯一出口，业务层只认它。
+	Channels *channels.Service
+	// ChannelKinds 已注册的渠道**种类**（按注册顺序）
+	ChannelKinds []string
+	// Messages 消息处理器。**Runner 为 nil 时它仍在**，每条消息会得到一句
+	// 「没接上模型」——那比服务安静地不收消息好
+	Messages *messages.Handler
 }
 
 // Options 装配的可选项。
 type Options struct {
 	// SkipEnv 不读 .env。测试与嵌入式用法
 	SkipEnv bool
+	// ChannelProviders 要接的渠道种类。**由装配调用方给**——
+	//
+	// 刻意不写配置文件：加一个渠道 = 在这里多传一个 provider，而 `cordis.yml`
+	// 那种「配错一行要到运行期才发现」的问题在 Go 里不存在（改完就编译过）。
+	// 接缝自己不认任何实现，装配根是唯一认识它们的地方。
+	ChannelProviders []channels.Provider
 }
 
 // Build 装配。**每一步的错误都在这里就地降级，绝不整体返错**——理由与原实现
@@ -107,6 +126,10 @@ func Build(opts Options) *App {
 		config.Log().Info("没配 LLM_API_KEY / LLM_MODEL，问答将不走模型", config.Context{})
 	}
 
+	// ── 渠道 ──────────────────────────────────────────────
+	app.Channels = channels.NewService()
+	app.registerChannels(opts.ChannelProviders)
+
 	// ── 会话历史 ──────────────────────────────────────────
 	app.History = llm.NewDefaultSessionHistory()
 	if app.History == nil {
@@ -128,6 +151,13 @@ func Build(opts Options) *App {
 			config.Log().Info("LLM_TOOLS 已关闭，问答走单次路径", config.Context{})
 		}
 	}
+
+	// ── 消息层 ────────────────────────────────────────────
+	//
+	// **必须建在 Agent 之后**：它持有 runner，而 runner 可能因为 LLM_TOOLS=off
+	// 或没配模型而缺席。先建后赋值会让它永远拿到 nil——症状是「每条消息都回
+	// 没接上模型」，而配置看上去完全正常。
+	app.Messages = messages.NewHandler(app.Agent, app.Tools)
 
 	return app
 }
@@ -174,8 +204,60 @@ func (a *App) registerMcp() {
 	})
 }
 
-// Close 收尾。**逆序**：先断 MCP 子进程，再关日志。
+// registerChannels 注册渠道 provider。
+//
+// ## 一个渠道起不来，不该把别的渠道一起带走
+//
+// 逐个注册、逐个记错。**唯一的例外是同一个 provider 自己起不来**——那通常是配置
+// 写错了（比如 .env 里没有账号），此时继续跑只会让人以为「配了但没生效」。
+func (a *App) registerChannels(providers []channels.Provider) {
+	if len(providers) == 0 {
+		config.Log().Info("未配置任何渠道，只跑无头问答", config.Context{})
+		return
+	}
+
+	ctx := context.Background()
+	for _, provider := range providers {
+		if _, err := a.Channels.Register(ctx, provider); err != nil {
+			config.Log().Error("渠道起不来，已跳过", config.Context{
+				"kind": provider.ID(), "error": err.Error(),
+			})
+			continue
+		}
+		a.ChannelKinds = append(a.ChannelKinds, provider.ID())
+	}
+}
+
+// Serve 常驻：订阅入站 → 跑消息循环 → 收到信号停机。
+//
+// ## 顺序是硬要求
+//
+// **先 Subscribe，再 StartAll。** 反过来会有一个丢消息的窗口——渠道一开收就可能
+// 来消息，而那时还没有订阅者。
+func (a *App) Serve(ctx context.Context) error {
+	subscription := a.Channels.Subscribe()
+	defer subscription.Close()
+
+	// goroutine 代替 Node 版的 worker：**不阻塞 StartAll**，而接缝的投递是非阻塞的
+	go messages.HandleFunc(a.Messages, subscription)()
+
+	a.Channels.StartAll(ctx)
+
+	if len(a.Channels.Instances()) == 0 {
+		return fmt.Errorf("没有接上任何渠道，无事可做")
+	}
+	config.Log().Info("服务就绪，等待消息", config.Context{"kinds": strings.Join(a.ChannelKinds, "、")})
+
+	<-ctx.Done()
+	a.Channels.StopAll(context.WithoutCancel(ctx))
+	return nil
+}
+
+// Close 收尾。**逆序**：先停渠道，再断 MCP 子进程，最后关日志。
 func (a *App) Close() {
+	if a.Channels != nil {
+		a.Channels.StopAll(context.Background())
+	}
 	if a.Tools != nil {
 		if err := a.Tools.Close(); err != nil {
 			config.Log().Warn("工具源关闭有问题", config.Context{"error": err.Error()})

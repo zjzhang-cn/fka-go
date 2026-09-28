@@ -31,6 +31,9 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external ./bin/fka tools
 # 无头跑一轮工具循环问答（不经过任何渠道）
 FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
   FKA_PRINCIPAL=zhang ./bin/fka ask "记一条：2026年3月全家去了三亚"
+
+# 常驻：接渠道、收消息、跑问答
+FKA_HOME=/path/to/fka ./bin/fka serve
 ```
 
 必填环境变量只有 `LLM_API_KEY` 与 `LLM_MODEL`。没配时 `ask` 会**明确报错**，
@@ -155,8 +158,14 @@ server 侧不认识 agent——所以 server 能单独构建、部署、换掉�
 > **跨渠道账号唯一**不是洁癖：会话历史文件名是 `<账号>_<会话>.jsonl`，
 > 撞号会让两个渠道的对话写进同一个文件，症状出现在很远的地方且**不报错**。
 
-**iLink（微信）provider 还没写。** 接一个渠道 = 实现 `Provider` 与 `Channel`，
-在 `internal/app` 里注册一行——接缝与业务层不用改。
+**消息层（`internal/messages`）只认三样东西**：进来的 `InboundMessage`、干活的
+`agent.Runner`、回去的 `Channel`。**它不认识 iLink，也不认识任何具体渠道。**
+
+`fka serve` 是常驻入口，它保证**先订阅再开收**——反过来会有一个丢消息的窗口。
+
+**iLink（微信）provider 还没写**，所以 `fka serve` 现在会明确说「没有接上任何渠道」
+并以退出码 1 结束，而不是安静地收不到消息。接一个渠道 = 实现 `Provider` 与
+`Channel`，在 `cmd/fka/serve.go` 的 `channelProviders()` 里加一个——接缝与业务层不动。
 
 ---
 
@@ -177,6 +186,7 @@ go/
     ├── config/         安装根解析、.env 加载、日志（按天轮转）
     ├── llm/            模型契约 + 历史压缩 + 会话历史
     │   └── openai/     OpenAI 兼容 provider
+    ├── messages/       入站消息 → 工具循环 → 按原路答复
     ├── prompts/        系统提示词唯一出处
     └── tools/          工具契约 + 放行策略 + 注册表
         ├── mcp/        MCP client + mcp.json + 聚合源

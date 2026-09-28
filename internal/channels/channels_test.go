@@ -296,9 +296,13 @@ func TestSeam_退订后不再收到(t *testing.T) {
 
 	channel.emit(InboundMessage{MessageID: "m1"})
 
+	// 退订会**关闭事件流**（消费方的 for-range 要靠它退出），所以这里必须用
+	// 双返回值：单返回值的 select 会把「流已关闭」读成一条零值消息。
 	select {
-	case event := <-sub.C:
-		t.Errorf("退订后不该再收到：%+v", event)
+	case event, ok := <-sub.C:
+		if ok {
+			t.Errorf("退订后不该再收到：%+v", event)
+		}
 	default:
 	}
 }
@@ -393,8 +397,10 @@ func TestSeam_停掉后不再收(t *testing.T) {
 	}
 	channel.emit(InboundMessage{MessageID: "m1"})
 	select {
-	case event := <-sub.C:
-		t.Errorf("停掉后不该再收到：%+v", event)
+	case event, ok := <-sub.C:
+		if ok {
+			t.Errorf("停掉后不该再收到：%+v", event)
+		}
 	default:
 	}
 }

@@ -15,12 +15,12 @@
 // 而这类错误**不会当场报**——它表现为「A 账号的消息出现在 B 的会话里」，
 // 排查时完全想不起是注册表没拦住。所以重复就**拒绝启动**。
 //
-// ## 入站为什么是「每个订阅者一个 goroutine + 有界队列」
+// ## 入站为什么是「有界队列 + 非阻塞投递」
 //
 // 渠道的收包循环**不能被慢消费者堵住**——堵住就等于停收消息，队列一满就开始丢。
 // 所以：
 //
-//   - 接缝按订阅者起一个 goroutine，慢的那个只拖慢自己；
+//   - 每个订阅者一条有界队列，慢的那个只拖慢自己；
 //   - 投递是**非阻塞**的，队列满时**记一条警告并丢弃**，不阻塞收包循环。
 //
 // **丢弃是要记日志的**：消息代理丢消息是不能接受的默认行为，所以宁可吵一点，
@@ -50,9 +50,10 @@ type Event struct {
 
 // Subscription 一个订阅者。
 type Subscription struct {
-	// C 事件流。由接缝的 goroutine 写入，由订阅方读取
+	// C 事件流。**退订与停机时会被关闭**，所以 `for range sub.C` 会自然结束——
+	// 这是消费循环能退出、goroutine 不泄漏的唯一办法。
 	C <-chan Event
-	// cancel 停掉这个订阅者的 goroutine。**调用方负责调**
+	// cancel 停掉这个订阅者。**调用方负责调**
 	cancel func()
 }
 
@@ -79,13 +80,45 @@ type Service struct {
 }
 
 type subscription struct {
-	ch     chan Event
+	ch chan Event
+	// closed 只是「已退订」的信号，让还在遍历的广播立刻跳过
 	closed chan struct{}
 	once   sync.Once
+
+	// mu 护住 gone 与 ch。**关掉事件流与往里投递必须互斥**——
+	// 否则一个广播可能刚检查完「没退订」、关流就发生，于是它往一个已关闭的
+	// channel 发送，直接 panic。
+	mu   sync.Mutex
+	gone bool
 }
 
+// close 退订并**关闭事件流**，让消费方的 `for range` 结束。
 func (sub *subscription) close() {
-	sub.once.Do(func() { close(sub.closed) })
+	sub.once.Do(func() {
+		close(sub.closed)
+
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		sub.gone = true
+		close(sub.ch)
+	})
+}
+
+// trySend 非阻塞投递。已退订就**什么也不做**——不投递、也不往已关闭的流上写。
+//
+// 返回 false 表示队列满了（消息被丢弃，已记日志）。
+func (sub *subscription) trySend(event Event) bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.gone {
+		return true // 退订不是「丢消息」，是「没人要了」
+	}
+	select {
+	case sub.ch <- event:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewService 造一个空接缝。
@@ -357,6 +390,9 @@ func (s *Service) accountChannelsLocked(accountID string) string {
 //
 // **顺序要紧：先 Subscribe 再 StartAll。** 反过来会有一个丢消息的窗口——
 // 渠道一开收就可能来消息，而那时还没有订阅者。所以 StartAll 不在这里自动调。
+//
+// 消费方写成 `for event := range sub.C`：退订或 StopAll 时事件流会被关闭，
+// 这个循环自然结束——**这是消费 goroutine 能退出的唯一办法**。
 func (s *Service) Subscribe() *Subscription {
 	sub := &subscription{ch: make(chan Event, inboundQueueSize), closed: make(chan struct{})}
 
@@ -377,25 +413,15 @@ func (s *Service) broadcast(channel Channel, message InboundMessage) {
 	s.mu.RUnlock()
 
 	for _, sub := range subs {
-		// **先判退订，再投递**。写成单个 select 的话，「已退订」与「队列有空间」
-		// 同时就绪时 Go 会**随机挑一个** —— 于是退订的订阅者仍会收到消息，
-		// 而它的 goroutine 已经没了，这条消息就永远躺在缓冲区里。
-		select {
-		case <-sub.closed:
+		if sub.trySend(event) {
 			continue
-		default:
 		}
-
-		select {
-		case sub.ch <- event:
-		default:
-			// **队列满**：宁可吵一点也不阻塞收包循环。消息代理丢消息是不能接受的
-			// 默认行为，所以一定要留下痕迹
-			config.Log().Warn("入站队列已满，丢弃一条消息", config.Context{
-				"channel": channel.ID(), "account": channel.AccountID(),
-				"messageId": message.MessageID, "queue": inboundQueueSize,
-			})
-		}
+		// **队列满**：宁可吵一点也不阻塞收包循环。消息代理丢消息是不能接受的
+		// 默认行为，所以一定要留下痕迹
+		config.Log().Warn("入站队列已满，丢弃一条消息", config.Context{
+			"channel": channel.ID(), "account": channel.AccountID(),
+			"messageId": message.MessageID, "queue": inboundQueueSize,
+		})
 	}
 }
 

@@ -2,10 +2,11 @@
 //
 // ## 子命令
 //
-//	ask    无头跑一轮工具循环问答（不经过微信）。**现在唯一能端到端验证 agent 的入口**
+//	ask    无头跑一轮工具循环问答（不经过渠道）
 //	tools  列出模型现在能看到的工具与五类放行情况
+//	serve  常驻：接渠道、收消息、跑问答
 //
-// 之后的子命令（serve / mcp-docs / mcp-memory / doctor / db / search …）按层补。
+// 之后的子命令（doctor / db / channels …）按层补。
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/zjzhang-cn/fka-go/internal/app"
+	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
@@ -51,6 +53,8 @@ func run(args []string) int {
 		return runAsk(ctx, args[1:])
 	case "tools":
 		return runTools(ctx, args[1:])
+	case "serve":
+		return runServe(ctx, args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return exitOK
@@ -62,7 +66,9 @@ func run(args []string) int {
 }
 
 // build 装配一份 app。**每个子命令自己装**——CLI 不常驻，装一次就扔。
-func build() *app.App { return app.Build(app.Options{}) }
+func build(providers ...channels.Provider) *app.App {
+	return app.Build(app.Options{ChannelProviders: providers})
+}
 
 func printUsage() {
 	fmt.Fprint(os.Stderr, `fka —— 通用 agent
@@ -70,6 +76,7 @@ func printUsage() {
 用法：
   fka ask <问题>        无头跑一轮工具循环问答
   fka tools [--json]    列出模型现在能看到的工具与五类放行情况
+  fka serve             常驻：接渠道、收消息、跑问答
   fka help              本帮助
 
 fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安装根>/skills 下的技能。
