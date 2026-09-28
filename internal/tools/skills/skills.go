@@ -223,6 +223,23 @@ func NewSource(dirs []string) tools.Source {
 	return &source{dirs: dirs, warnedDirs: map[string]bool{}}
 }
 
+// Discover 找出这些目录里有哪些技能。
+//
+// **给 `fka tools` 用的**：想确认配置时，看到的应该是「有哪些技能」，
+// 而不只是「有个工具能去查它们」——后者回答不了「我那个技能生效了吗」。
+//
+// 单独一个函数而不是复用 source：source 是**带缓存的状态**（为了每轮不重扫盘），
+// 而这里要的只是一次性的快照。
+func Discover(dirs []string) []Skill {
+	if len(dirs) == 0 {
+		dirs = ResolveDirs()
+	}
+	// 复用 source 的扫描与解析，保证**和模型看到的是同一份**——
+	// 两条路径各自扫一遍的话，改了目录大小写之类的情况两边会对不上。
+	// 刚造出来的 source 没有任何并发，直接 load 即可
+	return NewSource(dirs).(*source).load()
+}
+
 func (s *source) ID() string    { return "skills" }
 func (s *source) Label() string { return "技能" }
 

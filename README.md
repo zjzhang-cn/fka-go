@@ -76,14 +76,55 @@ FKA_HOME=/path/to/fka ./bin/fka serve
 
 **MCP 工具一律是 `external` 类**，要显式放行：`LLM_TOOL_EFFECTS=read,external`。
 
-`FKA_HOME` 指向安装根（`data/`、`logs/`、`.env`、`mcp.json`、`skills/` 都按它解析）。
-不设时取**可执行文件所在目录**——静态二进制的天然锚点，跨机器拷贝后仍然自洽。
+### 安装根（先看这个，否则找不到文件）
+
+`data/`、`logs/`、`.env`、`mcp.json`、`skills/` 全都按同一个**安装根**解析。规则只有一条：
+
+```
+安装根 = $FKA_HOME
+       ↓ 没设的话
+       = 可执行文件所在目录
+```
+
+**「可执行文件所在目录」这件事很容易踩。** 二进制在 `bin/` 里，于是安装根就成了 `bin/`：
+
+| 你怎么跑 | 安装根 | 技能目录 |
+|---|---|---|
+| `make serve` / `make login`（**推荐**） | 仓库根（Makefile 把 `FKA_HOME` 设成 `$(CURDIR)`） | `go/skills/` |
+| `FKA_HOME=/path/to/x ./bin/fka serve` | `/path/to/x` | `/path/to/x/skills/` |
+| `./bin/fka serve`（不设 `FKA_HOME`） | `go/bin/` | **`go/bin/skills/`** |
+
+第三行是绝大多数「我的技能怎么不生效」的来源：**直接跑二进制和走 Makefile 读的是两个不同的目录。**
+不确定当前是哪个时，`make help` 的第一行会打印 `FKA_HOME=<实际值>`。
+
+装到 `/usr/local` 时同理：`make install` 装完之后 `fka` 的安装根是 `/usr/local/bin`，
+所以配置与技能要放 `/usr/local/bin/` 下面，或者干脆 `export FKA_HOME=/etc/fka`。
 
 ### 技能
 
-往 `<安装根>/skills/<名字>/SKILL.md` 放一份操作说明即可，**改完不用重启**。
+往 `<安装根>/skills/<名字>/SKILL.md` 放一份操作说明即可，**改完不用重启**——
+扫描每次都先看一眼目录，变了才重新读盘。
+
 `FKA_SKILLS_DIR` 可以给多个目录（系统路径分隔符隔开），**同名技能后者覆盖前者**。
 技能格式与多目录覆盖规则见 `internal/tools/skills/skills.go` 的文件头注释。
+
+`skills__list` 与 `skills__load` **无条件注册**——目录空的时候它们也在，
+`list` 返 `[]`（空列表是合法答案，不是失败），`load` 会把该放哪的目录说清楚。
+所以「技能列表是空的」是正常状态，不是没装好。
+
+`./fka tools` 会**直接列出发现到的技能**（名字 + 目录名 + 说明），不只是那两个
+查技能的工具——因为「我改了 skills/ 目录，它怎么没反应」是最常见的一类问题，
+而 `skills__list` 的存在只说明「有个办法能查」，回答不了「生效了吗」：
+
+```
+── 技能（发现到的）
+   备份照片        <backup>        把手机里的照片归档到 NAS
+   报销流程        <photo-album>   走完报销的每一步
+   来自：/path/to/fka/skills
+```
+
+**目录名也打出来**，因为 front matter 里的 `name` 可能与目录名不同，而
+`skills__load` 两个都认。`--json` 里也有（`skills` 与 `skills_dirs` 两个字段）。
 
 ---
 
