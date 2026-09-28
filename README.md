@@ -18,11 +18,16 @@ channel 接缝已就位、**iLink provider 还没写**。
 ## 快速开始
 
 ```bash
-go build ./...
-go test ./...
-CGO_ENABLED=0 go build -o bin/fka        ./cmd/fka      # 主程序
-CGO_ENABLED=0 go build -o bin/fka-memory ./mcp/memory   # 记忆 MCP server
+make build      # 构建全部（零 CGO）
+make test       # 全部测试
+make verify     # 提交前的闸门：fmt-check → vet → test → build → smoke
+make help       # 全部目标
 ```
+
+**`make verify` 是提交前该跑的那一条。** 里面的 `smoke` 会在**隔离的临时目录**里
+装一个技能与一个 MCP server，然后断言 `fka tools` 真的列出了它们——因为「技能
+读到了吗」「server 连上了吗」这两件事**静默失败时从界面上看不出来**：工具列表
+就是空的，而你没法区分「没配」与「配了但没生效」。
 
 ```bash
 # 列出模型现在能看到的工具与五类放行情况

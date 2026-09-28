@@ -7,6 +7,20 @@ bin/
 *.out
 coverage.html
 
+# ── 本机数据。**里面有凭证，绝不能入库** ──────────────────
+#
+# .env         ILINK_ACCOUNT_*_BOT_TOKEN、LLM_API_KEY
+# mcp.json     MCP 服务器配置，env / headers 里可能有密钥
+# data/        SQLite 记忆库 + 游标
+# logs/        按天轮转的运行日志（会含用户消息内容）
+.env
+.env.*
+!.env.example
+mcp.json
+data/
+logs/
+.smoke/
+
 # 编辑器与系统
 .DS_Store
 .idea/

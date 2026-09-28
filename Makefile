@@ -1,0 +1,259 @@
+# fka-go 的开发入口。
+#
+# ## 为什么是 Makefile 而不是 npm scripts / justfile
+#
+# Go 项目自带 `go build` / `go test`，**再套一层任务运行器只是换一种写法**。
+# 而这里真正需要固化的不是「怎么编译」（一行 go build 谁都会），是**三件容易
+# 漏、漏了要花很久才发现的事**：
+#
+#   1. **零 CGO**。这是硬约束（`decisions.md` 有一条专门讲它），而漏了不会有
+#      任何报错——只会产出一个在别的机器上跑不起来的二进制。所以每个构建目标
+#      都显式带 CGO_ENABLED=0，而不是靠环境变量。
+#   2. **先 fmt-check 再 vet 再 test**。顺序错了的话，vet 会在 gofmt 之前就
+#      报一堆噪音，把真正的问题埋掉。
+#   3. **gofmt -l 的输出为空才算过**。`gofmt -w` 顺手改了文件还返回 0，
+#      所以「跑一下 gofmt」根本检查不出格式问题。
+#
+# ## 目标分三层
+#
+#   make            = help，列出全部
+#   make dev-*      日常开发（build / test / fmt / smoke）
+#   make verify     **提交前的闸门**，也是 CI 该跑的那一条
+#   make real-*     需要真机 / 真账号的
+
+.DEFAULT_GOAL := help
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+# ── 变量 ────────────────────────────────────────────────
+
+# 安装根。`.env` / `data/` / `logs/` / `skills/` / `mcp.json` 全按它解析。
+#
+# 默认取仓库根——静态二进制的天然锚点：不设 FKA_HOME 时程序会退化成
+# 「可执行文件所在目录」，那会让 `bin/fka` 把配置读成 `bin/.env`，
+# 而你在仓库根找 `.env` 找不到。
+FKA_HOME ?= $(CURDIR)
+export FKA_HOME
+
+BIN        := $(FKA_HOME)/bin
+FKA        := $(BIN)/fka
+FKA_MEMORY := $(BIN)/fka-memory
+
+# 零 CGO 硬约束。**每个构建目标都显式带上**，不靠外部环境变量——
+# 靠环境变量的话，一次 `CGO_ENABLED=1 make` 就悄悄破了这个约束。
+export CGO_ENABLED := 0
+
+GO      ?= go
+GOFLAGS ?=
+
+# 冒烟用的临时安装根与输出。**必须隔离**：冒烟要写 .env / data / logs，
+# 而那些是你的真实数据。
+smoke_dir     = $(CURDIR)/.smoke
+smoke_home    = $(smoke_dir)/home
+smoke_log     = $(smoke_dir)/serve.log
+
+.DEFAULT_GOAL := help
+
+# 颜色只在 TTY 下用，否则重定向进文件时满屏转义序列
+BOLD  := $(shell [ -t 1 ] && printf '\033[1m' || printf '')
+DIM   := $(shell [ -t 1 ] && printf '\033[2m' || printf '')
+RESET := $(shell [ -t 1 ] && printf '\033[0m' || printf '')
+
+.PHONY: help
+help: ## 列出全部目标
+	@echo "$(BOLD)fka-go$(RESET)  $(DIM)FKA_HOME=$(FKA_HOME)$(RESET)"
+	@echo
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| sort \
+		| awk 'BEGIN {FS = ":.*?## "} {printf "  $(BOLD)%-16s$(RESET) %s\n", $$1, $$2}'
+	@echo
+	@echo "$(DIM)真机验证见 docs/real-machine-test.md（未离线覆盖的部分）$(RESET)"
+
+# ── 构建 ────────────────────────────────────────────────
+
+.PHONY: build
+build: $(FKA) $(FKA_MEMORY) ## 构建全部可执行文件（零 CGO）
+	@echo "$(BOLD)✓$(RESET) $(FKA)"
+	@echo "$(BOLD)✓$(RESET) $(FKA_MEMORY)"
+
+$(FKA): $(shell find cmd internal -name '*.go' 2>/dev/null) go.mod go.sum
+	@mkdir -p $(BIN)
+	$(GO) build $(GOFLAGS) -o $@ ./cmd/fka
+
+# 记忆 MCP server。**它默认建自己的库**（<FKA_HOME>/data/memory.sqlite），
+# 所以 `make build` 之后它不需要任何额外配置就能被 mcp.json 拉起来。
+$(FKA_MEMORY): $(shell find mcp -name '*.go' 2>/dev/null) go.mod go.sum
+	@mkdir -p $(BIN)
+	$(GO) build $(GOFLAGS) -o $@ ./mcp/memory
+
+.PHONY: rebuild
+rebuild: ## 强制重建（改了依赖之后用）
+	@rm -f $(FKA) $(FKA_MEMORY)
+	@$(MAKE) --no-print-directory build
+
+# ── 闸门 ────────────────────────────────────────────────
+
+.PHONY: fmt
+fmt: ## 就地改格式
+	@gofmt -w .
+
+# fmt-check 单列的原因：**`gofmt -w` 顺手改完还返回 0**，
+# 所以「跑一下 gofmt 检查格式」是查不出问题的。必须用 -l 看输出。
+.PHONY: fmt-check
+fmt-check:
+	@unformatted=$$(gofmt -l . 2>/dev/null); \
+	if [ -n "$$unformatted" ]; then \
+		echo "$(BOLD)格式不对：$(RESET)"; echo "$$unformatted"; \
+		echo "跑 make fmt"; exit 1; \
+	fi
+
+.PHONY: vet
+vet: ## go vet
+	$(GO) vet ./...
+
+.PHONY: test
+test: ## 全部测试
+	$(GO) test ./...
+
+.PHONY: test-race
+test-race: ## 带竞态检测的测试。**并发是这里最容易出错的地方**
+	$(GO) test -race ./...
+
+.PHONY: test-count
+test-count: ## 跑两遍。**抓测试之间的顺序依赖与共享状态**
+	$(GO) test -count=2 ./...
+
+.PHONY: cover
+cover: ## 覆盖率
+	$(GO) test -coverprofile=coverage.out ./...
+	$(GO) tool cover -func=coverage.out | tail -1
+
+# verify 是**提交前的闸门**。顺序是有意的：
+# fmt → vet → test → build。先 fmt 是因为后两者的报错里会混进格式噪音。
+.PHONY: verify
+verify: fmt-check vet test build smoke ## 提交前跑这一条就够
+	@echo
+	@echo "$(BOLD)✓ 全部通过$(RESET)"
+
+# ci 比 verify 多两层，都是**单靠一次跑看不出来**的：
+#   - race  并发（长轮询 goroutine、会话状态表）——竞态只在特定时序下出现
+#   - count=2  测试之间的顺序依赖与共享状态
+.PHONY: ci
+ci: verify test-race test-count
+	@echo "$(BOLD)✓ CI 通过$(RESET)"
+
+# ── 冒烟（不碰网络）────────────────────────────────────
+
+# smoke 验证**装配这一层**真的接上了。分两半：
+#
+#   1. 空配置：服务该**明确说**「没有接上渠道」并以 1 退出，而不是安静地
+#      收不到任何消息。
+#   2. 装好：skills 与 MCP server 该真的出现在 `fka tools` 里——**两条能力
+#      来源各验一次**。
+#
+# 刻意**不要求 LLM**：它验的是「装好了没有」，不是「模型答不答得出」。
+# 答得好不好是 real-check 的事。
+.PHONY: smoke
+smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
+	@rm -rf $(smoke_dir); mkdir -p $(smoke_dir)
+	@echo "$(BOLD)── 1. 空配置 ──$(RESET)"
+	@$(FKA) tools | head -3
+	@echo
+	@echo "$(BOLD)── 2. 空配置下 serve 该明确说没有渠道并以 1 退出 ──$(RESET)"
+	@set +e; $(FKA) serve >$(smoke_log) 2>&1; code=$$?; set -e; \
+		if [ $$code -eq 1 ]; then \
+			echo "$(BOLD)✓$(RESET) $$(tail -1 $(smoke_log))"; \
+		else \
+			echo "$(BOLD)✗$(RESET) 退出码 $$code（无账号时该是 1）"; \
+			cat $(smoke_log); exit 1; \
+		fi
+	@echo
+	@echo "$(BOLD)── 3. 装上技能与 MCP server 后该看得到工具 ──$(RESET)"
+	@$(MAKE) --no-print-directory smoke-wiring
+
+# smoke-wiring 单独跑第 3 步。**这是能力链路唯一的自动闸门**——
+# 「技能读到了吗」「MCP server 连上了吗」这两件事，静默失败时从界面上看不出来：
+# 工具列表就是空的，而你没法区分「没配」与「配了但没生效」。
+.PHONY: smoke-wiring
+smoke-wiring: build
+	@rm -rf $(smoke_home)
+	@mkdir -p $(smoke_home)/bin $(smoke_home)/skills/echo
+	@cp $(FKA) $(FKA_MEMORY) $(smoke_home)/bin/
+	@printf -- '---\nname: 回声\ndescription: 复述输入\n---\n原样复述一遍。\n' \
+		> $(smoke_home)/skills/echo/SKILL.md
+	@printf '{"mcpServers":{"memory":{"command":"%s"}}}' \
+		"$(smoke_home)/bin/fka-memory" > $(smoke_home)/mcp.json
+	@FKA_HOME=$(smoke_home) LLM_TOOL_EFFECTS=read,external \
+		$(smoke_home)/bin/fka tools > $(smoke_home)/out.txt 2>&1 || true
+	@cat $(smoke_home)/out.txt
+	@for want in skills__load skills__list mcp__memory__search_memories mcp__memory__remember_memory; do \
+		if grep -q "$$want" $(smoke_home)/out.txt; then \
+			echo "$(BOLD)✓$(RESET) $$want"; \
+		else \
+			echo "$(BOLD)✗$(RESET) 少了 $$want —— 技能目录或 mcp.json 没生效"; \
+			exit 1; \
+		fi; \
+	done
+	@rm -rf $(smoke_home)
+	@echo "$(BOLD)✓$(RESET) 两条能力来源都接上了"
+
+# ── 日常使用 ────────────────────────────────────────────
+
+.PHONY: login
+login: build ## 扫码登录 iLink（凭证写进 <FKA_HOME>/.env，权限 0600）
+	$(FKA) login $(LOGIN_ARGS)
+
+.PHONY: serve
+serve: build ## 常驻：接渠道、收消息、跑问答
+	$(FKA) serve
+
+.PHONY: ask
+ask: build ## 无头问一句：make ask QUESTION="…"
+	@test -n "$(QUESTION)" || { echo "用法：make ask QUESTION=\"...\""; exit 2; }
+	$(FKA) ask $(if $(PRINCIPAL),--principal $(PRINCIPAL),) "$(QUESTION)"
+
+.PHONY: tools
+tools: build ## 列出模型现在能看到的工具
+	$(FKA) tools
+
+# ── 真机（需要真实微信账号）─────────────────────────────
+
+# real-check 是**提交前该跑但跑不了**的那一步的占位：
+# 它明确告诉人「这里还没验过」，而不是让人以为 verify 通过就等于全对。
+.PHONY: real-check
+real-check: ## 真机检查（需要已登录的账号）
+	@if [ ! -f "$(FKA_HOME)/.env" ]; then \
+		echo "还没有 .env。先跑 make login"; exit 2; \
+	fi
+	@if ! grep -q 'ILINK_ACCOUNT_.*_BOT_TOKEN=..' "$(FKA_HOME)/.env"; then \
+		echo ".env 里没有已登录的账号。跑 make login"; exit 2; \
+	fi
+	@echo "$(BOLD)开始真机验证。步骤与每步该看到什么：$(RESET)"
+	@echo "  docs/real-machine-test.md"
+	@echo
+	@echo "$(BOLD)下一步：$(RESET)开另一个终端跑 make serve，"
+	@echo "然后用微信给这个 bot 发一条纯文字消息。"
+
+# ── 清理 ────────────────────────────────────────────────
+
+.PHONY: clean
+clean: ## 删构建产物与覆盖率文件（**不碰 .env / data** —— 那是你的数据）
+	rm -f $(FKA) $(FKA_MEMORY) coverage.out
+	rm -rf $(FKA_HOME)/logs $(smoke_dir)
+
+.PHONY: distclean
+distclean: clean ## 连本机数据一起删（**会丢记忆与游标**）
+	@echo "$(BOLD)这会删掉 $(FKA_HOME)/data —— 记忆库与游标都在里面。$(RESET)"
+	@read -p "确认？输入 yes 继续：" ok; [ "$$ok" = yes ] || { echo "已取消"; exit 1; }
+	rm -rf $(FKA_HOME)/data
+
+# ── 依赖 ────────────────────────────────────────────────
+
+.PHONY: tidy
+tidy: ## 整理依赖
+	$(GO) mod tidy
+
+.PHONY: why
+why: ## 看某个包为什么在：make why PKG=modernc.org/sqlite
+	@test -n "$(PKG)" || { echo "用法：make why PKG=<包名>"; exit 2; }
+	$(GO) mod why $(PKG)
