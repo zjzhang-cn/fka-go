@@ -69,27 +69,95 @@ help: ## 列出全部目标
 	@echo
 	@echo "$(DIM)真机验证见 docs/real-machine-test.md（未离线覆盖的部分）$(RESET)"
 
+# ── 版本 ────────────────────────────────────────────────
+#
+# **能从二进制里查出它是哪个提交的**，比什么都重要：线上出问题时第一句话就是
+# 「你跑的是哪一版」，而答不上来就只能靠猜。
+#
+# 取不到 git 信息时**照常编**（`VERSION=dev`）——构建不该因为没有 .git 而失败，
+# 那会让打包环境（通常是没有历史的一份源码）编不出来。
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# -s -w 去符号表与调试信息（体积约 -25%）；**不牺牲任何运行时能力**。
+# -trimpath 去掉编译机的绝对路径——否则二进制里嵌着你家目录名，
+# 而 panic 栈会把它打出来。
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(DATE)
+GOFLAGS_BUILD := -trimpath -ldflags "$(LDFLAGS)"
+
 # ── 构建 ────────────────────────────────────────────────
 
 .PHONY: build
 build: $(FKA) $(FKA_MEMORY) ## 构建全部可执行文件（零 CGO）
-	@echo "$(BOLD)✓$(RESET) $(FKA)"
-	@echo "$(BOLD)✓$(RESET) $(FKA_MEMORY)"
+	@echo "$(BOLD)✓$(RESET) $(FKA)  $(DIM)$(VERSION)$(RESET)"
+	@echo "$(BOLD)✓$(RESET) $(FKA_MEMORY)  $(DIM)$(VERSION)$(RESET)"
 
 $(FKA): $(shell find cmd internal -name '*.go' 2>/dev/null) go.mod go.sum
 	@mkdir -p $(BIN)
-	$(GO) build $(GOFLAGS) -o $@ ./cmd/fka
+	$(GO) build $(GOFLAGS) $(GOFLAGS_BUILD) -o $@ ./cmd/fka
 
 # 记忆 MCP server。**它默认建自己的库**（<FKA_HOME>/data/memory.sqlite），
 # 所以 `make build` 之后它不需要任何额外配置就能被 mcp.json 拉起来。
 $(FKA_MEMORY): $(shell find mcp -name '*.go' 2>/dev/null) go.mod go.sum
 	@mkdir -p $(BIN)
-	$(GO) build $(GOFLAGS) -o $@ ./mcp/memory
+	$(GO) build $(GOFLAGS) $(GOFLAGS_BUILD) -o $@ ./mcp/memory
 
 .PHONY: rebuild
 rebuild: ## 强制重建（改了依赖之后用）
 	@rm -f $(FKA) $(FKA_MEMORY)
 	@$(MAKE) --no-print-directory build
+
+.PHONY: version
+version: ## 版本信息（进二进制的那份）
+	@echo "version    $(VERSION)"
+	@echo "commit     $(COMMIT)"
+	@echo "buildDate  $(DATE)"
+
+# ── 交叉编译 ────────────────────────────────────────────
+#
+# 零 CGO 换来的好处：**一个 Go 工具链就能出全平台产物**，不需要在每种机器上
+# 各编一遍。纯 Go 依赖（mark3labs / modernc.org/sqlite）让这件事真的成立——
+# 只要有一个包要 cgo，darwin/linux 之外的目标就全废了。
+TARGETS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
+
+.PHONY: release
+release: ## 交叉编译全部平台到 dist/（带 sha256）
+	@rm -rf dist; mkdir -p dist
+	@for target in $(TARGETS); do \
+		goos=$${target%/*}; goarch=$${target#*/}; \
+		out=dist/fka-$${goos}-$${goarch}; \
+		if [ "$$goos" = windows ]; then out=$${out}.exe; fi; \
+		printf '  %-22s' "$$goos/$$goarch"; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 \
+			$(GO) build $(GOFLAGS_BUILD) -o $$out ./cmd/fka || exit 1; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 \
+			$(GO) build $(GOFLAGS_BUILD) -o $${out%.exe}-memory \
+			./mcp/memory || exit 1; \
+		echo "✓"; \
+	done
+	@cd dist && shasum -a 256 ./* > SHA256SUMS
+	@echo "$(BOLD)✓$(RESET) $$(ls dist | grep -c -v SHA256SUMS) 个产物 + SHA256SUMS"
+
+# ── 安装 ────────────────────────────────────────────────
+#
+# 装到 PREFIX 而不是就地覆盖：**装出去的 fka 与仓库里的源码是两个东西**，
+# 而 FKA_HOME 默认取「可执行文件所在目录」——把二进制拷进仓库根会让
+# `.env` / `data/` / `logs/` 的解析位置悄悄变掉。
+PREFIX ?= /usr/local
+
+.PHONY: install
+install: build ## 装到 PREFIX（默认 /usr/local）
+	@install -d $(DESTDIR)$(PREFIX)/bin
+	@install -m 0755 $(FKA) $(FKA_MEMORY) $(DESTDIR)$(PREFIX)/bin/
+	@echo "$(BOLD)✓$(RESET) 装到 $(DESTDIR)$(PREFIX)/bin"
+	@echo "  注意：fka 默认拿可执行文件所在目录当安装根，"
+	@echo "       所以配置请放 $(DESTDIR)$(PREFIX)/bin/$(BOLD).env$(RESET)，或用 FKA_HOME 指过去。"
+
+.PHONY: uninstall
+uninstall: ## 从 PREFIX 卸掉
+	@rm -f $(DESTDIR)$(PREFIX)/bin/fka $(DESTDIR)$(PREFIX)/bin/fka-memory
+	@echo "$(BOLD)✓$(RESET) 已卸载（配置与 data 保留）")
 
 # ── 闸门 ────────────────────────────────────────────────
 

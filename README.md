@@ -21,8 +21,24 @@ channel 接缝已就位、**iLink provider 还没写**。
 make build      # 构建全部（零 CGO）
 make test       # 全部测试
 make verify     # 提交前的闸门：fmt-check → vet → test → build → smoke
+make release    # 交叉编译 6 个平台到 dist/（带 sha256）
+make install    # 装到 PREFIX（默认 /usr/local）
 make help       # 全部目标
 ```
+
+**`fka version` 能查出二进制是哪一版编的**，还能验证零 CGO 那条硬约束：
+
+```
+$ fka version
+1d327d5-dirty
+commit:    1d327d5
+built:     2026-09-28T14:46:22Z
+channel:   darwin/arm64
+cgo:       off
+```
+
+cgo 那行靠 build tag 判定（`CGO_ENABLED=0` 时 cgo 包根本不编译，运行时问不出来），
+所以它**只可能来自构建方式，不可能来自运行时猜测**。
 
 **`make verify` 是提交前该跑的那一条。** 里面的 `smoke` 会在**隔离的临时目录**里
 装一个技能与一个 MCP server，然后断言 `fka tools` 真的列出了它们——因为「技能

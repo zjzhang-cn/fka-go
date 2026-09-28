@@ -1,11 +1,18 @@
 // Command fka 是这个 agent 的入口。
 //
+// ## 版本信息由构建时注入
+//
+// 下面三个变量由 `make build` 通过 -ldflags -X 写进来。**给它们默认值是刻意的**：
+// `go build ./...`（不��� Makefile）也能编，编出来的版本是 dev——
+// 而「编出来了但版本说不清」比「编不出来」更难查。
+//
 // ## 子命令
 //
 //	ask    无头跑一轮工具循环问答（不经过渠道）
 //	tools  列出模型现在能看到的工具与五类放行情况
 //	serve  常驻：接渠道、收消息、跑问答
 //	login  扫码登录渠道账号
+//	version  版本、提交、构建时间
 //
 // 之后的子命令（doctor / db / channels …）按层补。
 package main
@@ -15,11 +22,19 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/zjzhang-cn/fka-go/internal/app"
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/config"
+)
+
+// 由 `make build` 通过 -ldflags -X 注入。默认值给 `go build` 直编的人用。
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
 )
 
 func main() {
@@ -58,6 +73,8 @@ func run(args []string) int {
 		return runServe(ctx, args[1:])
 	case "login":
 		return runLogin(ctx, args[1:])
+	case "version":
+		return runVersion()
 	case "help", "-h", "--help":
 		printUsage()
 		return exitOK
@@ -81,6 +98,7 @@ func printUsage() {
   fka tools [--json]    列出模型现在能看到的工具与五类放行情况
   fka serve             常驻：接渠道、收消息、跑问答
   fka login [--account N]  扫码登录（不给就用第一个空槽位）
+  fka version           版本信息
   fka help              本帮助
 
 fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安装根>/skills 下的技能。
@@ -89,4 +107,28 @@ LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要�
 
   fka ask --principal <身份> --session <会话> "…"
 `)
+}
+
+// runVersion 打版本信息。
+//
+// **第一行是纯版本号、后面才是提交与日期**——那是为了让人能直接
+// `fka version | head -1` 拿去比对，或在 CI 里 grep。
+func runVersion() int {
+	fmt.Println(version)
+	fmt.Println("commit:    " + commit)
+	fmt.Println("built:     " + buildDate)
+	fmt.Println("channel:   " + runtime.GOOS + "/" + runtime.GOARCH)
+	fmt.Println("cgo:       " + cgoFlag())
+	return exitOK
+}
+
+// cgoFlag 这个二进制是不是带 cgo 编的。
+//
+// **零 CGO 是硬约束**，而它平时不会以任何形式冒出来——直到某天在别的机器上
+// 跑不起来。所以让它能被问出来。实际取值由 build tag 决定，见 cgo_on/off.go。
+func cgoFlag() string {
+	if cgoEnabled {
+		return "on  ← 不该是 on"
+	}
+	return "off"
 }
