@@ -71,7 +71,7 @@ Node 版里，权限过滤**不是约定，是机制**：
 3. **本文件与 `README.md` 顶部都置顶。**
 
 4. **每个 server 的每个工具都必须自己按 viewer 过滤，且留在 WHERE 里。**
-   `mcp/memory/server.go` 与（待建）`mcp/docs/server.go` 里那句
+   `mcp/memory/server.go` 与 `mcp/memory/internal/store/db.go` 里那句
    `(visibility = ? OR owner_wxid = ?)` 是**唯一的数据防线**。这不是风格问题。
 
 > 提示词这一层是**降低概率**，不是**消除风险**。它挡得住无心之失，挡不住精心构造的注入。

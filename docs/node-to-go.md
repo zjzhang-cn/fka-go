@@ -26,7 +26,7 @@
 | `tools/{types,policy,registry,plugin}.ts` | `internal/tools` | ✅ |
 | `tools/mcp/{client,config,index}.ts` | `internal/tools/mcp` | ✅ **换 SDK** |
 | `tools/memory/index.ts` | `mcp/memory` | ✅ **搬成独立可执行程序** |
-| `tools/builtin/` | `mcp/docs` | ⬜ |
+| `tools/builtin/` | （已不需要） | — |
 | `tools/skills/` | ⬜ |
 | `memory/` | `mcp/memory` | 部分 |
 | `vector/` + `embedding/` | ⬜ | **换实现**（手写薄层 + 只有云端嵌入） |
@@ -73,7 +73,7 @@
 **Node：** `tools/memory/` 与 `tools/builtin/` 是进程内的 `ToolSource`，直接调
 `Database` 端口与 `MemoryBackend`。
 
-**Go：** `go/mcp/memory/`、`go/mcp/docs/` 是**独立的可执行程序**（`package main`，
+**Go：** `go/mcp/memory/` 是**独立的可执行程序**（`package main`，
 各自出二进制），由主程序从 `mcp.json` 当子进程拉起。
 
 **为什么：** 决定——内部记忆与文档管理都用 MCP 实现。主程序因此**不再直接碰

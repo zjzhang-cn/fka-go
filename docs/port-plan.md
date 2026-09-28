@@ -6,8 +6,10 @@
 
 ## 当前状态
 
-**Agent 侧（循环 / LLM / 放行 / MCP client / 技能 / 渠道接缝）与 MCP 侧（记忆 + 文档两个
-server + 存储 + NAS）都已端到端可用，两侧之间只有 `mcp.json` 一个接口。**
+**Agent 侧（循环 / LLM / 放行 / MCP client / 技能 / 渠道接缝）与记忆 MCP server 都已端到端可用，
+两侧之间只有 `mcp.json` 一个接口。**
+
+**记忆 server 自给自足**：表、schema、迁移、日志、默认库文件全归它自己，不与任何人共享一行代码。
 
 **agent 自己不拥有任何数据。** 它的能力只有两条来源：MCP server 与 skill。
 
@@ -41,10 +43,8 @@ fka ask "记一条：2026年3月全家去了三亚"
 | **技能源** | `internal/tools/skills` | 16 | 极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录不声明工具 |
 | **渠道接缝** | `internal/channels` | 14 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；两个 server 自成一体 |
 | **MCP 侧边界** | `mcp` | 2 | `mcp/**` 不许 import `fka-go/internal/**`（编译器管不到，由测试守）；两个 server 必须都是 `main` 包 |
-| **存储 + 迁移** | `mcp/internal/store` | 8 | **真库认领 v0→v1，330 条消息一行未动**；认领失败不重建 |
+| **记忆存储 + 迁移** | `mcp/memory/internal/store` | 10 | **认领老库 v0→v1，一行不动**；认领失败**绝不重建**；共用库时只认自己那张表 |
 | **记忆 MCP server** | `mcp/memory` | — | 独立可执行程序，3 步端到端落库 |
-| **NAS 布局** | `mcp/internal/nas` | 24 | 冒号/扩展名/字节截断/标记行定位，路径推导与往返 |
-| **文档 MCP server**（只读） | `mcp/docs` | 14 | **权限过滤按 viewer**（属主/他人/陌生人三种身份）、前缀歧义给候选、语义模式如实说不可用 |
 
 ### ⬜ 未开始
 
@@ -55,11 +55,10 @@ fka ask "记一条：2026年3月全家去了三亚"
 | 1 | **文档转换** | nas + docker | parsers 接缝（按扩展名路由、显式优先 `*` 兜底、重叠拒绝启动）；PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、`--network=none`、只看 exit code）；SCNet 异步 OCR；ExifTool 走系统命令 |
 | 2 | **切片 + 嵌入 + 向量薄层** | 文档转换 | 切片、SCNet 嵌入（batch ≤5、按 index 重排、429/5xx 退避）、手写向量层（暴力余弦 + 阈值）。**阈值必须重标** |
 | 3 | **混合检索** | 上面 | 全文扫 `extracted/*.md` + 向量；关键词之间是「且」；`LIKE` 通配符要转义 |
-| 4 | **文档 MCP server**（归档 + send + delete） | 上面 | 决定 8 要求归档流水线一起搬：去重 → 落盘 → 转换 → 入库 → 索引 |
-| 5 | **消息处理** | 上面 | `classify()` 五意图（顺序：文件 > 图片 > 命令 > 提问 > 说明）+ `handleInbound` 穷尽分发 + 批注 + 命令 |
-| 6 | **iLink provider** | **渠道接缝（已有）** | 接缝已就位，**provider 还没写**：13 个协议文件；goroutine 代替 worker；真机验证。业务层不 import 具体渠道 |
-| 7 | **装配 + 常驻** | 上面 | 接缝进 `internal/app` 与 `serve` 子命令；订阅 → `agent.Run` 的那条链路 |
-| 8 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
+| 4 | **消息处理** | 上面 | `classify()` 五意图（顺序：文件 > 图片 > 命令 > 提问 > 说明）+ `handleInbound` 穷尽分发 + 批注 + 命令 |
+| 5 | **iLink provider** | **渠道接缝（已有）** | 接缝已就位，**provider 还没写**：13 个协议文件；goroutine 代替 worker；真机验证。业务层不 import 具体渠道 |
+| 6 | **装配 + 常驻** | 上面 | 接缝进 `internal/app` 与 `serve` 子命令；订阅 → `agent.Run` 的那条链路 |
+| 7 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
 
 ---
 
@@ -80,7 +79,9 @@ fka ask "记一条：2026年3月全家去了三亚"
 | 不变量 | 在哪 | 破了会怎样 |
 |---|---|---|
 | 权限过滤在 SQL 的 `WHERE` 里，不在查完再筛 | `mcp/internal/store` 每个查询 | 别人的 private 数据进结果 |
-| **`mcp/**` 不许 import agent 的 `internal/**`** | `mcp/boundary_test.go` | server 与 agent 绑死，不再是「能单独换掉的能力」（**编译器管不到这条**） |
+| **`mcp/memory/**` 不许 import 树外的包** | `mcp/memory/boundary_test.go` | server 与 agent 绑死，不再是「能单独换掉的能力」（**编译器管不到这条**） |
+| **认领失败绝不重建** | `mcp/memory/internal/store` | 重建会「修好」错误，代价是数据没了——用户看到安静的库，不是事故 |
+| **认领只核对自己的表** | 同上 | 别人的 schema 变动不该让我拒绝启动 |
 | 未放行的工具**不告诉模型** | `tools/registry` | 模型以为工具「暂时不可用」，换名字再试，白烧一轮 |
 | 两种「没有」是不同的话：名字错了 vs 权限门 | `tools/registry` | 部署的人查错方向——以为工具不存在，实际是没打开 |
 | 工具调用后的失败**变成一句话喂回**，不抛 | `agent/loop` | 模型看不到失败，就不会换个方式再试 |

@@ -1,25 +1,28 @@
-// Package store 是 SQLite 存储层：建库、迁移、三张表的读写。
+// Package store 是这个 server 自己的 SQLite 存储层：建库、迁移、`memories` 一张表的读写。
+//
+// ## 自己管自己
+//
+// 这里的库**只归这个 server 管**：它建哪张表、迁到哪个版本、认领什么样的旧库，
+// 全部由这份代码说了算。别的 server 加字段、改 schema、甚至整个换掉，都不会
+// 让这个 server 拒绝启动——反过来也一样。
 //
 // ## 为什么有迁移（Node 版没有）
 //
 // Node 版的做法是「schema 直建 + 结构指纹 + 不匹配就整库重建（旧库改名 .bak）」。
 // 那是**开发阶段**的合理选择——数据随时可以丢。但对已经跑起来的库，它意味着：
-// **每加一个字段，用户的数据就重建一次**。`documents.annotations` 就是这么加上去的。
+// **每加一个字段，用户的数据就重建一次**。
 //
 // Go 版把「今天那份 schema」定为 **v1**，用 SQLite 自带的 `PRAGMA user_version` 记账：
 //
 //   - 加一列 = 加一条 v2 迁移（`ALTER TABLE ... ADD COLUMN`），**不丢数据**；
-//   - 现有库（Node 版建的、user_version=0）走**认领**路径：逐列核对结构，对得上就
-//     打上 v1，对不上就**明确报错**而不是猜；
-//   - 服务启动时若有待迁移就**拒绝启动**，把话说清楚，而不是凑合跑。
+//   - 现有库（Node 版建的、user_version=0）走**认领**路径：逐列核对 `memories`，
+//     对得上就���上 v1，对不上就**明确报错**而不是猜；
+//   - 启动时若有待迁移就**拒绝启动**，把话说清楚，而不是凑合跑。
 //
 // ## 为什么用 user_version 而不是自建 __migrations 表
 //
 // user_version 是 SQLite 自己的字段，**在事务里一起提交或一起回滚**，不需要额外
 // 保证「台账和数据同生共死」。而自建台账表在「台账写成功但数据没改」时会永久不一致。
-//
-// **注意**：`__schema`（Node 版留的结构指纹表）不再被使用。指纹是「结构是否一致」的
-// 代理指标，而 version 是**事实本身**——它不会因为 DDL 文本改写而误报。
 package store
 
 import (
@@ -27,13 +30,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	_ "modernc.org/sqlite" // 纯 Go 驱动，零 CGO
+
+	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/log"
 )
 
 // ErrNeedsMigration 库落后于当前代码。Hint 说明该做什么。
@@ -45,7 +49,7 @@ type ErrNeedsMigration struct {
 }
 
 func (e *ErrNeedsMigration) Error() string {
-	return fmt.Sprintf("数据库结构落后：现在是 v%d，代码要 v%d（%s）。跑 `fka doctor --fix` 升级，旧数据保留。",
+	return fmt.Sprintf("数据库结构落后：现在是 v%d，代码要 v%d（%s）。用 --db 指向的库需要先升级，旧数据保留。",
 		e.From, e.To, e.Pending)
 }
 
@@ -56,13 +60,12 @@ type ErrShapeMismatch struct {
 }
 
 func (e *ErrShapeMismatch) Error() string {
-	return fmt.Sprintf("这份数据库不是当前代码认识的版本：%s。它可能来自更早的 Node 版结构，"+
-		"而 Go 版的第一条迁移就以今天的结构为 v1。请先用 Node 版确认结构，或手工处理 %s。",
-		e.Reason, e.Path)
+	return fmt.Sprintf("这份数据库里的 memories 表不是当前代码认识的版本：%s。"+
+		"它可能来自更早的 Node 版结构，而本 server 的第一条迁移就以今天的结构为 v1。",
+		e.Reason)
 }
 
-// Open 打开（必要时创建）库。**不跑迁移**——建库与迁移是分开的一步，
-// 让「只读命令在还没建库时按空处理」成为可能（见 ReadState）。
+// Open 打开（必要时创建）库。**不跑迁移**——建库与迁移是分开的一步。
 func Open(path string) (*sql.DB, error) {
 	if path != ":memory:" && !strings.HasPrefix(path, "file:") {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -77,7 +80,7 @@ func Open(path string) (*sql.DB, error) {
 
 	// **连接池限制为 1**：SQLite 写是全库串行的，而 WAL 允许多读一写。多连接会让
 	// 「开始一个事务」和「用另一条连接写」撞上，表现为 SQLITE_BUSY 而不是逻辑错。
-	// 家用规模（几百份文档）下串行完全够，而稳定性值这个价。
+	// 家用规模下串行完全够，而稳定性值这个价。
 	db.SetMaxOpenConns(1)
 
 	if err := db.Ping(); err != nil {
@@ -87,7 +90,7 @@ func Open(path string) (*sql.DB, error) {
 
 	// WAL 让「服务在写、CLI 在读」互不阻塞。:memory: 与 file: URI 不支持
 	if !strings.HasPrefix(path, ":memory:") && !strings.HasPrefix(path, "file:") {
-		for _, pragma := range []string{"PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON", "PRAGMA busy_timeout = 5000"} {
+		for _, pragma := range []string{"PRAGMA journal_mode = WAL", "PRAGMA busy_timeout = 5000"} {
 			if _, err := db.Exec(pragma); err != nil {
 				_ = db.Close()
 				return nil, fmt.Errorf("设置 %s 失败：%w", pragma, err)
@@ -108,7 +111,7 @@ func dsn(path string) string {
 }
 
 // ReadState 读库与代码的差距。**永不返错**——库打不开正是「要升级/重建」的适用场景，
-// 抛出去只会让体检崩掉，而那时用户最需要的就是那张体检表。
+// 抛出去只会让启动崩掉，而那时用户最需要的就是那一句清楚的话。
 type ReadState struct {
 	Path string
 	// Exists 库文件在不在
@@ -121,11 +124,11 @@ type ReadState struct {
 	Pending string
 	// Error 库打不开时的原因
 	Error string
-	// Tables 实际有哪些业务表
+	// Tables 实际有哪些业务表。**可能有本 server 不拥有的表**（共用库文件时）
 	Tables []string
-	// Adoptable 这份库能否被认领为 v1（结构逐列对得上）
+	// Adoptable 这份库能否被认领为 v1（`memories` 逐列对得上）
 	Adoptable bool
-	// Fresh 一个表都没有 —— 全新库
+	// Fresh 一张业务表都没有 —— 全新库
 	Fresh bool
 }
 
@@ -136,8 +139,8 @@ func (s ReadState) Current() bool { return s.Error == "" && s.Pending == "" && s
 //
 // 三条路径：
 //   - 全新库（没有一张业务表）→ 跑 v1 起全部迁移；
-//   - user_version=0 但有表（Node 版的库）→ **认领**：逐列核对，对得上就打 v1，
-//     对不上返 ErrShapeMismatch（不猜、不重建）；
+//   - user_version=0 但有表（Node 版建的）→ **认领**：逐列核对 `memories`，
+//     对得上就打 v1，对不上返 ErrShapeMismatch（不猜、不重建）；
 //   - 已有 version → 逐条跑高于它的迁移，每条一个事务。
 func Migrate(ctx context.Context, path string) (ReadState, error) {
 	state := ReadState{Path: path, Latest: LatestVersion()}
@@ -178,7 +181,7 @@ func Migrate(ctx context.Context, path string) (ReadState, error) {
 		state.Version = 1
 		version = 1
 		log.Log().Info("已认领现有数据库为 v1", log.Context{
-			"path": path, "tables": strings.Join(tables, "、"),
+			"path": path, "memories": "结构对得上", "tables": strings.Join(tables, "、"),
 		})
 	}
 
@@ -189,6 +192,14 @@ func Migrate(ctx context.Context, path string) (ReadState, error) {
 		}
 	}
 
+	// **迁移完再读一次表清单。** 上面那次是迁移前读的，对全新库来说那时一张表
+	// 都没有——返回一份「迁移完的库是空的」的状态，比不返回更坏：调用方会照着
+	// 它以为迁移没生效。
+	if tables, err := businessTables(ctx, db); err == nil {
+		state.Tables = tables
+		state.Fresh = len(tables) == 0
+	}
+
 	state.Version = LatestVersion()
 	state.Pending = ""
 	return state, nil
@@ -196,7 +207,7 @@ func Migrate(ctx context.Context, path string) (ReadState, error) {
 
 // applyMigration 在**一个事务**里跑一条迁移。
 //
-// 事务是必须的：一条迁移里有两条语句时（加列 + 建索引），中途失败会留下半截结构，
+// 事务是必须的：一条迁移里有两条语句时（建表 + 建索引），中途失败会留下半截结构，
 // 而 version 已经推进——那是最难查的一类不一致。
 func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 	tx, err := db.BeginTx(ctx, nil)
@@ -219,87 +230,6 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 	return nil
 }
 
-// AssertCurrent 服务启动时的校验：库必须存在、且已跟上代码。
-//
-// **不一致就拒绝启动**，而不是凑合跑：新代码配旧结构是这个项目里最不容易看见的
-// 一类故障（写入被约束挡下、读取少一列），症状往往出现在很远的地方。启动时一句话
-// 说清，比事后从日志里猜强得多。
-func AssertCurrent(ctx context.Context, path string) error {
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("还没建库。先跑 `fka doctor --fix` 建库")
-		}
-		return fmt.Errorf("数据库打不开（%s）：%w", path, err)
-	}
-
-	db, err := Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = db.Close() }()
-
-	version, err := readUserVersion(ctx, db)
-	if err != nil {
-		return err
-	}
-	if version == 0 {
-		// 还没认领。服务是写方，**顺手认领掉**比让用户先跑 doctor 合理：
-		// 结构对得上就只是打一个版本号，对不上会在下面报出来
-		if reason := verifyShape(ctx, db); reason != "" {
-			return &ErrShapeMismatch{Path: path, Reason: reason}
-		}
-		if err := setUserVersion(ctx, db, 1); err != nil {
-			return err
-		}
-		version = 1
-	}
-
-	if list := pending(version); len(list) > 0 {
-		return &ErrNeedsMigration{Path: path, From: version, To: LatestVersion(), Pending: describePending(version)}
-	}
-	return nil
-}
-
-// State 只读地看库的状态。**供 doctor / db 命令用**。
-func State(ctx context.Context, path string) ReadState {
-	state := ReadState{Path: path, Latest: LatestVersion()}
-
-	if _, err := os.Stat(path); err != nil {
-		if !os.IsNotExist(err) {
-			state.Error = err.Error()
-		}
-		return state
-	}
-
-	db, err := Open(path)
-	if err != nil {
-		state.Error = err.Error()
-		return state
-	}
-	defer func() { _ = db.Close() }()
-
-	version, err := readUserVersion(ctx, db)
-	if err != nil {
-		state.Error = err.Error()
-		return state
-	}
-	tables, err := businessTables(ctx, db)
-	if err != nil {
-		state.Error = err.Error()
-		return state
-	}
-
-	state.Exists = true
-	state.Version = version
-	state.Tables = tables
-	state.Fresh = len(tables) == 0
-	if version == 0 && !state.Fresh {
-		state.Adoptable = verifyShape(ctx, db) == ""
-	}
-	state.Pending = describePending(version)
-	return state
-}
-
 func readUserVersion(ctx context.Context, db *sql.DB) (int, error) {
 	var version int
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -316,7 +246,7 @@ func setUserVersion(ctx context.Context, db *sql.DB, version int) error {
 }
 
 // businessTables 库里的业务表。**排除 SQLite 自带的与 Node 版留下的 `__schema`**——
-// 那张表是旧实现的书签，Go 版不再使用，留着无害但不该算进「这份库有哪些表」。
+// 那张表是旧实现的书签，不再被使用，留着无害但不该算进「这份库有哪些表」。
 func businessTables(ctx context.Context, db *sql.DB) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
 		"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -343,10 +273,12 @@ func businessTables(ctx context.Context, db *sql.DB) ([]string, error) {
 	return out, nil
 }
 
-// verifyShape 逐表逐列核对。**返回空串表示对得上**，否则是一句人话。
+// verifyShape 逐列核对 `memories`。**返回空串表示对得上**，否则是一句人话。
 //
 // 缺一列就拒绝认领：那份库来自更早的 Node 结构，**硬认领会让写入在约束上炸、
-// 读取少一列**，症状出现在很远的地方。宁可在这里说清「缺 documents.annotations」。
+// 读取少一列**，症状出现在很远的地方。
+//
+// **只核对自己拥有的表。** 共用库文件时别人多出来的表一律忽略——那是别人的账。
 func verifyShape(ctx context.Context, db *sql.DB) string {
 	problems := make([]string, 0, 4)
 

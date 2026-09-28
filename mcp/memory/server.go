@@ -23,14 +23,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/zjzhang-cn/fka-go/mcp/internal/log"
+	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/log"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/zjzhang-cn/fka-go/mcp/internal/domain"
-	"github.com/zjzhang-cn/fka-go/mcp/internal/store"
+	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/domain"
+	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/store"
 )
 
 // Tools 的名字。**刻意不带前缀**——前缀由上层的工具注册表加（`memory__`）。

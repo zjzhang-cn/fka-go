@@ -22,7 +22,6 @@ go build ./...
 go test ./...
 CGO_ENABLED=0 go build -o bin/fka        ./cmd/fka      # 主程序
 CGO_ENABLED=0 go build -o bin/fka-memory ./mcp/memory   # 记忆 MCP server
-CGO_ENABLED=0 go build -o bin/fka-docs   ./mcp/docs     # 文档 MCP server
 ```
 
 ```bash
@@ -45,11 +44,7 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
   "mcpServers": {
     "memory": {
       "command": "/path/to/fka/bin/fka-memory",
-      "args": ["--db", "/path/to/fka/data/db.sqlite"]
-    },
-    "docs": {
-      "command": "/path/to/fka/bin/fka-docs",
-      "args": ["--db", "/path/to/fka/data/db.sqlite", "--storage", "/path/to/fka/data/nas"]
+      "args": ["--db", "/path/to/fka/data/memory.sqlite"]
     }
   }
 }
@@ -85,7 +80,6 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
               ┌───────────────────┐  ┌──────────────────┐
               │ stdio / HTTP 子进程 │  │ skills__list     │
               │ mcp/memory         │  │ skills__load     │
-              │ mcp/docs           │  │ （读 SKILL.md）   │
               │ 你的任何一个 server  │  └──────────────────┘
               └───────────────────┘
 ```
@@ -100,8 +94,8 @@ skill 是写给人看的操作步骤——先做什么、注意什么、怎么�
 ## ⚠️ 一句话必须知道的
 
 身份参数搬进 MCP 之后**变成模型填的工具参数**，server 按决定不做进程级绑定。
-而 `mcp/docs` 这类 server 会把**不可信文档**喂进 LLM 上下文——所以**提示注入是结构性暴露**，
-一次注入或模型判断失误就可能泄露别人的 private 文档，且**不报错**。
+而 server 认的身份参数是**模型填的**——它一旦把**不可信内容**喂进 LLM 上下文，**提示注入就是
+结构性暴露**：一次注入或模型判断失误就可能泄露别人的 private 数据，且**不报错**。
 
 **怎么补**（改动很小）见 [docs/permissions.md](docs/permissions.md#没做的缓解以及怎么补)。
 
@@ -128,24 +122,27 @@ fka ask "…"  /  渠道来的 InboundMessage
                        │ mcp.json：stdio 子进程
        ┌───────────────┴───────────────┐
        ▼                               ▼
-┌────────────────────┐   ┌──────────────────────────────┐
-│ mcp/memory         │   │ mcp/docs                      │
-│ bin/fka-memory     │   │ bin/fka-docs                  │
-└─────────┬──────────┘   └──────────────┬────────────────┘
-          │                             │
-          ▼                             ▼
-   ┌──────────────┐             ┌──────────────┐
-   │mcp/internal/ │             │mcp/internal/ │
-   │ store SQLite │             │ nas 落盘     │
-   └──────────────┘             └──────────────┘
+┌────────────────────────┐
+│ mcp/memory             │
+│ bin/fka-memory         │
+│ 自给自足：表/schema/   │
+│ 迁移/日志/默认库全归它 │
+└───────────┬────────────┘
+            ▼
+   ┌─────────────────┐
+   │mcp/memory/      │
+   │  internal/store │
+   │  memories 一张表 │
+   └─────────────────┘
 ```
 
 **装配点唯一**在 `internal/app/app.go`——构造函数链，没有 Cordis 也没有 `cordis.yml`
 （理由见 [decisions.md](docs/decisions.md) 第 4 条）。
 
-**两侧是硬边界**：`mcp/**` 不许 import `fka-go/internal/...`，由 `mcp/boundary_test.go` 守着。
-agent 侧不认识存储，server 侧不认识 agent——所以 server 能单独构建、部署、换掉。
-详见 [mcp/README.md](mcp/README.md#边界这里不碰-agent-的-internal)。
+**两侧是硬边界**：`mcp/memory/**` 不许 import 本仓库树外的任何包，由 `boundary_test.go` 守着
+（Go 的 `internal` 规则只管「树内不许外泄」，管不了「树外不许伸手」）。agent 侧不认识存储，
+server 侧不认识 agent——所以 server 能单独构建、部署、换掉。
+详见 [mcp/README.md](mcp/README.md#自己管理自己)。
 
 ---
 
@@ -168,11 +165,9 @@ agent 侧不认识存储，server 侧不认识 agent——所以 server 能单�
 ```
 go/
 ├── cmd/fka/            主程序：ask（无头问答）/ tools（工具清单）
-├── mcp/                MCP server 集合（能力，不是 agent）
-│   ├── boundary_test.go 边界测试：不许依赖 agent 的 internal
-│   ├── docs/           文档管理 server（package main）
-│   ├── memory/         家庭记忆 server（package main）
-│   ├── internal/       **只有 mcp/ 树能 import**（编译器保证）
+├── mcp/                MCP server（能力，不是 agent）
+│   ├── memory/         家庭记忆 server —— **自给自足的独立项目**
+│   │   └── internal/   **只有本树能 import**（编译器保证）
 │   └── README.md       挂载方式、存储布局、三条硬约束
 ├── docs/               本项目文档（见下表）
 └── internal/           agent 侧。**没有 store / nas / 任何持久化**
@@ -201,6 +196,7 @@ go/
 | **[docs/port-plan.md](docs/port-plan.md)** | **先读这个。** 模块清单与进度、实施顺序、每层的验收标准、**改任何东西都不能破的不变量** |
 | **[docs/decisions.md](docs/decisions.md)** | 技术决策与「为什么是它而不是别的」，含每条的**后果**（很多是已接受的代价） |
 | **[docs/permissions.md](docs/permissions.md)** | ⚠️ 权限模型，以及**唯一一处「防线从代码移到模型手上」的地方** |
+| **[mcp/README.md](mcp/README.md)** | 记忆 server：自己管自己的表、schema、迁移、日志与库文件 |
 | **[docs/node-to-go.md](docs/node-to-go.md)** | Node → Go 的模块映射、**有意不同的几处**、**必须 1:1 不许优化的几处** |
 | [docs/dev-log.md](docs/dev-log.md) | 开发日志（最新在上） |
 
