@@ -163,7 +163,7 @@ func TestClientId格式(t *testing.T) {
 // Test缺ContextToken要在发之前就拒 **不能发一个空 token 的请求**让服务端回
 // `ret=-2`——那样只得到一个不指向根因的错误。
 func Test缺ContextToken要在发之前就拒(t *testing.T) {
-	s := newSender(WeixinAccount{ID: "a", BaseURL: "http://x", BotToken: "t"}, nil)
+	s := NewSender(WeixinAccount{ID: "a", BaseURL: "http://x", BotToken: "t"}, nil)
 
 	cases := map[string]struct{ to, token, text string }{
 		"缺 context_token": {"u", "", "hi"},
@@ -345,7 +345,7 @@ func Test上传往返(t *testing.T) {
 	defer server.Close()
 
 	result, err := UploadMedia(context.Background(),
-		newClient(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client()),
+		NewClient(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client()),
 		"to-user", plain, UploadMediaFile, 5*time.Second)
 	if err != nil {
 		t.Fatalf("上传失败：%v", err)
@@ -427,7 +427,7 @@ func Test4xx不重试(t *testing.T) {
 	defer server.Close()
 
 	_, err := UploadMedia(context.Background(),
-		newClient(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client()),
+		NewClient(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client()),
 		"to", []byte("x"), UploadMediaFile, 2*time.Second)
 	if err == nil {
 		t.Fatal("403 该报错")
@@ -464,7 +464,7 @@ func Test5xx要重试(t *testing.T) {
 	defer func() { mediaRetry.BaseDelay = restore }()
 
 	result, err := UploadMedia(context.Background(),
-		newClient(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client()),
+		NewClient(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client()),
 		"to", []byte("x"), UploadMediaFile, 2*time.Second)
 	if err != nil {
 		t.Fatalf("5xx 之后重试该成功：%v", err)
@@ -479,7 +479,7 @@ func Test5xx要重试(t *testing.T) {
 
 // Test上传空内容直接拒 返回一个指向空资源的引用会让发送**静默失效**。
 func Test上传空内容直接拒(t *testing.T) {
-	_, err := UploadMedia(context.Background(), newClient(WeixinAccount{}, nil),
+	_, err := UploadMedia(context.Background(), NewClient(WeixinAccount{}, nil),
 		"to", nil, UploadMediaFile, time.Second)
 	if err == nil {
 		t.Fatal("空内容该报错")
@@ -535,7 +535,7 @@ func Test下载解密往返(t *testing.T) {
 
 	// 优先用平铺的 aeskey（图片项那样）
 	got, err := DownloadMedia(context.Background(),
-		newClient(WeixinAccount{}, server.Client()), media, key)
+		NewClient(WeixinAccount{}, server.Client()), media, key)
 	if err != nil {
 		t.Fatalf("下载失败：%v", err)
 	}
@@ -545,7 +545,7 @@ func Test下载解密往返(t *testing.T) {
 
 	// 文件项没有平铺 aeskey——该回落到 media.aes_key
 	got, err = DownloadMedia(context.Background(),
-		newClient(WeixinAccount{}, server.Client()), media, "")
+		NewClient(WeixinAccount{}, server.Client()), media, "")
 	if err != nil {
 		t.Fatalf("只给 media.aes_key 也该能解：%v", err)
 	}
@@ -563,7 +563,7 @@ func Test下载4xx不重试(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := DownloadMedia(context.Background(), newClient(WeixinAccount{}, server.Client()),
+	_, err := DownloadMedia(context.Background(), NewClient(WeixinAccount{}, server.Client()),
 		CDNMedia{FullURL: server.URL + "/x"}, "0123456789abcdef0123456789abcdef")
 	if err == nil {
 		t.Fatal("404 该报错")
@@ -584,7 +584,7 @@ func Test解密失败不重试(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := DownloadMedia(context.Background(), newClient(WeixinAccount{}, server.Client()),
+	_, err := DownloadMedia(context.Background(), NewClient(WeixinAccount{}, server.Client()),
 		CDNMedia{FullURL: server.URL + "/x"}, "0123456789abcdef0123456789abcdef")
 	if err == nil {
 		t.Fatal("解不开该报错")
@@ -598,7 +598,7 @@ func Test解密失败不重试(t *testing.T) {
 }
 
 func Test下载缺密钥要拒(t *testing.T) {
-	_, err := DownloadMedia(context.Background(), newClient(WeixinAccount{}, nil),
+	_, err := DownloadMedia(context.Background(), NewClient(WeixinAccount{}, nil),
 		CDNMedia{FullURL: "https://x/y"}, "")
 	if err == nil {
 		t.Fatal("没有密钥该报错")
@@ -625,7 +625,7 @@ func Test发送走对端点(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := newSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
 	result, err := s.SendText(context.Background(), "to-user", "ctx-1", "在的")
 	if err != nil {
 		t.Fatalf("发送失败：%v", err)
@@ -650,7 +650,7 @@ func Test发送失败要抛(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := newSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
 	_, err := s.SendText(context.Background(), "to-user", "ctx-1", "在的")
 	if err == nil {
 		t.Fatal("ret=-2 该报错")
@@ -694,7 +694,7 @@ func Test发文件先上传再引用(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := newSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
 	if _, err := s.SendFile(context.Background(), "to-user", "ctx-1", path, ""); err != nil {
 		t.Fatalf("发文件失败：%v", err)
 	}
@@ -740,7 +740,7 @@ func Test发图片用MediaType1(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := newSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
 	if _, err := s.SendImage(context.Background(), "to-user", "ctx-1", path, ""); err != nil {
 		t.Fatalf("发图片失败：%v", err)
 	}

@@ -74,7 +74,7 @@ func GetQRCode(ctx context.Context, baseURL string, httpClient *http.Client) (QR
 		baseURL = DefaultBaseURL
 	}
 
-	c := newClient(WeixinAccount{BaseURL: baseURL}, httpClient)
+	c := NewClient(WeixinAccount{BaseURL: baseURL}, httpClient)
 	data, err := c.postJSON(ctx,
 		fmt.Sprintf("/ilink/bot/get_bot_qrcode?bot_type=%d", BotType),
 		struct {
@@ -150,7 +150,7 @@ func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Clie
 		baseURL = DefaultBaseURL
 	}
 
-	c := newClient(WeixinAccount{BaseURL: baseURL}, httpClient)
+	c := NewClient(WeixinAccount{BaseURL: baseURL}, httpClient)
 	for {
 		if ctx.Err() != nil {
 			return Credentials{}, fmt.Errorf("登录已取消")

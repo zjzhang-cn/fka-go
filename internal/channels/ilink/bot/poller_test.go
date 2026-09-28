@@ -497,7 +497,7 @@ func Test扫码轮询到确认(t *testing.T) {
 	defer server.Close()
 
 	// base URL 由调用方传，所以这里能指向本地服务器——写死的话会真的打到微信去
-	c := newClient(WeixinAccount{BaseURL: server.URL}, server.Client())
+	c := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -536,7 +536,7 @@ func Test扫码过期是失败(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newClient(WeixinAccount{BaseURL: server.URL}, server.Client())
+	c := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
 	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1")
 	if !done {
 		t.Error("过期该结束轮询")
@@ -554,7 +554,7 @@ func Test说已确认却不给Token不算成功(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newClient(WeixinAccount{BaseURL: server.URL}, server.Client())
+	c := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
 	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1")
 	if !done {
 		t.Error("该结束轮询")

@@ -83,8 +83,11 @@ type client struct {
 	token   string
 }
 
-// newClient 造客户端。httpClient 为 nil 时用带超时的默认实现。
-func newClient(account WeixinAccount, httpClient *http.Client) *client {
+// NewClient 造客户端。**导出是因为渠道适配层要用**：它要主动发请求
+// （取媒体），而那时它拿得到账号、拿不到本包里的私有 client。
+//
+// httpClient 为 nil 时用带超时的默认实现。
+func NewClient(account WeixinAccount, httpClient *http.Client) *client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}

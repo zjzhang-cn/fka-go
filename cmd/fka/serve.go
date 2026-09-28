@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/zjzhang-cn/fka-go/internal/channels"
+	"github.com/zjzhang-cn/fka-go/internal/channels/ilink"
 )
 
 // runServe 常驻：接渠道、收消息、跑问答。
@@ -39,9 +40,6 @@ func runServe(ctx context.Context, args []string) int {
 // 配错了。这正是当初不用 cordis.yml 的理由之一。
 //
 // 接缝（`internal/channels`）不认识任何实现，**这里是装配根唯一认识它们的地方**。
-//
-// **现在是空的**：iLink provider 还没写。所以 `fka serve` 会明确说「没有接上任何
-// 渠道」并以失败退出，而不是安静地收不到任何消息。
 func channelProviders() []channels.Provider {
-	return nil
+	return []channels.Provider{ilink.NewProvider()}
 }

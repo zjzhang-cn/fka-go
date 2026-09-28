@@ -75,7 +75,7 @@ type Poller struct {
 func NewPoller(account WeixinAccount, cursors *CursorStore, httpClient *http.Client) *Poller {
 	return &Poller{
 		account: account,
-		client:  newClient(account, httpClient),
+		client:  NewClient(account, httpClient),
 		cursors: cursors,
 		done:    make(chan struct{}),
 	}

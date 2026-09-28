@@ -163,9 +163,11 @@ server 侧不认识 agent——所以 server 能单独构建、部署、换掉�
 
 `fka serve` 是常驻入口，它保证**先订阅再开收**——反过来会有一个丢消息的窗口。
 
-**iLink（微信）provider 还没写**，所以 `fka serve` 现在会明确说「没有接上任何渠道」
-并以退出码 1 结束，而不是安静地收不到消息。接一个渠道 = 实现 `Provider` 与
-`Channel`，在 `cmd/fka/serve.go` 的 `channelProviders()` 里加一个——接缝与业务层不动。
+**iLink（微信）provider 已接上**：`cmd/fka/serve.go` 的 `channelProviders()` 里返回它。
+接第二个渠道 = 再加一个 `Provider`，接缝与业务层不动。
+
+登录扫码走 `Provider.Ops().Login`（账号槽位 `ILINK_ACCOUNT_<N>_*`）。
+**凭证只落 `.env`（0600）**，状态快照里**不出现 context_token**——它等同于发消息的资格。
 
 ---
 
@@ -183,6 +185,8 @@ go/
     ├── agent/          工具调用循环 + runner
     ├── app/            装配根
     ├── channels/       渠道接缝（不认识任何渠道实现）
+    │   └── ilink/      微信渠道：adapter（实现 Channel）+ provider（实现 Provider）
+    │       └── bot/    协议实现：报文 / 加解密 / 发送 / 上传 / 长轮询 / 登录
     ├── config/         安装根解析、.env 加载、日志（按天轮转）
     ├── llm/            模型契约 + 历史压缩 + 会话历史
     │   └── openai/     OpenAI 兼容 provider

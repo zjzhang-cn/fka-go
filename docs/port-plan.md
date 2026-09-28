@@ -40,6 +40,8 @@ fka ask "记一条：2026年3月全家去了三亚"
 | **提示词** | `internal/prompts` | — | 宪法 + 拒答话术 + 注入防护 + **工具参数真实性** |
 | **会话历史** | `internal/llm` | 14 | 按组丢弃不拆散 tool_calls、留下的逐字不动、文件空时播种 |
 | **装配 + CLI** | `internal/app`、`cmd/fka` | — | 构造函数链替代 cordis.yml；`fka ask` / `fka tools` / `fka serve` |
+| **iLink 协议层** | `internal/channels/ilink/bot` | 85 | uint64 无损、snake_case、`ret` 缺席算成功、**游标先落盘再上抛**、过期清游标、ECB 按块、PKCS#7 逐字节核对 |
+| **iLink 适配层** | `internal/channels/ilink` | 45 | 归一化、**能力声明与发送器一致**、每次重读账号表（不缓存）、入站先记上下文再上抛、过期不被 offline 覆盖、`.env` 块就地替换 |
 | **消息层** | `internal/messages` | 10 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；身份缺失就拒答；只有图片时如实说不能答；发不出去只记日志、不发第二条；工具能往当前会话发文件 |
 | **技能源** | `internal/tools/skills` | 16 | 极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录不声明工具 |
 | **渠道接缝** | `internal/channels` | 14 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；两个 server 自成一体 |
@@ -56,8 +58,9 @@ fka ask "记一条：2026年3月全家去了三亚"
 | 1 | **文档转换** | nas + docker | parsers 接缝（按扩展名路由、显式优先 `*` 兜底、重叠拒绝启动）；PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、`--network=none`、只看 exit code）；SCNet 异步 OCR；ExifTool 走系统命令 |
 | 2 | **切片 + 嵌入 + 向量薄层** | 文档转换 | 切片、SCNet 嵌入（batch ≤5、按 index 重排、429/5xx 退避）、手写向量层（暴力余弦 + 阈值）。**阈值必须重标** |
 | 3 | **混合检索** | 上面 | 全文扫 `extracted/*.md` + 向量；关键词之间是「且」；`LIKE` 通配符要转义 |
-| 4 | **iLink provider** | **接缝 + 消息层（都有）** | 13 个协议文件；goroutine 代替 worker；真机验证。业务层不 import 具体渠道 |
+| 4 | ~~**iLink provider**~~ | — | ✅ 协议层 9 个模块 + 适配层（adapter/provider），**真机验证还没做** |
 | 5 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
+| 6 | **iLink 真机验证** | 上面 | 扫码 → 收一条 → 回一条 → 发一个文件。**协议层离线测试覆盖不到的东西** |
 
 ---
 

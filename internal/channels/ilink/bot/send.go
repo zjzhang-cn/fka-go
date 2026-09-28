@@ -28,9 +28,12 @@ type sender struct {
 	client *client
 }
 
-// newSender 造发送器。httpClient 为 nil 时用默认实现。
-func newSender(account WeixinAccount, httpClient *http.Client) *sender {
-	return &sender{client: newClient(account, httpClient)}
+// NewSender 造发送器。**导出是因为渠道适配层要用**——它是「协议能发消息」
+// 与「渠道有一个文本发送器」之间唯一的桥。
+//
+// httpClient 为 nil 时用默认实现。
+func NewSender(account WeixinAccount, httpClient *http.Client) *sender {
+	return &sender{client: NewClient(account, httpClient)}
 }
 
 // GenerateClientID 生成出站消息的 client_id。
