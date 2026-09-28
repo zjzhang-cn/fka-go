@@ -1,0 +1,13 @@
+# 构建产物。**go.sum 必须入库**——lock 依赖树才能保证每个人装出同一份依赖
+bin/
+/fka
+/fka-*
+
+# 测试与覆盖率
+*.out
+coverage.html
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
