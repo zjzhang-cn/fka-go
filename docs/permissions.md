@@ -1,6 +1,11 @@
 # 权限模型与那条已接受的风险
 
 > ⚠️ **这一页要反复读。** 它描述的是这套系统里唯一一处「防线从代码移到了模型手上」的地方。
+>
+> **现在树里只有记忆 server。** 文档 / NAS / 向量那条线在 `1fae643` 与 `0fb673b`
+> 之后搬出了本仓库，所以下面凡是提「文档」的地方，指的是**接进来的任何 MCP server**
+> （记忆 server 走的是同一条通则，它自己那份已经落在代码里）。搬走的那半边仍在用
+> 这套模型，所以这份文档留着。
 
 ---
 
@@ -74,6 +79,10 @@ Node 版里，权限过滤**不是约定，是机制**：
    `mcp/memory/server.go` 与 `mcp/memory/internal/store/db.go` 里那句
    `(visibility = ? OR owner_wxid = ?)` 是**唯一的数据防线**。这不是风格问题。
 
+5. **身份由消息层给，不由 CLI 给。** `fka ask --principal` 只是无头调试的入口；
+   走微信时身份是入站消息带来的（`internal/messages`），模型拿不到也不该拿到
+   「怎么指定 viewer」的手段——参数一旦能被模型自由填写，第 4 条那道防线就只剩提示词了。
+
 > 提示词这一层是**降低概率**，不是**消除风险**。它挡得住无心之失，挡不住精心构造的注入。
 
 ---
@@ -88,8 +97,10 @@ Node 版里，权限过滤**不是约定，是机制**：
 工具参数里的 viewer 字段一律忽略。
 
 - 效果：与 Node 版**同等强度**——参数由代码构造。
-- 改动：`mcpboot.ResolveDBPath` 旁边加一个 `FKA_VIEWER` 注入；每个 server 的
-  handler 把 `request.GetString("viewer_wxid")` 换成 `os.Getenv("FKA_VIEWER")`。
+- 改动：`mcp/memory/main.go` 的 `resolveDBPath` 旁边加一个 `FKA_VIEWER` 注入；每个
+  server 的 handler 把 `request.GetString("viewer_wxid")` 换成 `os.Getenv("FKA_VIEWER")`。
+  **注意 `mcp.json` 给了 `env` 时子进程只拿到那几项**——注入要跟着 `env` 走，
+  别指望主进程顺手继承（`internal/tools/mcp/client.go` 给的就是「只有那几项」）。
 - 代价：**多账号时要么按账号起多个 server 实例，要么在消息之间重启 server**。
   家用规模下两个账号，重启的开销可以接受。
 

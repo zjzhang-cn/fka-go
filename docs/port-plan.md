@@ -1,76 +1,82 @@
-# 迁移计划与进度
+# 现状与不变量
 
-按**自底向上、每层带测试**推进。一层做完能独立跑绿再进下一层。
+> 这一页讲**现在是什么样**、**哪些东西不能破**、**还欠什么**。
+> 改代码前扫一眼「不变量」那张表——那些是踩过才知道值钱的。
+
+---
+
+## 这个仓库是什么
+
+**一个工具调用 agent，加一个微信渠道。** 它**不带任何内置能力，也不拥有任何数据**——
+能力只有两条来源：`<安装根>/mcp.json` 里的 MCP server，和 `<安装根>/skills/` 下的 skill。
+
+> **文档 / NAS / 向量那条线已经不在这里了。** `1fae643`（agent 侧不再有任何存储）与
+> `0fb673b`（记忆 server 自给自足）把 `internal/{nas,store,ids,domain,searchterms,mcpboot}`
+> 与整个 `mcp/docs` **搬了出去**。所以本仓库里：
+>
+> - **没有** `internal/store`、`internal/nas`、`internal/ids`——看到这些路径的文档段落，
+>   记的是搬走之前的状态（`docs/dev-log.md` 里全是，那是日志，不改）；
+> - **「文档转换 / 切片 / 向量 / 混合检索」不是本仓库的待办**。要那些能力，接一个外部
+>   MCP server——那正是「能力只从 MCP 与 skill 进来」这条架构的意思；
+> - 剩下的未开始项只有本仓库自己的那几件，见文末。
 
 ---
 
 ## 当前状态
 
-**Agent 侧（循环 / LLM / 放行 / MCP client / 技能 / 渠道接缝）与记忆 MCP server 都已端到端可用，
-两侧之间只有 `mcp.json` 一个接口。**
+**Agent 侧（工具循环 / LLM / 放行 / MCP client / 技能 / 渠道接缝）、微信渠道（iLink）
+与记忆 MCP server 都已端到端可用**，两侧之间只有 `mcp.json` 一个接口。
 
-**记忆 server 自给自足**：表、schema、迁移、日志、默认库文件全归它自己，不与任何人共享一行代码。
+**记忆 server 自给自足**：表、schema、迁移、日志、默认库文件全归它自己，
+不与任何人共享一行代码。
 
-**agent 自己不拥有任何数据。** 它的能力只有两条来源：MCP server 与 skill。
-
-已验证的真实链路：
+已验证的链路（`make verify` 的 `smoke` 每次都在跑前两条）：
 
 ```
+fka tools                       # 真机装一个 skill + 一个 MCP server，断言四个工具都列出来了
+  → 技能读到没、server 连上没有，这两件事静默失败时界面上完全看不出来
+
 fka ask "记一条：2026年3月全家去了三亚"
   → agent 决定调 mcp__memory__remember_memory
   → MCP client 拉起 bin/fka-memory 子进程（stdio）
   → server 写入 SQLite
   → 下一轮 mcp__memory__search_memories 查回来
   → 模型作答
-直接查库确认落库；原库未被污染（测试用副本）
 ```
+
+**没有验证过的**：真微信那一段。`fka login` 扫码成功过（`8f61b96`），
+**收一条 / 回一条 / 发一个文件都没在真机上跑过**——协议层的 85 个用例覆盖不到
+长轮询的活体行为。这不是「大概没问题」，是**明确没验**。
 
 ---
 
 ## 模块清单
 
-### ✅ 已完成
+用例数是 `go test -list` 的条数（顶层 `Test` 函数，不含 `t.Run` 子测试）；
+**全仓 271 个顶层用例**。
 
 | 模块 | 落点 | 用例 | 关键验证 |
 |---|---|---|---|
 | **工具循环** | `internal/agent` | 11 | 步数上限是硬约束、工具失败转 tool message、收尾兜错、模型的错往上抛 |
 | **工具接缝 + 注册表** | `internal/tools` | 11 | 源前缀、effect 放行、参数校验、**两种「没有」是不同的话** |
-| **MCP client** | `internal/tools/mcp` | 7 | mark3labs、stdio + HTTP、惰性连接、连不上跳过 |
-| **LLM provider** | `internal/llm/openai` | — | 流式 + 双超时（整体/断流）、推理只进 stdout、`tool_choice` 裸字符串 |
-| **提示词** | `internal/prompts` | — | 宪法 + 拒答话术 + 注入防护 + **工具参数真实性** |
-| **会话历史** | `internal/llm` | 14 | 按组丢弃不拆散 tool_calls、留下的逐字不动、文件空时播种 |
-| **装配 + CLI** | `internal/app`、`cmd/fka` | — | 构造函数链替代 cordis.yml；`fka ask` / `fka tools` / `fka serve` |
+| **MCP client** | `internal/tools/mcp` | 8 | mark3labs、stdio + HTTP、惰性连接、连不上跳过 |
+| **LLM provider** | `internal/llm/openai` | 3 | 流式 + 双超时（整体/断流）、`tool_choice` 裸字符串、`enable_thinking` 注入 |
+| **提示词** | `internal/prompts` | 0 | 宪法 + 拒答话术 + 注入防护 + **工具参数真实性**（无测试，**只靠 code review 守着**） |
+| **会话历史** | `internal/llm` | 13 | 按组丢弃不拆散 tool_calls、留下的逐字不动、文件空时播种 |
+| **日志 + 归属绑定** | `internal/config` | 23 | 行首三格前缀、字段按字典序、`键=值` 而不是 JSON、**一条日志一行**、账号从 ctx 自动合并 |
+| **装配 + CLI** | `internal/app`、`cmd/fka` | 23 | 构造函数链替代 cordis.yml；`ask`/`tools`/`serve`/`login`/`version`；**参数只解析一次**（认不出的以 2 退出，绝不当问题） |
 | **iLink 协议层** | `internal/channels/ilink/bot` | 85 | uint64 无损、snake_case、`ret` 缺席算成功、**游标先落盘再上抛**、过期清游标、ECB 按块、PKCS#7 逐字节核对 |
-| **iLink 适配层** | `internal/channels/ilink` | 45 | 归一化、**能力声明与发送器一致**、每次重读账号表（不缓存）、入站先记上下文再上抛、过期不被 offline 覆盖、`.env` 块就地替换 |
-| **消息层** | `internal/messages` | 10 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；身份缺失就拒答；只有图片时如实说不能答；发不出去只记日志、不发第二条；工具能往当前会话发文件 |
-| **技能源** | `internal/tools/skills` | 17 | **无条件注册**（目录空不藏工具）；极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录时 list 返 `[]` 而 load 说清放哪 |
-| **渠道接缝** | `internal/channels` | 14 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；两个 server 自成一体 |
-| **MCP 侧边界** | `mcp` | 2 | `mcp/**` 不许 import `fka-go/internal/**`（编译器管不到，由测试守）；两个 server 必须都是 `main` 包 |
+| **iLink 适配层** | `internal/channels/ilink` | 32 | 归一化、**能力声明与发送器一致**、每次重读账号表（不缓存）、入站先记上下文再上抛、过期不被 offline 覆盖、`.env` 块就地替换 |
+| **消息层** | `internal/messages` | 16 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号分片、账号间并行**；身份缺失就拒答；发不出去只记日志、不发第二条 |
+| **技能源** | `internal/tools/skills` | 20 | **无条件注册**（目录空不藏工具）；极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录时 list 返 `[]` 而 load 说清放哪 |
+| **渠道接缝** | `internal/channels` | 13 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；两个 server 自成一体 |
+| **MCP 侧边界** | `mcp/memory` | 1 | `mcp/memory/**` 不许 import 本仓库树外的任何包（编译器管不到，由测试守） |
 | **记忆存储 + 迁移** | `mcp/memory/internal/store` | 10 | **认领老库 v0→v1，一行不动**；认领失败**绝不重建**；共用库时只认自己那张表 |
-| **记忆 MCP server** | `mcp/memory` | — | 独立可执行程序，3 步端到端落库 |
+| **记忆 MCP server** | `mcp/memory` | 3 | 独立可执行程序，3 步端到端落库；**日志只走 stderr** |
 
-### ⬜ 未开始
-
-按依赖顺序：
-
-| # | 模块 | 依赖 | 验收标准 |
-|---|---|---|---|
-| 1 | **文档转换** | nas + docker | parsers 接缝（按扩展名路由、显式优先 `*` 兜底、重叠拒绝启动）；PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、`--network=none`、只看 exit code）；SCNet 异步 OCR；ExifTool 走系统命令 |
-| 2 | **切片 + 嵌入 + 向量薄层** | 文档转换 | 切片、SCNet 嵌入（batch ≤5、按 index 重排、429/5xx 退避）、手写向量层（暴力余弦 + 阈值）。**阈值必须重标** |
-| 3 | **混合检索** | 上面 | 全文扫 `extracted/*.md` + 向量；关键词之间是「且」；`LIKE` 通配符要转义 |
-| 4 | ~~**iLink provider**~~ | — | ✅ 协议层 9 个模块 + 适配层（adapter/provider），**真机验证还没做** |
-| 5 | **IPC + CLI 全量** | 上面 | 5+1 个方法、只读可降级到快照、写不可降级、0600 权限 |
-| 6 | **iLink 真机验证** | 上面 | 扫码 → 收一条 → 回一条 → 发一个文件。**协议层离线测试覆盖不到的东西** |
-
----
-
-## 每层的验收标准
-
-不是「能编译」，而是这三条：
-
-1. **`gofmt -l .` 无输出、`go vet ./...` 干净、`go test ./...` 全绿。**
-2. **`CGO_ENABLED=0 go build` 成功**（零 CGO 是硬约束，加 C 依赖要有意识地做决定）。
-3. **能真机验的就真机验。** 只读命令直接跑；需要模型的用 `fka ask`；需要微信的留到渠道层。
+> `mcp/memory/internal/{domain,searchterms,log}` 与 `internal/{app,prompts}` 没有用例
+> （0 个）。`internal/prompts` 那一条是**真缺口**：提示词是这套系统的第一道防线，
+> 却只能靠人读。
 
 ---
 
@@ -80,22 +86,35 @@ fka ask "记一条：2026年3月全家去了三亚"
 
 | 不变量 | 在哪 | 破了会怎样 |
 |---|---|---|
-| 权限过滤在 SQL 的 `WHERE` 里，不在查完再筛 | `mcp/internal/store` 每个查询 | 别人的 private 数据进结果 |
+| 权限过滤在 SQL 的 `WHERE` 里，不在查完再筛 | `mcp/memory/internal/store` 每个查询 | 别人的 private 数据进结果 |
 | **`mcp/memory/**` 不许 import 树外的包** | `mcp/memory/boundary_test.go` | server 与 agent 绑死，不再是「能单独换掉的能力」（**编译器管不到这条**） |
 | **认领失败绝不重建** | `mcp/memory/internal/store` | 重建会「修好」错误，代价是数据没了——用户看到安静的库，不是事故 |
 | **认领只核对自己的表** | 同上 | 别人的 schema 变动不该让我拒绝启动 |
-| 未放行的工具**不告诉模型** | `tools/registry` | 模型以为工具「暂时不可用」，换名字再试，白烧一轮 |
-| 两种「没有」是不同的话：名字错了 vs 权限门 | `tools/registry` | 部署的人查错方向——以为工具不存在，实际是没打开 |
-| 工具调用后的失败**变成一句话喂回**，不抛 | `agent/loop` | 模型看不到失败，就不会换个方式再试 |
-| 模型的错**往上抛**，不静默降级 | `agent/loop` | 「接口没配好」被伪装成「模型偶尔不回」 |
-| 历史按**整组**丢弃，绝不改写留下的 | `llm/history` | provider 前缀缓存从改动点起全部失效；留下孤儿 `tool` 消息直接 400 |
-| 记忆用 `id 生成器`而非时间戳 | `mcp/internal/store`、`mcp/memory` | id 撞了会**静默丢掉一条记忆** |
-| 文件名去掉冒号 | `mcp/internal/nas` | 容器挂载错位，症状是「找不到文件」 |
-| 解析结果保留**原扩展名** | `mcp/internal/nas` | `房产证.pdf` 与 `房产证.docx` 撞成同一落点 |
-| 批注小节用 **HTML 注释标记**而不是标题 | `mcp/internal/nas` | 正文里同名标题被误删 |
-| 属主 / 会话 / 文件名走**同一套字符集校验** | `mcp/internal/ids` | 两个不同的东西清洗后别名到同一路径 |
-| MCP server 是**独立可执行程序** | `mcp/*` | 共享逻辑会长进 server 里，「独立」名存实亡 |
-| MCP server 启动后 **stdout 一个字都不能有** | `mcp/*` | 一个 `fmt.Println` 插进 JSON-RPC 流，把 server 打挂 |
+| **MCP server 启动后 stdout 一个字都不能有** | `mcp/memory/internal/log` | 一个 `fmt.Println` 插进 JSON-RPC 流，把 server 打挂 |
+| 未放行的工具**不告诉模型** | `internal/tools/registry` | 模型以为工具「暂时不可用」，换名字再试，白烧一轮 |
+| 两种「没有」是不同的话：名字错了 vs 权限门 | 同上 | 部署的人查错方向——以为工具不存在，实际是没打开 |
+| 工具调用后的失败**变成一句话喂回**，不抛 | `internal/agent/loop` | 模型看不到失败，就不会换个方式再试 |
+| 模型的错**往上抛**，不静默降级 | 同上 | 「接口没配好」被伪装成「模型偶尔不回」 |
+| 历史按**整组**丢弃，绝不改写留下的 | `internal/llm/history` | provider 前缀缓存从改动点起全部失效；留下孤儿 `tool` 消息直接 400 |
+| 记忆 id 用**生成器**而非时间戳 | `mcp/memory` | id 撞了会**静默丢掉一条记忆** |
+| **`internal/channels` 不许 import 任何具体渠道** | `internal/channels/channels_test.go` | 接缝的价值全在「加渠道零改业务层」上，破了是**静默失效**：照常编译、照常跑 |
+| 工具全名 `<源>__<工具>`、`mcp__<server>__<tool>` | `internal/tools/registry` | 模型在会话历史里逐字重放；改名会让那一轮起前缀缓存全失效 |
+| `tool_calls` 的 `arguments` **保持原始 JSON 字符串** | `internal/agent/loop` | 反序列化再序列化会改变字节序 |
+| 会话历史按**整组**丢弃，**留下的一组都不改写** | `internal/llm/history` | 留下孤儿 `tool` 消息直接 400 |
+| **一条日志 = 一行** | `internal/config/logger.go` | 工具参数、推理片段、驱动报错都带换行；不转义的话一条日志摊成两三行，`cut` 出来的级别与阶段全错 |
+| 日志归属**绑在 ctx 上**，不靠各处手抄 | `internal/config/scope.go` | 漏一处，那条日志就成了排查时的假线索：看起来完整，实际缺了归属 |
+
+### 已经不在本仓库的不变量
+
+下面几条**仍然成立**，但代码在别的仓库（Node 版 / 搬出去的文档侧）。
+**在这里读到它们，是历史记录，不是本仓库的规矩**：
+
+| 不变量 | 现在在哪 |
+|---|---|
+| 属主 / 会话 / 文件名走同一套字符集校验 | `internal/ids`（已移出） |
+| 文件名去掉冒号 | `internal/nas`（已移出） |
+| 解析结果保留**原扩展名** | `internal/nas`（已移出） |
+| 批注小节用 HTML 注释标记而不是标题 | `internal/nas`（已移出） |
 
 ---
 
@@ -103,20 +122,24 @@ fka ask "记一条：2026年3月全家去了三亚"
 
 | 债 | 严重度 | 什么时候还 |
 |---|---|---|
-| 语义阈值 0.994 换模型后失效 | **高且静默** | 上线前。**5 份文档标出来的阈值是过拟合**，先按保守值（压低召回，宁可答不出也不引用错文件） |
-| README 里「嵌入不联网」那句话 | 高 | 对外表述变更，不是技术问题 |
+| **真机收发没验过**（扫码验过） | **高** | 需要真微信账号。`make real-check` 会提示步骤，**但那份步骤文档还没写** |
+| 语义阈值 0.994 换模型后失效 | **高且静默** | 文档侧上线前。**5 份文档标出来的阈值是过拟合**，先按保守值（压低召回，宁可答不出也不引用错文件） |
 | iLink 的 `image` 发送路径未真机验证 | 中 | 渠道层做的时候，需要真机 |
-| RRF 融合（`hybrid` 只并排输出两路） | P1 | 真实查询攒够再定权重 |
-| 记忆只有关键词检索（无向量索引） | P1 | 记忆也建向量索引之后 |
+| `internal/prompts` 零用例 | 中 | 提示词是第一道防线却只能靠人读；至少给「工具参数真实性」那节钉上 |
+| RRF 融合（`hybrid` 只并排输出两路） | P1 | 文档侧。真实查询攒够再定权重 |
+| 记忆只有关键词检索（无向量索引） | P1 | 文档侧。记忆也建向量索引之后 |
 | 自动分类 / 家庭提醒 / 自动总结 / 知识图谱 | P2 | 新功能，不是搬迁义务 |
 
 ---
 
-## 下一步
+## 剩下的待办
 
-做**文档转换**（清单第 1 项）：parsers 接缝（按扩展名路由、显式扩展名优先 `*` 兜底、
-重叠即拒绝启动）+ PyMuPDF / MarkItDown 走 `docker run`（单文件只读挂载、
-`--network=none`、只看 exit code）+ SCNet 异步 OCR + ExifTool 走系统命令。
+| # | 事项 | 依赖 | 验收标准 |
+|---|---|---|---|
+| 1 | **真机验证** | 一个已登录的账号 + `docs/real-machine-test.md`（**先写它**） | 扫码 → 收一条 → 回一条 → 发一个文件。**协议层离线测试覆盖不到的东西** |
+| 2 | **提示词用例** | 无 | `internal/prompts` 至少钉住「工具参数真实性」那节与拒答话术 |
+| 3 | **运维端口** | 无 | 状态 / 上下文 / 扫码登录三件事的 CLI 或 HTTP 出口（`Provider.Ops()` 已有，实现还没接） |
+| 4 | **第二个渠道** | 无 | 加一个 `Provider` 就够，**接缝与业务层不许动**（`internal/channels` 的边界测试会挡住偷懒的实现） |
 
-它是「文档 MCP server 的归档侧」的必要前置——归档流水线是「去重 → 落盘 → 转换 →
-入库 → 索引」，而**转换**在其中占最重的一块。
+**做第 1 项之前先写 `docs/real-machine-test.md`**：现在 `make real-check` 打印的那个
+文件名背后什么都没有，而「该看到什么」只有真机跑的人知道——**先记下来再跑第二次**。

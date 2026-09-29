@@ -7,11 +7,13 @@
 要什么能力就接一个 server 或写一份 skill。
 
 > **这是独立仓库。** Node 版（在上级 `fka` 仓库里）仅作**历史参照与迁移来源**，
-> [docs/node-to-go.md](docs/node-to-go.md) 记着两边的映射。那边是另一个仓库、另一份历史，
-> 改动互不相干。
+> 那边是另一个仓库、另一份历史，改动互不相干。**两边的模块映射没有写成文**——
+> `1fae643`（agent 侧不再有任何存储）与 `0fb673b`（记忆 server 自给自足）之后，
+> 文档/NAS/向量那条线整体搬出了本仓库，而那份映射表一直没写。
 
-**当前状态：** agent（工具循环 / LLM / 五类 effect 放行 / MCP client / skills）已端到端可用；
-channel 接缝已就位、**iLink provider 还没写**。
+**当前状态：** agent（工具循环 / LLM / 五类 effect 放行 / MCP client / skills）、
+微信渠道（iLink 协议 + 适配 + 扫码登录）与记忆 MCP server 都已端到端可用。
+**没验证过的只剩真机那一段**：扫码登录成功过，收发消息这一段还需要真微信账号。
 
 ---
 
@@ -21,10 +23,18 @@ channel 接缝已就位、**iLink provider 还没写**。
 make build      # 构建全部（零 CGO）
 make test       # 全部测试
 make verify     # 提交前的闸门：fmt-check → vet → test → build → smoke
+make login      # 扫码登录 iLink（凭证写进 <FKA_HOME>/.env，权限 0600）
+make serve      # 常驻：接渠道、收消息、跑问答
+make real-check # 真机检查：**它只提示步骤，那份步骤文档还没写**
+make why PKG=… # 某个依赖为什么在（`make why PKG=modernc.org/sqlite`）
 make release    # 交叉编译 6 个平台到 dist/（带 sha256）
 make install    # 装到 PREFIX（默认 /usr/local）
 make help       # 全部目标
 ```
+
+> **`make ci` 跑不通**：它第二步是 `go test -race`，而 Makefile 全局
+> `export CGO_ENABLED=0`（零 CGO 是硬约束），Go 直接拒绝 `-race`。
+> 要竞态检测就手动 `CGO_ENABLED=1 go test -race -count=2 ./...`。
 
 **`fka version` 能查出二进制是哪一版编的**，还能验证零 CGO 那条硬约束：
 
@@ -90,9 +100,9 @@ FKA_HOME=/path/to/fka ./bin/fka serve
 
 | 你怎么跑 | 安装根 | 技能目录 |
 |---|---|---|
-| `make serve` / `make login`（**推荐**） | 仓库根（Makefile 把 `FKA_HOME` 设成 `$(CURDIR)`） | `go/skills/` |
+| `make serve` / `make login`（**推荐**） | 仓库根（Makefile 把 `FKA_HOME` 设成 `$(CURDIR)`） | `<仓库根>/skills/` |
 | `FKA_HOME=/path/to/x ./bin/fka serve` | `/path/to/x` | `/path/to/x/skills/` |
-| `./bin/fka serve`（不设 `FKA_HOME`） | `go/bin/` | **`go/bin/skills/`** |
+| `./bin/fka serve`（不设 `FKA_HOME`） | `bin/` | **`bin/skills/`** |
 
 第三行是绝大多数「我的技能怎么不生效」的来源：**直接跑二进制和走 Makefile 读的是两个不同的目录。**
 不确定当前是哪个时，`make help` 的第一行会打印 `FKA_HOME=<实际值>`。
@@ -233,34 +243,76 @@ server 侧不认识 agent——所以 server 能单独构建、部署、换掉�
 
 ---
 
+## 日志
+
+`<安装根>/logs/app.<UTC 日期>.log`，**按天轮转，永远全量**（控制台调静音也不丢）。
+一行一条，**普通文本**：
+
+```
+2026-09-29T08:03:47.683Z [INFO][account_002][LLM] 提交模型请求 account=account_002 host=127.0.0.1 messages=1 model=deepseek stream=true
+```
+
+行首三格是 `[级别][账号][哪一段]`，后面是消息与 `键=值` 字段。**控制台与文件同一套
+排版**（控制台没有时间戳），所以三种捞法都成立：
+
+```bash
+grep '\[account_002\]' logs/app.*.log        # 那个账号的整条链路
+grep '\[LLM\]'            logs/app.*.log     # 模型这一段
+cut -d' ' -f2,3,4         logs/app.*.log     # 级别 / 账号 / 哪一段
+```
+
+「哪一段」是 `SYS` / `CHAN` / `MSG` / `PRM` / `LLM` / `RSN` / `TOOL` / `HIST`，
+**每个日志点自己声明**——它是代码位置的性质，推不出来。账号由消息层绑在 ctx 上，
+往下每层自动合并（`config.Bind` / `config.Fields`），**不靠各处手抄**。
+
+控制台级别用 `--log-level` 或 `LOG_LEVEL` 定（`debug`/`info`/`warn`/`error`/`critical`）；
+**认不出来直接以 2 退出**，不静默退回默认。CLI 默认把级别压到 `warn`。
+
+**MCP server 的日志一律走 stderr**：`mcp.json` 给了 `env` 时子进程拿不到
+`LOG_LEVEL`，级别会落回 debug——而它的 stdout 是 JSON-RPC 通道，一行日志就可能
+把 server 打挂。
+
+---
+
 ## 目录
 
 ```
-go/
-├── cmd/fka/            主程序：ask（无头问答）/ tools（工具清单）
-├── mcp/                MCP server（能力，不是 agent）
-│   ├── memory/         家庭记忆 server —— **自给自足的独立项目**
-│   │   └── internal/   **只有本树能 import**（编译器保证）
-│   └── README.md       挂载方式、存储布局、三条硬约束
-├── docs/               本项目文档（见下表）
-└── internal/           agent 侧。**没有 store / nas / 任何持久化**
-    ├── agent/          工具调用循环 + runner
-    ├── app/            装配根
-    ├── channels/       渠道接缝（不认识任何渠道实现）
-    │   └── ilink/      微信渠道：adapter（实现 Channel）+ provider（实现 Provider）
-    │       └── bot/    协议实现：报文 / 加解密 / 发送 / 上传 / 长轮询 / 登录
-    ├── config/         安装根解析、.env 加载、日志（按天轮转）
-    ├── llm/            模型契约 + 历史压缩 + 会话历史
-    │   └── openai/     OpenAI 兼容 provider
-    ├── messages/       入站消息 → 工具循环 → 按原路答复
-    ├── prompts/        系统提示词唯一出处
-    └── tools/          工具契约 + 放行策略 + 注册表
-        ├── mcp/        MCP client + mcp.json + 聚合源
-        └── skills/     技能源
+fka-go/                     **仓库根就是模块根**（没有 go/ 那一层）
+├── cmd/fka/               主程序：ask（无头问答）/ tools（工具清单）/ serve（常驻）
+│                         / login（扫码登录 iLink）/ version
+├── mcp/                   MCP server（能力，不是 agent）
+│   ├── memory/            家庭记忆 server —— **自给自足的独立项目**
+│   │   └── internal/      store / domain / searchterms / log（**只有本树能 import**）
+│   └── README.md          挂载方式、存储布局、三条硬约束
+├── docs/                  本项目文档（见下表）
+├── internal/              agent 侧。**没有任何持久化**——数据全归 MCP server
+│   ├── agent/             工具调用循环 + runner
+│   ├── app/               装配根
+│   ├── channels/          渠道接缝（不认识任何渠道实现）
+│   │   └── ilink/         微信渠道：adapter（实现 Channel）+ provider（实现 Provider）
+│   │       └── bot/       协议实现：报文 / 加解密 / 发送 / 上传 / 长轮询 / 登录
+│   ├── config/            安装根解析、.env 加载、日志（按天轮转）、**日志归属绑定**
+│   ├── llm/               模型契约 + 历史压缩 + 会话历史
+│   │   └── openai/        OpenAI 兼容 provider
+│   ├── messages/          入站消息 → 工具循环 → 按原路答复（**按账号分片**）
+│   ├── prompts/           系统提示词唯一出处
+│   └── tools/             工具契约 + 放行策略 + 注册表
+│       ├── mcp/           MCP client + mcp.json + 聚合源
+│       └── skills/        技能源
+├── Makefile               verify / ci / release / install / why…
+└── AGENTS.md              给 agent 看的：踩过才知道的规矩
 ```
 
-**依赖只有三个：** `sashabaranov/go-openai`、`mark3labs/mcp-go`、`modernc.org/sqlite`
-（纯 Go，零 CGO）。**没有 CGO**——每个模块对 CGO 的需求都逐个检查过，见
+`skills/` **不入库**（每个安装自己放），所以仓库里没有这个目录——`fka tools` 的
+技能段为空是正常状态，不是没装好。
+
+**本仓库不做文档 / NAS / 向量那条线。** 它在 `1fae643` 与 `0fb673b` 之后
+**整个搬出去了**：要那些能力就接一个外部 MCP server（见上面「能力从哪来」）。
+`docs/port-plan.md` 里记着这件事与本仓库剩下的待办。
+
+**依赖只有四个：** `sashabaranov/go-openai`、`mark3labs/mcp-go`、`modernc.org/sqlite`
+（纯 Go，零 CGO）、`skip2/go-qrcode`（登录时画二维码，**只有 `fka login` 用它**）。
+**没有 CGO**——每个模块对 CGO 的需求都逐个检查过，见
 [decisions.md](docs/decisions.md#附零-cgo-是怎么达成的)。
 
 ---
@@ -269,12 +321,17 @@ go/
 
 | 文件 | 讲什么 |
 |---|---|
-| **[docs/port-plan.md](docs/port-plan.md)** | **先读这个。** 模块清单与进度、实施顺序、每层的验收标准、**改任何东西都不能破的不变量** |
+| **[docs/port-plan.md](docs/port-plan.md)** | **先读这个。** 模块清单与进度、**改任何东西都不能破的不变量**、已知的债、本仓库剩下要做的 |
 | **[docs/decisions.md](docs/decisions.md)** | 技术决策与「为什么是它而不是别的」，含每条的**后果**（很多是已接受的代价） |
 | **[docs/permissions.md](docs/permissions.md)** | ⚠️ 权限模型，以及**唯一一处「防线从代码移到模型手上」的地方** |
 | **[mcp/README.md](mcp/README.md)** | 记忆 server：自己管自己的表、schema、迁移、日志与库文件 |
-| **[docs/node-to-go.md](docs/node-to-go.md)** | Node → Go 的模块映射、**有意不同的几处**、**必须 1:1 不许优化的几处** |
-| [docs/dev-log.md](docs/dev-log.md) | 开发日志（最新在上） |
+| **[AGENTS.md](AGENTS.md)** | 给 agent 看的入口：闸门、安装根、零 CGO、**这些名字改了就是改了产品** |
+| [docs/dev-log.md](docs/dev-log.md) | 开发日志（最新在上）。**记的是当时的状态**，里面的路径有的已经搬走了 |
 
 渠道契约目前以**代码与测试**为准：`internal/channels/types.go` 是接口，
-`internal/channels/channels_test.go` 是可执行的契约说明。iLink 接进来时再补设计文档。
+`internal/channels/channels_test.go` 是可执行的契约说明。
+
+**两处「该有而没有」的文档**（别去找）：
+`docs/real-machine-test.md`（`make real-check` 会打印这个名字，但文件没写），
+以及 Node ↔ Go 的模块映射表（`1fae643` 之后一直没写，README 顶部那条链接已经删掉）。
+

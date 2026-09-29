@@ -13,8 +13,15 @@ Go 版 agent 工具循环 + 一个微信渠道。**它自己不带任何内置�
 
 ```bash
 make verify      # 提交前跑这一条：fmt-check → vet → test → build → smoke
-make ci          # verify + -race + -count=2（仓库里没有 .github/，这就是 CI 该跑的那条）
 make help        # 第一行打印当前实际 FKA_HOME
+```
+
+**`make ci` 现在跑不通**（2026-09-29 实测）：第二步是 `go test -race`，而 Makefile
+全局 `export CGO_ENABLED=0`（零 CGO 是硬约束），Go 直接拒绝 `-race`。
+要竞态检测就手动：
+
+```bash
+CGO_ENABLED=1 go test -race -count=2 ./...
 ```
 
 - **顺序是有意的**：先 fmt-check 再 vet，否则 vet 的报错里混着格式噪音。
@@ -33,7 +40,7 @@ go test -race ./internal/channels
   （技能读到没、server 连上没有）**静默失败时从界面上完全看不出来**。
   「技能列表是空的」是正常状态，不是没装好。
 - 需要真机微信账号的验证**跑不了自动化**：`make real-check` 只是个提示。
-  它引用的 `docs/real-machine-test.md` **当前不存在**（Makefile:70/300 指向它）。
+  它引用的 `docs/real-machine-test.md` **当前不存在**（Makefile:70/315 指向它）。
 
 ## 安装根：最容易踩的一件事
 
@@ -97,7 +104,7 @@ Go 的 `internal` 规则只管「树内不许外泄」，**管不了「树外不
 ## 本仓库的写法约定
 
 - **测试名是中文句子**：`Test主体_场景` 或 `Test一句话描述`（`TestMigrate_认领失败不重建`、
-  `TestRegistry_未放行的工具不告诉模型`）。`t.Run` 的子测试名同理。这不是玩笑，219 个用例都这样。
+  `TestRegistry_未放行的工具不告诉模型`）。`t.Run` 的子测试名同理。这不是玩笑，271 个顶层用例（约 290 含子测试）都这样。
 - **文件头注释解释「为什么」，不解释「是什么」**：几乎每个非平凡文件开头都有 `//` 头，
   带 `##` 小节、`**加粗**` 的关键论断、常见「刻意这么做」的解释（有时还写清
   Node 版原来的做法与它的痛点）。写新文件请照这个密度写。
@@ -125,16 +132,20 @@ Go 的 `internal` 规则只管「树内不许外泄」，**管不了「树外不
 skill front matter 解析不引 YAML 库（只认 `key: value`，认不出的当正文，
 **绝不因为格式不合就丢掉一个技能**）。加依赖前先想清楚能不能手写。
 
-## ⚠️ 文档与代码已经漂移，别照着文档找包
+## ⚠️ 这个仓库只有「agent + 一个渠道」，文档/NAS/向量那半边已经搬走了
 
-`README.md` / `docs/dev-log.md` / `docs/node-to-go.md` 描述的是**比本仓库大得多的那棵树**
-（它们还在用 `go/` 前缀）。以下路径**在本仓库不存在**，文档里提到的多半是 Node 仓库那边的
-历史或待办：`internal/nas`、`internal/store`、`internal/mcpboot`、`internal/ids`、
-`internal/domain`、`internal/searchterms`、`mcp/docs/`（记忆存储现在在
-`mcp/memory/internal/store`）。`README.md` 顶部「iLink provider 还没写」也已过时 —— 
-`internal/channels/ilink` 在，代码为准。
+`1fae643`（agent 侧不再有任何存储）与 `0fb673b`（记忆 server 自给自足）把
+`internal/{nas,store,ids,domain,searchterms,mcpboot}` 与整个 `mcp/docs` **搬了出去**。
+所以下面这些路径**在本仓库不存在**，在文档里读到它们时先想一下是「历史」还是「待办」：
+`internal/nas`、`internal/store`、`internal/mcpboot`、`internal/ids`、
+`internal/domain`、`internal/searchterms`、`mcp/docs`（记忆存储现在在
+`mcp/memory/internal/store`）。
 
-**实际存在的树**（65 个 .go 文件）：
+`README.md` / `port-plan.md` / `decisions.md` / `permissions.md` 已按现状整理过（2026-09-29）；
+**`docs/dev-log.md` 不要改**——它记的是当时的状态，里面的路径有的已经搬走了。
+`docs/node-to-go.md` 被人删掉了（一直没写），引用它的死链已清掉。
+
+**实际存在的树**（75 个 .go 文件，271 个顶层用例）：
 
 ```
 cmd/fka/            入口：ask / tools / serve / login / version
