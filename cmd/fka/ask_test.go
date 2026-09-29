@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -168,3 +169,56 @@ func Test布尔参数给没给要分得清(t *testing.T) {
 		t.Error("子命令之前给了也该认出来")
 	}
 }
+
+// Test没给会话时每次都是新会话 兜底曾经是常量 "cli"，于是**每一次**不带
+// `--session` 的 `ask` 都在续上一个：历史按会话落文件，命令行里什么都没变，
+// 而症状只在恰好问到相关话题时显形（「模型忽然提起你半小时前问的那件事」）。
+func Test没给会话时每次都是新会话(t *testing.T) {
+	first := sessionID(mustParse(t, "ask", "今天天气"))
+	second := sessionID(mustParse(t, "ask", "今天天气"))
+
+	if first == second {
+		t.Fatalf("两次问该是两个会话，实际都是 %q —— 历史会串", first)
+	}
+	for _, got := range []string{first, second} {
+		if !strings.HasPrefix(got, cliSessionPrefix) {
+			t.Errorf("命令行会话该带 %s 前缀，实际 %q", cliSessionPrefix, got)
+		}
+	}
+}
+
+// Test显式给了会话就照给 兜底换了新规则，**显式指定的那条路一个字都不能变**——
+// 那是「要连续会话」的场合（接着刚才那条 CLI 问的继续）。
+func Test显式给了会话就照给(t *testing.T) {
+	if got := sessionID(mustParse(t, "ask", "--session", "aabbcc", "问")); got != "aabbcc" {
+		t.Errorf("参数该照用，实际 %q", got)
+	}
+
+	t.Setenv(sessionEnv, "from-env")
+	if got := sessionID(mustParse(t, "ask", "问")); got != "from-env" {
+		t.Errorf("该退回环境变量，实际 %q", got)
+	}
+	if got := sessionID(mustParse(t, "ask", "--session", "from-arg", "问")); got != "from-arg" {
+		t.Errorf("参数该压过环境变量，实际 %q", got)
+	}
+}
+
+// Test会话id正好用满文件名预算 `llm.safeSegment` 把会话段截到 40 字符，
+// **截断是静默的**：两个只在末尾不同的会话会落进同一个历史文件，串历史的问题
+// 又回来了。所以这个长度是被钉住的，不是碰巧。
+func Test会话id正好用满文件名预算(t *testing.T) {
+	const budget = 40
+
+	got := sessionID(mustParse(t, "ask", "问"))
+	if len(got) != budget {
+		t.Errorf("会话 id 该正好 %d 字符（%s + UUID 36），实际 %d：%q",
+			budget, cliSessionPrefix, len(got), got)
+	}
+	// 形状也得对：日志与文件名里要认得出这是个 UUID
+	if !uuidShape.MatchString(got) {
+		t.Errorf("该是 %s<uuid v4> 的形状，实际 %q", cliSessionPrefix, got)
+	}
+}
+
+// uuidShape UUID v4 的形状（8-4-4-4-12，版本位 4、变体位 8/9/a/b）。
+var uuidShape = regexp.MustCompile(`^cli-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)

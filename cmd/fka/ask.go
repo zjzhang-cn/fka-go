@@ -25,13 +25,15 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 	question := strings.TrimSpace(strings.Join(parsed.positional, " "))
 	if question == "" {
 		fmt.Fprintln(os.Stderr, "用法：fka ask [参数] <问题>")
-		fmt.Fprintf(os.Stderr, "  参数：%s <身份>（%s）、%s <会话>（%s）\n",
+		// 会话那条**把兜底说清楚**：不给就是「每次一个新会话」，
+		// 而「接着刚才那条 CLI 问的继续」要显式给 id
+		fmt.Fprintf(os.Stderr, "  参数：%s <身份>（%s）、%s <会话>（%s，不给则每次新会话）\n",
 			principalFlag, principalEnv, sessionFlag, sessionEnv)
 		return exitUsage
 	}
 
 	principal := flagOrEnv(parsed, principalFlag, principalEnv, "cli")
-	session := flagOrEnv(parsed, sessionFlag, sessionEnv, "cli")
+	session := sessionID(parsed)
 
 	application := build()
 	defer application.Close()
@@ -83,10 +85,30 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 	fmt.Println(result.Text)
 
 	if debugEnabled() {
-		fmt.Fprintf(os.Stderr, "\n[debug] steps=%d stoppedBy=%s tools=%s\n",
-			result.Steps, result.StoppedBy, strings.Join(result.UsedTools, ", "))
+		// **会话 id 印出来**：没给 `--session` 时它是每次新生成的，
+		// 而「接着刚才那条 CLI 问的」只能靠这个 id —— 不印出来就等于没法接续
+		fmt.Fprintf(os.Stderr, "\n[debug] session=%s steps=%d stoppedBy=%s tools=%s\n",
+			session, result.Steps, result.StoppedBy, strings.Join(result.UsedTools, ", "))
 	}
 	return exitOK
+}
+
+// sessionID 这一轮用哪个会话。**三层，从上往下**：`--session` > `FKA_SESSION` >
+// **每次新生成一个**。
+//
+// ## 兜底为什么是「新生成」而不是一个固定名字
+//
+// 兜底曾是常量 `"cli"`。历史按会话落文件（`data/history/<会话>.jsonl`），
+// 于是**每一次**不带 `--session` 的 `ask` 都在续上一个——「问音乐商店销量」之后
+// 再问「今天天气」，模型会拿前一个问题当上下文。命令行里什么都没变，
+// 而这个错只在**恰好问到相关话题**时显形，定位起来毫无线索。
+//
+// 显式给了 `--session` 的用法一个字没变：那是**要**连续会话的场合。
+func sessionID(parsed cliArgs) string {
+	if given := flagOrEnv(parsed, sessionFlag, sessionEnv, ""); given != "" {
+		return given
+	}
+	return newCliSessionID()
 }
 
 // runTools 列出模型现在能看到的工具，以及被挡下的那些与原因。
