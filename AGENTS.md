@@ -36,8 +36,10 @@ go test -race ./internal/channels
 
 - `make verify` 里的 `smoke` 是**能力链路唯一的自动闸门**：它在隔离的临时目录里装一个
   skill 与一个 MCP server，断言 `fka tools` 真列出了 `skills__load` / `skills__list` /
-  `mcp__memory__search_memories` / `mcp__memory__remember_memory`。这两件事
-  （技能读到没、server 连上没有）**静默失败时从界面上完全看不出来**。
+  `mcp__memory__search_memories` / `mcp__memory__remember_memory`，并且记忆库落进了
+  `mcp.json` 里 `cwd` 指定的那份安装根。这三件事（技能读到没、server 连上没有、
+  子进程在哪个目录跑）**静默失败时从界面上完全看不出来**——`cwd` 失效的表现是
+  工具照常列出来、文件写到别处去了，所以只能查文件落没落对。
   「技能列表是空的」是正常状态，不是没装好。
 - 需要真机微信账号的验证**跑不了自动化**：`make real-check` 只是个提示。
   它引用的 `docs/real-machine-test.md` **当前不存在**（Makefile:70/315 指向它）。
@@ -66,7 +68,15 @@ go test -race ./internal/channels
   一次 `CGO_ENABLED=1 make` 就悄悄破掉了）。
 - `fka version` 打印的 `cgo: off` 由 build tag 判定（`cmd/fka/cgo_on.go` / `cgo_off.go`），
   所以它**只可能来自构建方式**。加了要 cgo 的依赖 = 一次有意识的决定，不是顺手。
-- `mark3labs/mcp-go` **必须钉在 v0.40.x**：v1.0.0+ 要 Go 1.25.5。
+- `mark3labs/mcp-go` 现在钉在 **v1.1.1**（2026-09-29 从 v0.40.0 升上来）。
+  原来的「必须钉在 v0.40.x」的理由是 **v1.0.0+ 要 Go 1.25.5**，而本机工具链已经是
+  go1.27.1，那条理由不再成立；`go.mod` 的 `go` 指令因此从 1.25.0 抬到 **1.25.5**
+  （依赖的最低要求，抬它是被迫的）。
+  升级踩到的**唯一一个真问题**在 `internal/tools/mcp/client.go`：
+  `mcp.LATEST_PROTOCOL_VERSION` 在 v1.1.1 起是 `2026-07-28`（无会话的 stateless 协议），
+  而我们仍然走 initialize 握手 —— 客户端于是认定自己 stateless、**不再发
+  `Mcp-Session-Id`**，第二次请求就得到 `session terminated (404)`。所以那里报的是
+  `mcp.LATEST_LEGACY_PROTOCOL_VERSION`。**再升一次 SDK 之前先读这一段。**
 - 代价是 SQLite 用 `modernc.org/sqlite`（比 CGO 版慢 20–50%，家庭规模不可测量）。
   **连接池限 1、DSN 加 `_txlock=immediate`**，否则 `SQLITE_BUSY` / 升级写锁死锁。
 

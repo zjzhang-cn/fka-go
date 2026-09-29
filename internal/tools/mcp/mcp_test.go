@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
@@ -88,6 +90,9 @@ func TestReadConfig_格式错要报错(t *testing.T) {
 		"env 不是对象":          `{"mcpServers": {"a": {"command": "x", "env": "y"}}}`,
 		"env 的值不是字符串":       `{"mcpServers": {"a": {"command": "x", "env": {"K": 1}}}}`,
 		"headers 不是对象":      `{"mcpServers": {"a": {"url": "u", "headers": 1}}}`,
+		"transport 不是字符串":   `{"mcpServers": {"a": {"url": "u", "transport": 1}}}`,
+		"transport 值不认识":    `{"mcpServers": {"a": {"url": "u", "transport": "websocket"}}}`,
+		"cwd 不是字符串":         `{"mcpServers": {"a": {"command": "x", "cwd": 1}}}`,
 	}
 
 	for name, body := range cases {
@@ -101,6 +106,141 @@ func TestReadConfig_格式错要报错(t *testing.T) {
 				t.Errorf("应是 *ConfigError，调用方据此决定跳过还是拒绝启动：%T", err)
 			}
 		})
+	}
+}
+
+func TestReadConfig_cwd相对路径按安装根(t *testing.T) {
+	dir := t.TempDir()
+	write(t, `{"mcpServers": {
+	  "rel":  { "command": "x", "cwd": "servers/memory" },
+	  "abs":  { "command": "x", "cwd": "`+dir+`" },
+	  "none": { "command": "x" }
+	}}`)
+
+	read, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig 返错：%v", err)
+	}
+
+	// fka 是全局命令，cwd 是任意的：工作目录不按 cwd 解析，否则同一份
+	// mcp.json 从不同目录起会落在不同的盘上
+	if got, want := read.Servers["rel"].Cwd, filepath.Join(homeForTest(), "servers", "memory"); got != want {
+		t.Errorf("相对 cwd = %q，期望 %q", got, want)
+	}
+	if got := read.Servers["abs"].Cwd; got != dir {
+		t.Errorf("绝对 cwd 应原样使用：%q", got)
+	}
+	if got := read.Servers["none"].Cwd; got != "" {
+		t.Errorf("没配 cwd 应为空（继承 fka 的）：%q", got)
+	}
+}
+
+// HTTP 服务器没有子进程可设工作目录：忽略即可，但不能让整个 mcp.json 作废。
+func TestReadConfig_http服务器的cwd被忽略而不报错(t *testing.T) {
+	write(t, `{"mcpServers": {"remote": {"url": "https://example.com/mcp", "cwd": "somewhere"}}}`)
+
+	read, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("不该报错：%v", err)
+	}
+	if got := read.Servers["remote"].Cwd; got != "" {
+		t.Errorf("HTTP 服务器不该带 cwd：%q", got)
+	}
+}
+
+// TestStdioCommand_只改工作目录 别的地方（env 等）一旦跟着变，就是「为了 cwd
+// 修好了命令、弄坏了密钥」——那种 bug 要等到线上才看得出来。
+func TestStdioCommand_只改工作目录(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd, err := stdioCommand(dir)(context.Background(), "some-server", []string{"K=V"}, []string{"--flag"})
+	if err != nil {
+		t.Fatalf("造命令返错：%v", err)
+	}
+	if cmd.Dir != dir {
+		t.Errorf("Dir = %q，期望 %q", cmd.Dir, dir)
+	}
+	if !slices.Contains(cmd.Env, "K=V") {
+		t.Errorf("mcp.json 里的 env 要透传：%v", cmd.Env)
+	}
+	if len(cmd.Args) != 2 || cmd.Args[1] != "--flag" {
+		t.Errorf("args 要原样透传：%v", cmd.Args)
+	}
+}
+
+func TestNewClient_工作目录不可用要说清是哪个服务器(t *testing.T) {
+	cfg := ServerConfig{Command: "some-server", Cwd: filepath.Join(t.TempDir(), "没有这个目录")}
+
+	_, err := newClient(context.Background(), cfg)
+	if err == nil {
+		t.Fatalf("目录不存在该报错")
+	}
+	// 命令名必须出现在消息里：一次要起好几个 server，报「起 x 的连接失败」
+	// 而没说 x 是谁，就等于让用户去翻日志猜
+	for _, want := range []string{"some-server", "工作目录"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("报错里应说明是哪个服务器的什么问题：%s", err.Error())
+		}
+	}
+}
+
+func TestNewClient_工作目录是个文件也算不可用(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("造临时文件失败：%v", err)
+	}
+
+	if _, err := newClient(context.Background(), ServerConfig{Command: "some-server", Cwd: file}); err == nil {
+		t.Fatalf("指向文件该报错")
+	}
+}
+
+// HTTP 的两种传输不能互相顶替，而**选错的报错与真实原因毫无关系**
+// （404 session terminated / transport not started yet），所以猜的那条规则
+// 与「显式压过自动」都要钉住。
+func TestPickTransport_显式压过自动(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  ServerConfig
+		want string
+	}{
+		{"显式 sse 压过 /mcp", ServerConfig{URL: "https://h/mcp", Transport: transportSSE}, transportSSE},
+		{"显式 http 压过 /sse", ServerConfig{URL: "https://h/sse", Transport: transportHTTP}, transportHTTP},
+		{"/sse 结尾", ServerConfig{URL: "https://h/sse"}, transportSSE},
+		{"/sse 带查询串", ServerConfig{URL: "https://h/sse?token=x"}, transportSSE},
+		{"/sse 带尾斜杠", ServerConfig{URL: "https://h/sse/"}, transportSSE},
+		{"大写的 /SSE", ServerConfig{URL: "https://h/SSE"}, transportSSE},
+		{"路径中间出现 sse 不算", ServerConfig{URL: "https://h/sse-tools/mcp"}, transportHTTP},
+		{"/mcp", ServerConfig{URL: "https://h/mcp"}, transportHTTP},
+		{"url 解析不了就当 http", ServerConfig{URL: "://坏地址"}, transportHTTP},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := pickTransport(c.cfg); got != c.want {
+				t.Errorf("= %q，期望 %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestReadConfig_transport只认两个值 认不出的值**直接报错**：传输选错的表现
+// 是握手失败，而配置读回来是完整的——「配了但没生效」里最难查的一种。
+func TestReadConfig_transport只认两个值(t *testing.T) {
+	write(t, `{"mcpServers": {
+	  "说清楚": { "url": "https://h/sse", "transport": "SSE" },
+	  "没给":   { "url": "https://h/sse" }
+	}}`)
+
+	read, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig 返错：%v", err)
+	}
+	if got := read.Servers["说清楚"].Transport; got != transportSSE {
+		t.Errorf("大小写该归一，实际 %q", got)
+	}
+	if got := read.Servers["没给"].Transport; got != "" {
+		t.Errorf("没给该留空（由 pickTransport 猜），实际 %q", got)
 	}
 }
 

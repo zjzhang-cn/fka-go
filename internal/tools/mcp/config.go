@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,12 +29,22 @@ type StdioServer struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"`
 }
 
-// HTTPServer 远程（streamable HTTP）服务器。
+// HTTPServer 远程服务器。**HTTP 有两种传输**，不是一种：
+//
+//   - `sse`（老）：GET 开着一条流，服务端先给一个 `endpoint` 事件告诉你往哪 POST，
+//     POST 只回 `202 Accepted`，**真正的响应从那条流上回来**；
+//   - `http`（streamable，新）：直接 POST 那个 url，响应就在响应体里。
+//
+// 两者**不能互相顶替**：拿新的客户端去 POST 一个 `/sse` 地址，拿到的是
+// `404 session terminated` —— 而配置看上去完全正确。
 type HTTPServer struct {
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
+	URL string `json:"url"`
+	// Transport `sse` / `http`。**空 = 按 url 的形状自己猜**（见 pickTransport）
+	Transport string            `json:"transport,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 // ServerConfig 一个服务器的配置。**不是联合类型**：Go 里用
@@ -45,6 +56,12 @@ type ServerConfig struct {
 	Env     map[string]string
 	URL     string
 	Headers map[string]string
+	// Transport HTTP 服务器用哪种传输（`sse` / `http`）。空 = 猜。
+	// **只对 url 有意义**，stdio 忽略它（它自己就是本地管道）
+	Transport string
+	// Cwd 子进程的工作目录。**空 = 继承 fka 自己的**（于是跟着「谁在哪个
+	// 目录敲的 fka」变，见 resolveCwd）；对 HTTP 服务器无意义
+	Cwd string
 }
 
 // describe 人看的名字，给错误信息用。
@@ -92,6 +109,7 @@ func ResolveConfigPath() string {
 //	}
 //
 // 有 command 的是 **stdio**（本地起进程），有 url 的是 **streamable HTTP**。
+// stdio 还可以给 `cwd` 指定子进程的工作目录（相对路径按安装根解析）。
 //
 // ## 文件不存在 = 没有 MCP，是正常状态
 //
@@ -178,6 +196,15 @@ func parseServer(name string, value any, path string) (ServerConfig, error) {
 			cfg.Env = env
 		}
 
+		if rawCwd, present := raw["cwd"]; present && rawCwd != nil {
+			text, ok := rawCwd.(string)
+			if !ok {
+				return ServerConfig{}, newConfigError(
+					"mcp.json 里服务器 %s 的 cwd 必须是字符串：%s", name, path)
+			}
+			cfg.Cwd = resolveCwd(text)
+		}
+
 		return cfg, nil
 	}
 
@@ -191,11 +218,90 @@ func parseServer(name string, value any, path string) (ServerConfig, error) {
 			}
 			cfg.Headers = headers
 		}
+		if rawTransport, present := raw["transport"]; present && rawTransport != nil {
+			// **认不出的值直接报错**：传输选错的表现是握手 404，而配置看上去
+			// 完全正常——那正是「配了但没生效」最难查的一种。宁可启动时就说清
+			transport, ok := rawTransport.(string)
+			if !ok {
+				return ServerConfig{}, newConfigError(
+					"mcp.json 里服务器 %s 的 transport 必须是字符串：%s", name, path)
+			}
+			switch strings.ToLower(strings.TrimSpace(transport)) {
+			case "":
+			case transportSSE, transportHTTP:
+				cfg.Transport = strings.ToLower(strings.TrimSpace(transport))
+			default:
+				return ServerConfig{}, newConfigError(
+					"mcp.json 里服务器 %s 的 transport 只能是 %s 或 %s，收到 %q：%s",
+					name, transportSSE, transportHTTP, transport, path)
+			}
+		}
+		// HTTP 服务器没有子进程，cwd 无处可去。**忽略而不是报错**：
+		// 报错会让整个 mcp.json 作废、把别的服务器一起带走，而忽略没有运行时代价。
+		// 但必须留一条痕迹——否则用户以为「配了工作目录」而其实没有
+		if rawCwd, present := raw["cwd"]; present && rawCwd != nil {
+			config.Log().Warn(config.TypeSYS, "mcp.json 里 HTTP 服务器的 cwd 只对 stdio 有意义，已忽略",
+				config.Context{"server": name, "path": path})
+		}
 		return cfg, nil
 	}
 
 	return ServerConfig{}, newConfigError(
 		"mcp.json 里服务器 %s 既没有 command（stdio）也没有 url（HTTP）：%s", name, path)
+}
+
+// HTTP 的两种传输。**名字与 mcp.json 里的 `transport` 取值一字不差**——
+// 写错一个字符的表现是「配置读进来了但没人认」。
+const (
+	transportSSE  = "sse"
+	transportHTTP = "http"
+)
+
+// pickTransport 这个 HTTP 服务器该用哪种传输。
+//
+// ## 显式优先，其次看 url 的形状
+//
+// 猜的依据只有一条：**path 以 `/sse` 结尾**（去掉 query 与 fragment 再看）。
+// 那是约定而不是保证——所以它只是兜底，并且**猜出来的结果要进日志**。
+//
+// ## 为什么不给「先试一种，失败再换一种」
+//
+// 看着更聪明，实际更糟：streamable 的失败原因五花八门（401、404、超时、DNS），
+// 只有一部分说明「这是台老服务器」。为了让那一小类能落到 SSE 上，得给错误分类，
+// 而分类判错时的表现是**两段都试过、两段都失败**，用户看到的是一条比原来更长的
+// 错误信息，却拿不到「该写什么」的建议。不如猜错时说清怎么写。
+func pickTransport(cfg ServerConfig) string {
+	if cfg.Transport != "" {
+		return cfg.Transport
+	}
+	// 解析失败就当不是 SSE：url 反过来由 SDK 报错，那条消息更具体
+	parsed, err := url.Parse(cfg.URL)
+	if err != nil {
+		return transportHTTP
+	}
+	path := strings.TrimSuffix(parsed.Path, "/")
+	if strings.HasSuffix(strings.ToLower(path), "/"+transportSSE) {
+		return transportSSE
+	}
+	return transportHTTP
+}
+
+// resolveCwd 把配置里的工作目录变成一个可直接交给 exec 的路径。
+//
+// **相对路径按安装根解析**，不按 cwd——与 ResolveConfigPath 同一条理由。
+// 这里尤其重要：不解析的话子进程会继承「谁在哪个目录敲的 fka」，而 `fka` 是
+// 全局命令、从 Makefile 起、从终端起、从 launchd 起各是不同目录，同一份
+// mcp.json 每次跑在不同的盘上。**目录不存在不在这时报错**（那是连接期的事，
+// 一个服务器连不上不该让整个 mcp.json 作废），由 client 在起进程前查。
+func resolveCwd(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if filepath.IsAbs(trimmed) {
+		return trimmed
+	}
+	return filepath.Join(config.Home(), trimmed)
 }
 
 func stringRecord(server, field string, value any, path string) (map[string]string, error) {

@@ -51,9 +51,10 @@ cgo 那行靠 build tag 判定（`CGO_ENABLED=0` 时 cgo 包根本不编译，�
 所以它**只可能来自构建方式，不可能来自运行时猜测**。
 
 **`make verify` 是提交前该跑的那一条。** 里面的 `smoke` 会在**隔离的临时目录**里
-装一个技能与一个 MCP server，然后断言 `fka tools` 真的列出了它们——因为「技能
-读到了吗」「server 连上了吗」这两件事**静默失败时从界面上看不出来**：工具列表
-就是空的，而你没法区分「没配」与「配了但没生效」。
+装一个技能与一个 MCP server，然后断言 `fka tools` 真的列出了它们、并且子进程写的
+文件落进了 `mcp.json` 指定的工作目录——因为「技能读到了吗」「server 连上了吗」
+「server 在哪个目录跑」这三件事**静默失败时从界面上看不出来**：工具列表就是空的
+（或者照常有），而你没法区分「没配」与「配了但没生效」。
 
 ```bash
 # 列出模型现在能看到的工具与五类放行情况
@@ -72,17 +73,38 @@ FKA_HOME=/path/to/fka ./bin/fka serve
 
 ### 挂上 MCP server
 
+`command` 是**本地进程**（stdio），`url` 是**远程**服务器。两者可以混在同一个 `mcp.json` 里。
+
 ```jsonc
 // <安装根>/mcp.json
 {
   "mcpServers": {
     "memory": {
       "command": "/path/to/fka/bin/fka-memory",
-      "args": ["--db", "/path/to/fka/data/memory.sqlite"]
+      "args": ["--db", "/path/to/fka/data/memory.sqlite"],
+      // 可选：stdio 子进程的工作目录，相对路径按安装根解析
+      "cwd": "/path/to/fka"
+    },
+
+    "remote": {
+      "url": "https://memory.example.com/df8908a6/sse",
+      // 可选：sse（老）还是 http（streamable）。不给就按 url 是否以 /sse 结尾猜
+      "transport": "sse",
+      "headers": { "Authorization": "Bearer …" }
     }
   }
 }
 ```
+
+`cwd` 只对 `command`（stdio）那类服务器有意义。不给就继承 `fka` 自己的当前目录 ——
+而 `fka` 是全局命令，从终端、从 launchd、从 Makefile 起各是不同目录，所以**要让
+server 里的相对路径稳定，就得显式写 `cwd`**（写 `"."` 就是安装根）。
+
+**HTTP 有两种互不兼容的传输**：老式 `sse`（GET 开着一条流，POST 只回 `202`，响应从流上回来）
+与 `http` / streamable（直接 POST，响应在响应体里）。拿错的表现是握手失败，而配置读回来
+完全正常。不给 `transport` 时按 **path 是否以 `/sse` 结尾**猜，猜的结果会记进日志
+（`MCP 服务器已连接：xxx tools=N transport=sse`）；路径千奇百怪时**显式写 `transport`**。
+连不上时错误信息里会直接告诉你该写什么。
 
 **MCP 工具一律是 `external` 类**，要显式放行：`LLM_TOOL_EFFECTS=read,external`。
 

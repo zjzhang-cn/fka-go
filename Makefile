@@ -255,16 +255,23 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@$(MAKE) --no-print-directory smoke-wiring
 
 # smoke-wiring 单独跑第 4 步。**这是能力链路唯一的自动闸门**——
-# 「技能读到了吗」「MCP server 连上了吗」这两件事，静默失败时从界面上看不出来：
-# 工具列表就是空的，而你没法区分「没配」与「配了但没生效」。
+# 「技能读到了吗」「MCP server 连上了吗」「mcp.json 里的 cwd 生效了吗」这三件事，
+# 静默失败时从界面上都看不出来：工具列表就是空的，而你没法区分「没配」与
+# 「配了但没生效」。
+#
+# 库路径故意给**相对**的 `cwd-probe/memory.sqlite`：fka-memory 按自己的 cwd
+# 解析它，而 cwd 由 mcp.json 的 `cwd` 决定。所以最后那条断言查的是「库落在
+# <安装根> 里」——**cwd 没生效时工具照样列得出来**（子进程只是跑在了 make
+# 所在的仓库根，把库写在那儿），不查文件就等于没验。这条检查之所以要有牙齿，
+# 是因为 `cwd` 失效的表现是**静默写错地方**，不是报错。
 .PHONY: smoke-wiring
 smoke-wiring: build
 	@rm -rf $(smoke_home)
-	@mkdir -p $(smoke_home)/bin $(smoke_home)/skills/echo
+	@mkdir -p $(smoke_home)/bin $(smoke_home)/skills/echo $(smoke_home)/cwd-probe
 	@cp $(FKA) $(FKA_MEMORY) $(smoke_home)/bin/
 	@printf -- '---\nname: 回声\ndescription: 复述输入\n---\n原样复述一遍。\n' \
 		> $(smoke_home)/skills/echo/SKILL.md
-	@printf '{"mcpServers":{"memory":{"command":"%s"}}}' \
+	@printf '{"mcpServers":{"memory":{"command":"%s","args":["--db","cwd-probe/memory.sqlite"],"cwd":"."}}}' \
 		"$(smoke_home)/bin/fka-memory" > $(smoke_home)/mcp.json
 	@FKA_HOME=$(smoke_home) LLM_TOOL_EFFECTS=read,external \
 		$(smoke_home)/bin/fka tools > $(smoke_home)/out.txt 2>&1 || true
@@ -273,10 +280,16 @@ smoke-wiring: build
 		if grep -q "$$want" $(smoke_home)/out.txt; then \
 			echo "$(BOLD)✓$(RESET) $$want"; \
 		else \
-			echo "$(BOLD)✗$(RESET) 少了 $$want —— 技能目录或 mcp.json 没生效"; \
+			echo "$(BOLD)✗$(RESET) 少了 $$want —— 技能目录、mcp.json 或 mcp.json 里的 cwd 没生效"; \
 			exit 1; \
 		fi; \
 	done
+	@if [ -f $(smoke_home)/cwd-probe/memory.sqlite ]; then \
+		echo "$(BOLD)✓$(RESET) mcp.json 的 cwd 生效了（子进程的工作目录 = 安装根）"; \
+	else \
+		echo "$(BOLD)✗$(RESET) 库不在 <安装根>/cwd-probe/ —— mcp.json 里的 cwd 没生效"; \
+		exit 1; \
+	fi
 	@rm -rf $(smoke_home)
 	@echo "$(BOLD)✓$(RESET) 两条能力来源都接上了"
 

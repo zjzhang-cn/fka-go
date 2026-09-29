@@ -140,13 +140,18 @@ Go 版的每一条技术选择，以及**为什么是它而不是别的**。改�
 
 ---
 
-## 9. MCP client 用社区实现 mark3labs v0.40.0
+## 9. MCP client 用社区实现 mark3labs v1.1.1
 
-**决定：** 不用官方 `modelcontextprotocol/go-sdk`，用 `github.com/mark3labs/mcp-go` v0.40.0。
+**决定：** 不用官方 `modelcontextprotocol/go-sdk`，用 `github.com/mark3labs/mcp-go` v1.1.1。
 
-**历史：** 最初因为官方 SDK 要 Go ≥ 1.25 而本机是 1.23，被迫切到社区库。工具链升上来之后约束消失，**确认继续用社区库**（不折腾，且 API 稳定）。`go.mod` 声明 `go 1.25.0`，本机工具链是 1.26.8。
+**历史：** 最初因为官方 SDK 要 Go ≥ 1.25 而本机是 1.23，被迫切到社区库。工具链升上来之后约束消失，**确认继续用社区库**（不折腾，且 API 稳定）。原先钉在 v0.40.x，理由只剩「v1.0.0+ 要 Go 1.25.5」；本机工具链到 go1.27.1 之后**那条理由也没了**，于是 2026-09-29 升到 v1.1.1。`go.mod` 的 `go` 指令因此从 1.25.0 抬到 **1.25.5**（依赖的最低要求）。
 
-**注意：** v1.0.0+ 要 Go 1.25.5，所以**必须钉在 v0.40.x**。
+**⚠️ 升级踩到的唯一一处行为变化（不是编译错，是运行时的）：**
+`mcp.LATEST_PROTOCOL_VERSION` 在 v1.1.1 起是 `2026-07-28` —— **无会话的 stateless 协议**，
+文档明说它「没有 initialize 握手」。而我们仍在走 initialize 握手，于是客户端认定自己
+stateless、**不再发 `Mcp-Session-Id`**，而服务器那边会话已经建好：第二次请求得到
+`session terminated (404). need to re-initialize`。所以 `internal/tools/mcp/client.go` 报的是
+`mcp.LATEST_LEGACY_PROTOCOL_VERSION`（2025-11-25，仍用握手的最新版）——**再升 SDK 之前先读这一段**。
 
 ---
 
@@ -233,6 +238,41 @@ fka ask --session aabbcc 你的名字加小航
 **顺带定了两件事：** 认不出的参数**报用法错（2）**，不当问题——`--sesion x` 被当问题
 的话模型会拿到一句莫名其妙的话并认真回答；`--` 之后一律当问题，给「以 `-` 开头的问题」
 留一个出口。
+
+
+---
+
+## 16. HTTP 类型的 MCP：两种传输 + headers 必须真发出去
+
+**决定：** `mcp.json` 里 `url` 那类服务器可以给 `transport`（`sse` / `http`）；
+不给就按 **path 是否以 `/sse` 结尾**猜，猜出来的结果记进日志。`headers` 两个分支都真的交给 SDK。
+
+**为什么是这两种：** MCP 的 HTTP 传输有两个互不兼容的世代。老式 `sse`：GET 开着一条流，
+服务端先发一个 `endpoint` 事件告诉你往哪 POST，之后 POST 只回 `202 Accepted`，
+**真正的响应从那条流上回来**。streamable：直接 POST 那个 url，响应在响应体里。
+拿新的客户端去 POST 一个 `/sse` 地址，拿到的是 `404 session terminated`——
+而配置读回来完全正常，一眼看去像是「那台服务器坏了」。
+
+**为什么不给「先试一种，失败再换一种」：** streamable 的失败原因五花八门（401、404、
+超时、DNS），只有一部分说明「这是台老服务器」。为了让那一小类能落到 SSE 上得给错误
+分类，而分类判错时的表现是**两段都试过、两段都失败**，用户拿到的是一条更长的错误信息，
+却没有「该写什么」的建议。不如猜错时**把该写什么直接说进错误里**。
+
+**顺带修掉两个静默失效**（都是 HTTP 那条路独有的，stdio 全都正常，所以极难自己发现）：
+
+- **`headers` 之前根本没发出去。** 配了 `Authorization` 的服务器只会回 401，
+  而 `mcp.json` 读回来是完整的 —— 看起来像服务器坏了。现在有一条用例让服务器把
+  收到的头记下来。
+- **SSE 那条长连 GET 流绑错了 ctx。** 它必须活过整个连接期，而连接期的 ctx 在握手
+  一返回就被 `defer cancel()` 取消了。`initialize` 是 POST，所以**握手照样成功**，
+  之后 `tools/list` 才炸：本地服务器说 `Invalid session ID`（会话随流一起关了），
+  真实服务器则是等不到响应、60 秒后超时。现在 `Start` 拿的是
+  `context.WithoutCancel(ctx)`，流由 `Close()` 收（`Close` 不阻塞）。
+
+**这两条为什么以前没人发现：** HTTP 那条路**一个测试都没有**，`make smoke` 只起 stdio
+的记忆 server。现在 `internal/tools/mcp/http_test.go` 用 mcp-go 自己的两种 server
+起 `httptest`，把「两种传输都能连上并调得动」「显式 transport 压过自动」
+「headers 真的发出去了」三条钉住 —— 全程离线，不依赖任何外部服务器。
 
 
 ---

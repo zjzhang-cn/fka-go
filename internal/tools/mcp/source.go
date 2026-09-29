@@ -246,5 +246,15 @@ func (s *source) connectOne(ctx context.Context, name string) {
 		})
 	}
 
-	config.Log().Info(config.TypeSYS, "MCP 服务器已连接："+name, config.Context{"tools": len(listed)})
+	// 把工作目录与传输方式一起记进日志：子进程在哪儿跑决定了它读得到什么文件，
+	// 而 HTTP 那条路有**两种**互不兼容的传输——「连上了但工具是空的」第一个要看的
+	// 就是这行里的 transport
+	details := config.Context{"tools": len(listed)}
+	if cfg.Cwd != "" {
+		details["cwd"] = cfg.Cwd
+	}
+	if cfg.URL != "" {
+		details["transport"] = pickTransport(cfg)
+	}
+	config.Log().Info(config.TypeSYS, "MCP 服务器已连接："+name, details)
 }
