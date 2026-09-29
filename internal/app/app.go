@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
 	"github.com/zjzhang-cn/fka-go/internal/channels"
@@ -228,6 +229,12 @@ func (a *App) registerChannels(providers []channels.Provider) {
 	}
 }
 
+// drainTimeout 停机时等消息层排空的上限。
+//
+// **必须有上限**：worker 里可能正跑着一整轮问答（模型整体超时 120s），干等下去
+// 会让 Ctrl-C 之后进程两分钟不退出——那比丢掉几条已排队的消息更让人困惑。
+const drainTimeout = 10 * time.Second
+
 // Serve 常驻：订阅入站 → 跑消息循环 → 收到信号停机。
 //
 // ## 顺序是硬要求
@@ -238,8 +245,15 @@ func (a *App) Serve(ctx context.Context) error {
 	subscription := a.Channels.Subscribe()
 	defer subscription.Close()
 
-	// goroutine 代替 Node 版的 worker：**不阻塞 StartAll**，而接缝的投递是非阻塞的
-	go messages.HandleFunc(a.Messages, subscription)()
+	// goroutine 代替 Node 版的 worker：**不阻塞 StartAll**，而接缝的投递是非阻塞的。
+	//
+	// dispatcher **按账号分片**——同账号串行、账号间并行，见 messages/dispatch.go
+	// 里为什么这么切。顺带一提，并发上限不用配：worker 数 = 账号数。
+	dispatched := make(chan struct{})
+	go func() {
+		defer close(dispatched)
+		messages.Dispatch(a.Messages, subscription)()
+	}()
 
 	a.Channels.StartAll(ctx)
 
@@ -250,6 +264,16 @@ func (a *App) Serve(ctx context.Context) error {
 
 	<-ctx.Done()
 	a.Channels.StopAll(context.WithoutCancel(ctx))
+
+	// **要等 dispatcher 排空再返回**，否则下面 `Close()` 会在某个 worker 正调
+	// MCP 工具时把子进程杀了——症状是「停机时最后一条消息报工具调用失败」。
+	// 提前退订让 dispatcher 收尾（`Close` 内部有 sync.Once，多调一次无妨）。
+	subscription.Close()
+	select {
+	case <-dispatched:
+	case <-time.After(drainTimeout):
+		config.Log().Warn("消息层没能在停机时限内排空", config.Context{"timeout": drainTimeout})
+	}
 	return nil
 }
 

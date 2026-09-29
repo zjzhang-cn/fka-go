@@ -225,11 +225,22 @@ func (t *echoTool) source() tools.Source {
 }
 
 type fixture struct {
-	service *channels.Service
-	handler *messages.Handler
-	channel *fakeChannel
-	model   *echoModel
-	tool    *echoTool
+	service  *channels.Service
+	handler  *messages.Handler
+	channel  *fakeChannel
+	channels []*fakeChannel
+	model    *echoModel
+	tool     *echoTool
+}
+
+// channelOf 某个账号的渠道实例。分片用例要按账号分别投递。
+func (f *fixture) channelOf(accountID string) *fakeChannel {
+	for _, channel := range f.channels {
+		if channel.accountID == accountID {
+			return channel
+		}
+	}
+	return nil
 }
 
 // newFixture 装一份「假渠道 + 假模型 + 真接缝 + 真消息层」。
@@ -237,6 +248,13 @@ type fixture struct {
 // **刻意不 mock 接缝**：这条竖切要验的正是「订阅 → 分发 → 回话」这条链，
 // mock 掉接缝就只剩各零件自测了。
 func newFixture(t *testing.T, answer string) *fixture {
+	t.Helper()
+	return newFixtureWithAccounts(t, answer, "acct-1")
+}
+
+// newFixtureWithAccounts 同 newFixture，但一次接上多个账号——
+// 按账号分片的行为只有在两个账号同时来消息时才看得出来。
+func newFixtureWithAccounts(t *testing.T, answer string, accounts ...string) *fixture {
 	t.Helper()
 
 	registry := tools.NewRegistry(nil, tools.ReadToolPolicy())
@@ -252,17 +270,26 @@ func newFixture(t *testing.T, answer string) *fixture {
 	}
 
 	service := channels.NewService()
-	created, err := service.Register(context.Background(), &fakeProvider{id: "fake", accounts: []string{"acct-1"}})
+	created, err := service.Register(context.Background(), &fakeProvider{id: "fake", accounts: accounts})
 	if err != nil {
 		t.Fatalf("注册假渠道失败：%v", err)
 	}
 
+	channelsOut := make([]*fakeChannel, 0, len(created))
+	for _, channel := range created {
+		channelsOut = append(channelsOut, channel.(*fakeChannel))
+	}
+	if len(channelsOut) == 0 {
+		t.Fatal("至少该造出一个渠道实例")
+	}
+
 	return &fixture{
-		service: service,
-		handler: messages.NewHandler(runner, registry),
-		channel: created[0].(*fakeChannel),
-		model:   model,
-		tool:    tool,
+		service:  service,
+		handler:  messages.NewHandler(runner, registry),
+		channel:  channelsOut[0],
+		channels: channelsOut,
+		model:    model,
+		tool:     tool,
 	}
 }
 
@@ -512,7 +539,7 @@ func Test渠道发不了图片就退成文件(t *testing.T) {
 }
 
 // Test常驻循环会一直处理 上面那些用例手写了消费循环来换取确定性；这条钉
-// **生产真正用的那个**（messages.HandleFunc）：它要能连着处理多条，而不是处理一条就卡住。
+// **生产真正用的那个**（messages.Dispatch）：它要能连着处理多条，而不是处理一条就卡住。
 func Test常驻循环会一直处理(t *testing.T) {
 	f := newFixture(t, "好")
 	f.model.noToolCall = true
@@ -520,7 +547,7 @@ func Test常驻循环会一直处理(t *testing.T) {
 	subscription := f.service.Subscribe()
 	stopped := make(chan struct{})
 	go func() {
-		messages.HandleFunc(f.handler, subscription)()
+		messages.Dispatch(f.handler, subscription)()
 		close(stopped)
 	}()
 

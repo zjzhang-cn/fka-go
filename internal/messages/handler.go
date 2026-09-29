@@ -217,17 +217,5 @@ func (r *channelReply) send(kind channels.MediaKind, path, fileName, mimeType st
 	return err
 }
 
-// HandleFunc 消息循环的形状：一个订阅者一条 goroutine，**永不返错**。
-//
-// 单独抽出来是因为「for { select }」那段样板在测试里没法复用，而它是整个常驻服务
-// 里最容易写错顺序的地方（先 Subscribe 再 StartAll，反了会丢消息）。
-func HandleFunc(handler *Handler, subscription *channels.Subscription) func() {
-	return func() {
-		for event := range subscription.C {
-			handler.Handle(context.Background(), event)
-		}
-	}
-}
-
 // ErrNotReady 装配没齐就跑消息循环。**启动期就该发现**，而不是等第一条消息来暴露。
 var ErrNotReady = errors.New("装配没齐：没有可跑的工具循环")

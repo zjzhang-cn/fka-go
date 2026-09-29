@@ -6,6 +6,87 @@
 >
 > 本项目是**独立仓库**。Node 版（`fka` 仓库）有自己的开发日志，两边历史互不相干。
 
+## 2026-09-29 多账号并行：消息处理按账号分片，账号间不再互相等
+
+**类型：** feature
+
+**内容：**
+- 新增 `internal/messages/dispatch.go`：`Dispatch` 取代原来的 `HandleFunc`。
+  一条 dispatcher 读订阅流，**按账号**把事件分给各自的 worker。
+- `internal/app/app.go` 的 `Serve` 换成 `Dispatch`，并加**有上限的停机排空**。
+- 删掉 `messages.HandleFunc`（它就是那条串行 for-range，被整条替换而不是留成第二条路）。
+
+**为什么：**
+原来 `Serve` 只起**一个** goroutine，`for event := range subscription.C` 里同步
+`Handle`。而一次问答是整整一轮 LLM（整体超时 120s），于是：
+
+```
+账号 A 发来一条 → 它那轮问答跑完之前，账号 B 的所有消息全部堵着
+```
+
+症状是「A 问完长问题之后，B 的消息过了好一会儿才有人回」——**不报错、不丢消息，
+只是慢**，所以从界面上完全看不出是并发问题。
+
+接上去的时候查过一遍，**底层每一层都已经是并发安全的**，缺的只是入口：
+
+| 环节 | 状态 |
+|---|---|
+| 长轮询（每账号一个 goroutine，`bot/poller.go`） | 本来就并行 |
+| `agent.Runner` | 无状态——每次调用把依赖按值传给包级 `Run` |
+| `tools.Registry` | 有锁（`registry.go:46`） |
+| `mcp.Source.Call` | 锁只护状态查询，`CallTool` 在锁外（`source.go:90-102`） |
+| mcp-go stdio 传输 | `SendRequest` 用 `mu` 护写、`readResponses` 按 request id 解复用 → **真并发，不是排队** |
+| 会话历史 | `lockFor(path)` **早就有 per-path 锁**（`llm/session.go:87`） |
+
+最后那条是关键证据：**per-path 锁说明设计时就预期了并发，只是入口一直没开。**
+
+**分片键为什么是 `channel:account` 而不是光 `account`**：`AccountID` 只在渠道内
+唯一，渠道种类之间也可能撞号——接缝自己的查找键 `key(channelID, accountID)`
+就是同一个理由。
+
+**为什么同账号必须串行**（不是为了性能）：
+- 历史是**单文件 append**，并发写会交叉；
+- 模型上下文有前后依赖——同账号两条消息并发跑，会各自基于**同一份旧历史**作答，
+  答完再交叉落盘。**那不会报错，历史会静静地错掉。**
+
+**为什么并发上限不用配**：worker 数量 = 见到过消息的账号数，**不随消息量增长**。
+所以并发天然有界在账号数上，不需要信号量或环境变量。
+
+**为什么 dispatcher 往账号队列是阻塞发送、且队列无缓冲**：账号忙的时候
+dispatcher 就停在那儿等，而不是把消息堆起来把「处理不过来」藏起来。压力接着
+堵住订阅流，堵到接缝的 256 满了，接缝自己会记 Warn 并丢弃——沿用 `seam.go`
+早就定下的语义，没有另发明一套丢消息的规则。
+
+**⚠️ 顺带记一个并发带出来的坑**：`Serve` 原来在 `<-ctx.Done()` 之后直接返回，
+而返回后 `app.Close()` 会关掉 MCP 子进程。串行时窗口小，改成按账号并行之后，
+「某个 worker 正调 MCP 工具时子进程被杀」的概率明显变高——症状是「停机时最后
+一条消息报工具调用失败」。所以 `Serve` 现在**提前退订并等 dispatcher 排空**再返回。
+上限 10s：worker 里可能正跑着一整轮问答（模型超时 120s），干等会让 Ctrl-C 之后
+进程两分钟不退出，那比丢几条已排队的消息更让人困惑。
+
+**关联文件：** `internal/messages/dispatch.go`、`internal/messages/handler.go`、
+`internal/app/app.go`、`internal/messages/dispatch_test.go`、
+`internal/messages/dispatch_internal_test.go`、`internal/messages/handler_test.go`
+
+**验证：**
+- [x] `make verify` 全绿；`make test-count`（`-count=2`）全绿
+- [x] **`CGO_ENABLED=1 go test -race -count=2 ./...` 全绿**——见下面那条关于
+      `make test-race` 的记述，本次改动是第一次真正引入并发，值得单独记
+- [x] `Test账号之间并行处理` 在把 dispatcher 换回串行实现后**超时变红**，
+      换回来即绿——**这条钉的是行为本身，不是「代码看起来像并行的」**
+- [x] `Test同一账号串行处理`：第一条卡在模型里时，第二条 300ms 内进不来；
+      放行后恰好回两条、不多跑
+- [x] `Test停机后不留goroutine`：连做 5 轮，每轮留两个**正在处理中**的 worker，
+      订阅流一关 Dispatch 即返回，goroutine 数回到基线
+- [x] `Test分片键带渠道种类`（放包内测，因为 `shardKeyOf` 不导出）：
+      `ilink:account_002` 与 `memory:account_002` 必须是两个分片
+
+**⚠️ 记一条仓库自身的矛盾（未改）：** `make test-race` **跑不了**——
+`go test -race` 要 cgo，而 `CGO_ENABLED=0` 是本项目的硬约束，两者直接冲突。
+也就是说 `make ci` 从建起来那天起就没法跑完。本次靠手工 `CGO_ENABLED=1`
+绕过去验了竞态（那不影响出包仍是零 CGO），但**闸门本身还坏着**。
+未做：给 `test-race` 单独开 `CGO_ENABLED=1`，或者承认 `-race` 不进本仓库的闸门。
+
 ## 2026-09-29 fka login 覆盖已登录的账号：登录前不读 .env，槽位永远挑中 1
 
 **类型：** bugfix
