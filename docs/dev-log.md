@@ -6,6 +6,51 @@
 >
 > 本项目是**独立仓库**。Node 版（`fka` 仓库）有自己的开发日志，两边历史互不相干。
 
+## 2026-09-29 fka login 覆盖已登录的账号：登录前不读 .env，槽位永远挑中 1
+
+**类型：** bugfix
+
+**内容：**
+- `cmd/fka/login.go` 抽出 `loginProvider()`：`config.LoadEnv()` 之后再 `Create()` 建账号表。
+- `cmd/fka/login_test.go` 两条用例：`Test登录第二个账号不覆盖第一个` 与反向对照
+  `Test没登录过就看到空表`。
+
+**为什么：**
+账号表是从 `ILINK_ACCOUNT_<N>_*` 这组**环境变量**读出来的（`ilink.AccountsFromEnv`），
+而这些值只有 `config.LoadEnv()` 之后才在进程里。`fka serve` 走 `app.Build()`，那条路上
+有这一读；`fka login` 刻意不经 app（少一层 socket，见 `runLogin` 的说明），**于是没人读**。
+
+后果是账号表恒为空，`pickSlot("")` 于是永远挑中**槽位 1**：
+
+```
+登录第二个账号 → 凭证原地写进账号 1 的块 → 第一个账号被顶掉
+```
+
+界面上只显示一句「登录成功」，`.env` 里也确实多出一组看起来正常的
+`ILINK_ACCOUNT_1_*`。**账号 1 是被覆盖了，不是登录失败**——这类缺陷从界面上完全
+看不出来，只有拿账号 1 去收消息时才会发现它再也收不到了。
+
+带 `--account N` 时 `pickSlot` 直接返回槽位号、不查表，所以那条路没被踩到。
+
+**⚠️ 记一条辨析：** 用户报的「登录账号 2 覆盖账号 1」**不是这个**。那份 `.env` 里
+4 个槽位的块全都完好，且槽位 1/2 的 `ILINK_USER_ID` 相同、3/4 也相同——**4 个槽位只有
+2 个不同的微信身份**。同一个微信身份再登一次，新登录会接管服务端投递，旧槽位静默失联
+（`data/history/` 里只有后登录的两个账号有会话文件，前两个一条消息都没有，而
+`cursors.json` 里三个游标都在——**在轮询，只是收不到**）。所以那个现象发生在 iLink
+服务端，不在 `.env`。要让多个账号同时处理消息，需要**多个不同的微信身份放进多个槽位**。
+
+**顺带记一个空契约：** `Channel.StorageID()`（`internal/channels/ilink/adapter.go:374`）
+返回 `ILinkUserID`，本该用来判「这个微信身份是不是已经登过」，但**全仓库没有任何地方
+调用它**。未做：登录成功时拿它跟已有账号比对并明确警告。
+
+**关联文件：** `cmd/fka/login.go`、`cmd/fka/login_test.go`
+
+**验证：**
+- [x] `make verify` 全绿（fmt-check → vet → test → build → smoke）
+- [x] `Test登录第二个账号不覆盖第一个` 在注掉 `config.LoadEnv()` 后**立刻变红**
+      （「该认得已登录的账号 1 … 实际：当前没有配置任何 iLink 账号」），加回来即绿
+- [x] `make test-count`（`-count=2`）全绿
+
 ## 2026-09-28 文档 MCP server（只读）：权限行为钉死，agent 第一次搜到真实家庭文档
 
 **类型：** feature

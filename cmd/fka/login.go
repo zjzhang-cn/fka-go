@@ -13,6 +13,7 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/channels/ilink"
 	"github.com/zjzhang-cn/fka-go/internal/channels/ilink/bot"
+	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // 登录要等人扫码，超时给足。用户扫完之前连接一直开着。
@@ -29,10 +30,8 @@ const loginTimeout = 10 * time.Minute
 //
 // 登录完的凭证落进 `<安装根>/.env`（0600），`fka serve` 启动时读它。
 func runLogin(ctx context.Context, args []string) int {
-	provider := ilink.NewProvider()
-
-	// Create 一次：登录要往账号表里写，而表是 Create 建的
-	if _, err := provider.Create(ctx); err != nil {
+	provider, err := loginProvider(ctx)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "渠道起不来："+err.Error())
 		return exitFail
 	}
@@ -57,6 +56,34 @@ func runLogin(ctx context.Context, args []string) int {
 	}
 	fmt.Println("现在跑 `fka serve` 就会用这个账号收消息。")
 	return exitOK
+}
+
+// loginProvider 造一个用来登录的 provider：读 .env，再建账号表。
+//
+// ## 为什么登录前必须自己读 .env
+//
+// 账号表是从 `ILINK_ACCOUNT_<N>_*` 这组**环境变量**读出来的
+// （`ilink.AccountsFromEnv`），而这些值只有 `config.LoadEnv()` 之后才在进程里。
+// 不读的话表是空的，`pickSlot` 于是永远挑中**槽位 1**——
+//
+//	登录第二个账号 → 凭证原地写进账号 1 的块 → 第一个账号被顶掉
+//
+// 而界面上只显示一句「登录成功」，`.env` 里也确实多了一组看起来正常的
+// `ILINK_ACCOUNT_1_*`。**账号 1 是被覆盖了，不是登录失败**——这类缺陷从界面上
+// 完全看不出来，只有拿账号 1 去收消息时才会发现它再也收不到了。
+//
+// `fka serve` 走 `app.Build()`，那条路上有 `config.LoadEnv()`；
+// `fka login` 刻意不经 app（见 runLogin 的说明），所以这一读得自己补上。
+//
+// Create 也要调一次：登录要往账号表里写，而表是 Create 建的。
+func loginProvider(ctx context.Context) (*ilink.Provider, error) {
+	config.LoadEnv()
+
+	provider := ilink.NewProvider()
+	if _, err := provider.Create(ctx); err != nil {
+		return nil, err
+	}
+	return provider, nil
 }
 
 // renderLoginEvent 把登录事件渲染到终端。
