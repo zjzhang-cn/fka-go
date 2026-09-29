@@ -72,10 +72,10 @@ func parseLogLevel(value string) (config.Level, error) {
 //
 // 返回 errLogLevel 时**别自己打印也别退出**——调用方在 `run` 里统一处理退出码，
 // 这里只管判。
-func applyLogLevel(args []string) error {
+func applyLogLevel(parsed cliArgs) error {
 	// 参数优先于环境变量：显式选择压倒一切，与 `.env` 里的显式设置优先于
 	// 默认值是同一条道理
-	value := flagOrEnv(args, logLevelFlag, logLevelEnv, "")
+	value := flagOrEnv(parsed, logLevelFlag, logLevelEnv, "")
 	if value == "" {
 		return nil
 	}

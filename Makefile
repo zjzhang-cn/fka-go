@@ -231,7 +231,18 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@$(FKA) tools > $(smoke_dir)/tools.txt
 	@head -3 $(smoke_dir)/tools.txt
 	@echo
-	@echo "$(BOLD)── 2. 空配置下 serve 该明确说没有渠道并以 1 退出 ──$(RESET)"
+	@echo "$(BOLD)── 2. 参数认错该以 2 退出，而不是混进问题 ──$(RESET)"
+	@# **不用模型就能验**，而它守的正是最容易静默失效的一件事：参数被当问题送进提示词
+	@# （模型照样答得好好的，只是把 --session 复述了一遍）
+	@set +e; $(FKA) ask --sesion aabbcc 问 >$(smoke_log) 2>&1; code=$$?; set -e; \
+		if [ $$code -eq 2 ] && grep -q "认不出的参数" $(smoke_log); then \
+			echo "$(BOLD)✓$(RESET) 认不出的参数以 2 退出并说清候选"; \
+		else \
+			echo "$(BOLD)✗$(RESET) 退出码 $$code（参数认错该是 2），或信息里没有「认不出的参数」"; \
+			cat $(smoke_log); exit 1; \
+		fi
+	@echo
+	@echo "$(BOLD)── 3. 空配置下 serve 该明确说没有渠道并以 1 退出 ──$(RESET)"
 	@set +e; $(FKA) serve >$(smoke_log) 2>&1; code=$$?; set -e; \
 		if [ $$code -eq 1 ]; then \
 			echo "$(BOLD)✓$(RESET) $$(tail -1 $(smoke_log))"; \
@@ -240,10 +251,10 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 			cat $(smoke_log); exit 1; \
 		fi
 	@echo
-	@echo "$(BOLD)── 3. 装上技能与 MCP server 后该看得到工具 ──$(RESET)"
+	@echo "$(BOLD)── 4. 装上技能与 MCP server 后该看得到工具 ──$(RESET)"
 	@$(MAKE) --no-print-directory smoke-wiring
 
-# smoke-wiring 单独跑第 3 步。**这是能力链路唯一的自动闸门**——
+# smoke-wiring 单独跑第 4 步。**这是能力链路唯一的自动闸门**——
 # 「技能读到了吗」「MCP server 连上了吗」这两件事，静默失败时从界面上看不出来：
 # 工具列表就是空的，而你没法区分「没配」与「配了但没生效」。
 .PHONY: smoke-wiring

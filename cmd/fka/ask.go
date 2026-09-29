@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
@@ -16,19 +18,20 @@ import (
 //
 // ## 为什么现在就有这个命令
 //
-// 渠道层（微信接入）还没搬，但它**不是验证 agent 的必要条件**：agent 的输入就是
-// 「一段问题 + 身份 + 工具」，这里三样都有了。少一个渠道，agent 就多一层「只能靠
-// 肉眼验」的裸露——而工具循环恰恰是最需要反复调的一环（提示词、阈值、工具描述
-// 全靠试出来）。
-func runAsk(ctx context.Context, args []string) int {
-	question := strings.TrimSpace(strings.Join(args, " "))
+// 渠道层已经接上了，但 `ask` 仍然不可替代：它**不经过任何渠道**，是唯一能把
+// 「一段问题 + 一个身份」直接喂进 agent 的入口——而工具循环恰恰是最需要反复调的
+// 一环（提示词、阈值、工具描述全靠试出来）。
+func runAsk(ctx context.Context, parsed cliArgs) int {
+	question := strings.TrimSpace(strings.Join(parsed.positional, " "))
 	if question == "" {
-		fmt.Fprintln(os.Stderr, "用法：fka ask <问题>")
+		fmt.Fprintln(os.Stderr, "用法：fka ask [参数] <问题>")
+		fmt.Fprintf(os.Stderr, "  参数：%s <身份>（%s）、%s <会话>（%s）\n",
+			principalFlag, principalEnv, sessionFlag, sessionEnv)
 		return exitUsage
 	}
 
-	principal := flagOrEnv(args, "--principal", "FKA_PRINCIPAL", "cli")
-	session := flagOrEnv(args, "--session", "FKA_SESSION", "cli")
+	principal := flagOrEnv(parsed, principalFlag, principalEnv, "cli")
+	session := flagOrEnv(parsed, sessionFlag, sessionEnv, "cli")
 
 	application := build()
 	defer application.Close()
@@ -87,13 +90,13 @@ func runAsk(ctx context.Context, args []string) int {
 }
 
 // runTools 列出模型现在能看到的工具，以及被挡下的那些与原因。
-func runTools(ctx context.Context, args []string) int {
+func runTools(ctx context.Context, parsed cliArgs) int {
 	application := build()
 	defer application.Close()
 
 	application.WarmMcp(ctx)
 
-	asJSON := hasFlag(args, "--json")
+	asJSON := hasFlag(parsed, "--json")
 	listed, err := application.Tools.Tools(ctx, tools.Context{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "列工具失败：%s\n", err.Error())
@@ -191,15 +194,158 @@ func discoveredSkills(dirs []string) []skills.Skill {
 	return found
 }
 
-// flagOrEnv 从 args 里取 --name value，没有则退回环境变量，再没有则用兜底。
-func flagOrEnv(args []string, flag string, env string, fallback string) string {
-	for i, arg := range args {
-		if arg == flag && i+1 < len(args) {
-			return args[i+1]
+// ask 自己的三个参数名与环境变量名。**成对放在一起**：它们只有在这一个文件里
+// 出现两次（解析时 + 读值时），而两处写错一处就表现为「参数不生效」或
+// 「问题里混进参数」——不报错，只是结果不对。
+const (
+	principalFlag = "--principal"
+	principalEnv  = "FKA_PRINCIPAL"
+	sessionFlag   = "--session"
+	sessionEnv    = "FKA_SESSION"
+)
+
+// cliArgs 命令行参数拆解后的结果。**整份 CLI 只有这一种参数形态**——
+//
+// 每个子命令都拿它、不再自己扫原始 args：「认不认识一个参数」「它算不算问题」
+// 这两个判断只能各有一处，散开就会出现「某个参数在某处没被认，于是混进了别的东西」。
+type cliArgs struct {
+	// command 第一个位置参数，也就是子命令名。
+	//
+	// **子命令名之前也能给参数**（`fka --log-level debug serve`），所以它和参数
+	// 是一起解析的：先认参数，剩下的第一个就是命令。
+	command string
+	// values 参数值。**给没给与给了什么值都在这里**（布尔参数的值是空串）。
+	values map[string]string
+	// positional 命令名之后剩下的位置参数。`ask` 拿它拼问题。
+	positional []string
+}
+
+// parseAskArgs 把 `fka ask` 后面那些参数拆成「参数」与「位置参数」。
+//
+// ## 这里必须真的解析，而不是 `strings.Join(args, " ")`
+//
+// 那样拼出来的「问题」是 **`--session aabbcc 你的名字加小航`**——参数直接进了
+// 用户提示词。症状特别难认：模型答得挺好，只是**把参数当成问题的一部分**，
+// 于是「刚才我说的是啥」这类追问会连着 `--session aabbcc` 一起复述，而
+// `bin/data/history/<会话>.jsonl` 里那几条 user 消息就是证据。
+// 参数是**给程序的**，问题才是给模型的，两者混在一起没有任何好处。
+//
+// ## 参数在问题前后都认
+//
+// `fka ask --session x 问` 与 `fka ask 问 --session x` 都得能用——
+// 前一种是正着写，后一种是补参数时顺手敲在后面，只认前者会让第二种**静默失效**。
+//
+// ## 认不出的参数报用法错，不当问题
+//
+// `--sesion x`（拼错）如果被当问题，模型会拿到一句莫名其妙的话并**认真回答**。
+// 这类失败必须响：报出来是 2 秒的事，静默走过去是「模型今天答得好奇怪」+ 半天排查。
+func parseFlags(args []string) (cliArgs, error) {
+	parsed := cliArgs{values: map[string]string{}}
+	afterDoubleDash := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// `--` 之后一律当问题：问题本身以 `-` 开头时唯一的办法
+		if arg == "--" {
+			afterDoubleDash = true
+			continue
 		}
-		if value, ok := cutPrefix(arg, flag+"="); ok {
-			return value
+		if afterDoubleDash || !strings.HasPrefix(arg, "-") {
+			parsed.positional = append(parsed.positional, arg)
+			continue
 		}
+
+		name, value, given := strings.Cut(arg, "=")
+		if !given {
+			// 没有 `=`：值在下一个参数上。**没有下一个就是少写了值**，要报出来
+			if !takesValue(name) {
+				if isKnownFlag(name) {
+					parsed.values[name] = ""
+					continue
+				}
+				return cliArgs{}, unknownFlagError(name)
+			}
+			if i+1 >= len(args) {
+				return cliArgs{}, fmt.Errorf("%s 后面缺值", name)
+			}
+			i++
+			value = args[i]
+		}
+
+		if !takesValue(name) {
+			// 布尔参数带了值：`--json=1` 这种写法没人会敲，与其猜不如报
+			return cliArgs{}, fmt.Errorf("%s 不取值，去掉 =%s", name, value)
+		}
+		parsed.values[name] = value
+	}
+
+	// 第一个位置参数是子命令名：**它不是问题的一部分**
+	if len(parsed.positional) > 0 {
+		parsed.command, parsed.positional = parsed.positional[0], parsed.positional[1:]
+	}
+	return parsed, nil
+}
+
+// knownFlags 全部已知的参数。**没有值的那些是布尔参数**。
+//
+// ## 它是**唯一**的一份名单
+//
+// 之前 `--log-level` 由 `loglevel.go` 自己扫 args、`--principal` / `--session`
+// 由 `ask.go` 自己扫，两处各认各的。名单一多就会漏——而漏掉的那个参数会**直接
+// 混进用户提示词**，没有任何报错。所以「认不认识」只在这里判一次。
+var knownFlags = map[string]bool{
+	// 布尔（不取值）
+	"--json": false,
+	// 取一个值
+	principalFlag: true,
+	sessionFlag:   true,
+	logLevelFlag:  true,
+	"--account":   true,
+}
+
+func takesValue(name string) bool {
+	takes, known := knownFlags[name]
+	return known && takes
+}
+
+// isKnownFlag 这个参数名在名单里吗。**取值与「在不在」要分开问**——
+// 前者决定要不要吃掉下一个参数，后者决定认不认。
+func isKnownFlag(name string) bool {
+	_, known := knownFlags[name]
+	return known
+}
+
+func unknownFlagError(name string) error {
+	message := "认不出的参数：" + name
+	// **认得的那个很像它**时把候选说清楚：参数名都是英文，`--sesion` 这种敲错
+	// 一眼看不出来，而「你不知道有哪些参数」比「你敲错了」难查得多
+	for candidate := range knownFlags {
+		if strings.HasPrefix(strings.TrimPrefix(candidate, "-"),
+			strings.TrimPrefix(name, "-")) && candidate != name {
+			message += "（是不是想写 " + candidate + "？）"
+			break
+		}
+	}
+	return errors.New(message + "。可用的是 " + strings.Join(flagNames(), "、"))
+}
+
+func flagNames() []string {
+	names := make([]string, 0, len(knownFlags))
+	for name := range knownFlags {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// flagOrEnv 取参数值，没有则退回环境变量，再没有则用兜底。
+//
+// **参数已经解析过了**：这里只读 `parsed.values`，不再扫一遍原始 args。
+// 两处各扫一遍的坏处是「解析时认了、取值时没认」——表现是参数静默失效。
+func flagOrEnv(parsed cliArgs, flag string, env string, fallback string) string {
+	if value := parsed.values[flag]; value != "" {
+		return value
 	}
 	if value := strings.TrimSpace(os.Getenv(env)); value != "" {
 		return value
@@ -207,16 +353,10 @@ func flagOrEnv(args []string, flag string, env string, fallback string) string {
 	return fallback
 }
 
-func hasFlag(args []string, flag string) bool {
-	for _, arg := range args {
-		if arg == flag {
-			return true
-		}
-		if _, ok := cutPrefix(arg, flag+"="); ok {
-			return true
-		}
-	}
-	return false
+// hasFlag 这个布尔参数给没给。
+func hasFlag(parsed cliArgs, flag string) bool {
+	_, given := parsed.values[flag]
+	return given
 }
 
 func cutPrefix(value, prefix string) (string, bool) {

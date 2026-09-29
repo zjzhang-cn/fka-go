@@ -16,7 +16,7 @@ import (
 // `ask` 跑一轮就退，所以不需要渠道、不需要订阅、不需要信号处理。`serve` 三样都要——
 // 而**顺序是硬要求**：必须先订阅再开收，反过来会有一个丢消息的窗口（渠道一开收就
 // 可能来消息，那时还没有订阅者）。这个顺序由 app.Serve 保证。
-func runServe(ctx context.Context, args []string) int {
+func runServe(ctx context.Context, parsed cliArgs) int {
 	application := build(channelProviders()...)
 	defer application.Close()
 

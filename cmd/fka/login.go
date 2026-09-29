@@ -29,7 +29,7 @@ const loginTimeout = 10 * time.Minute
 // 少一层 socket、少一个「服务没起就登不上」的死锁。
 //
 // 登录完的凭证落进 `<安装根>/.env`（0600），`fka serve` 启动时读它。
-func runLogin(ctx context.Context, args []string) int {
+func runLogin(ctx context.Context, parsed cliArgs) int {
 	provider, err := loginProvider(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "渠道起不来："+err.Error())
@@ -40,7 +40,7 @@ func runLogin(ctx context.Context, args []string) int {
 	defer cancel()
 
 	result, err := provider.Ops().Login(channels.LoginParams{
-		Account: flagOrEnv(args, "--account", "FKA_LOGIN_ACCOUNT", ""),
+		Account: flagOrEnv(parsed, "--account", "FKA_LOGIN_ACCOUNT", ""),
 		Ctx:     loginCtx,
 		Emit:    func(event string, data any) { renderLoginEvent(event, data, os.Stdout) },
 	})

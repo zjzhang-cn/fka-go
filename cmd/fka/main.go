@@ -67,28 +67,41 @@ func run(args []string) int {
 	//
 	// 必须早于 switch：首个入站消息可能在任何子命令的代码跑起来之前就记日志。
 	config.Log().SetConsoleLevel(defaultConsoleLevel)
-	if err := applyLogLevel(args); err != nil {
+
+	// **参数只在这里解析一次**，子命令拿到的都是拆好的结果。
+	//
+	// 之前每个子命令自己扫一遍原始 args，于是「参数会不会混进别的东西」没人管：
+	// `ask` 直接 `strings.Join(args, " ")` 当问题，`--session aabbcc 你的名字加小航`
+	// 就这么原样进了用户提示词，模型还认真答了。**认不认识一个参数、它算不算问题，
+	// 只能在一处判。**
+	parsed, err := parseFlags(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		printUsage()
+		return exitUsage
+	}
+	if err := applyLogLevel(parsed); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		printUsage()
 		return exitUsage
 	}
 
-	switch args[0] {
+	switch parsed.command {
 	case "ask":
-		return runAsk(ctx, args[1:])
+		return runAsk(ctx, parsed)
 	case "tools":
-		return runTools(ctx, args[1:])
+		return runTools(ctx, parsed)
 	case "serve":
-		return runServe(ctx, args[1:])
+		return runServe(ctx, parsed)
 	case "login":
-		return runLogin(ctx, args[1:])
+		return runLogin(ctx, parsed)
 	case "version":
 		return runVersion()
 	case "help", "-h", "--help":
 		printUsage()
 		return exitOK
 	default:
-		fmt.Fprintf(os.Stderr, "不认识的命令：%s\n\n", args[0])
+		fmt.Fprintf(os.Stderr, "不认识的命令：%s\n\n", parsed.command)
 		printUsage()
 		return exitUsage
 	}
@@ -103,18 +116,18 @@ func printUsage() {
 	fmt.Fprint(os.Stderr, `fka —— 通用 agent
 
 用法：
-  fka ask <问题>        无头跑一轮工具循环问答
+  fka ask [参数] <问题>  无头跑一轮工具循环问答
   fka tools [--json]    列出模型现在能看到的工具与五类放行情况
   fka serve             常驻：接渠道、收消息、跑问答
   fka login [--account N]  扫码登录（不给就用第一个空槽位）
   fka version           版本信息
-  fka help              本帮助
+  fka help              这份帮助
 
 fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安装根>/skills 下的技能。
 必填的环境变量只有 LLM_API_KEY 与 LLM_MODEL。
 LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要用得显式加上。
 
-  fka ask --principal <身份> --session <会话> "…"
+参数**写在子命令前后都认**（fka --log-level debug serve 也行），认不出的以 2 退出。
 `)
 
 	// 日志那行印在正文之外：**它是每个子命令都认的**，不属于任何一个

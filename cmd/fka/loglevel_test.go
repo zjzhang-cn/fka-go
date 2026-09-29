@@ -74,7 +74,7 @@ func Test参数压过环境变量(t *testing.T) {
 	original := config.Log().ConsoleLevel()
 	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
 
-	if err := applyLogLevel([]string{"serve", "--log-level", "debug"}); err != nil {
+	if err := applyLogLevel(mustParse(t, "serve", "--log-level", "debug")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != config.LevelDebug {
@@ -89,7 +89,7 @@ func Test没给参数时不动默认值(t *testing.T) {
 	original := config.Log().ConsoleLevel()
 	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
 
-	if err := applyLogLevel([]string{"serve"}); err != nil {
+	if err := applyLogLevel(mustParse(t, "serve")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != original {
@@ -103,7 +103,7 @@ func Test只给环境变量也行(t *testing.T) {
 	original := config.Log().ConsoleLevel()
 	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
 
-	if err := applyLogLevel([]string{"serve"}); err != nil {
+	if err := applyLogLevel(mustParse(t, "serve")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != config.LevelInfo {
@@ -119,7 +119,7 @@ func Test参数写在哪都认(t *testing.T) {
 	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
 	t.Setenv("LOG_LEVEL", "")
 
-	if err := applyLogLevel([]string{"--log-level=debug", "serve"}); err != nil {
+	if err := applyLogLevel(mustParse(t, "--log-level=debug", "serve")); err != nil {
 		t.Fatalf("等号写法该认：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != config.LevelDebug {
@@ -146,6 +146,18 @@ func Test认错了会一路传到run(t *testing.T) {
 	if code := run([]string{"serve", "--log-level", "warn"}); code != exitFail {
 		t.Errorf("级别认对了就该照常跑，实际 %d", code)
 	}
+}
+
+// mustParse 走真实的参数解析。**测试不自己造 cliArgs**——
+// 那样测的是「我以为解析完长什么样」，而参数解析恰恰是这一组用例要守的东西。
+func mustParse(t *testing.T, args ...string) cliArgs {
+	t.Helper()
+
+	parsed, err := parseFlags(args)
+	if err != nil {
+		t.Fatalf("参数该认得出：%v", err)
+	}
+	return parsed
 }
 
 // contains 就是 strings.Contains。**这里自己写一份**是为了让这个文件

@@ -6,6 +6,44 @@
 >
 > 本项目是**独立仓库**。Node 版（`fka` 仓库）有自己的开发日志，两边历史互不相干。
 
+## 2026-09-29 `fka ask` 的参数不再混进用户提示词
+
+**类型：** bugfix
+
+**内容：**
+- `runAsk` 之前是 `question := strings.Join(args, " ")`——**所有**参数都进了问题。
+  新增 `parseFlags`：整份 CLI 只有一份参数名单（`cmd/fka/ask.go` 的 `knownFlags`）
+  与一个解析函数，`run()` 解析一次，把 `cliArgs` 传给每个子命令，**没人再扫原始 args**。
+- 参数写在前、写在后、写 `=` 都认；`--` 之后一律当问题。
+- **认不出的参数以 2 退出**，错误里带上像它的那个（`--sesion` → 「是不是想写 `--session`？」）。
+- `make smoke` 加第 2 步：`fka ask --sesion aabbcc 问` 必须以 2 退出并说清候选。
+- 新增 `cmd/fka/ask_test.go` 9 个用例。
+
+**为什么（这条是被证据教出来的）：** `data/history/aabbcc.jsonl` 里那三条 user 消息
+是 `--session aabbcc 你的名字加小航`、`--session aabbcc 前面叫你什么`、
+`--session aabbcc 聊聊音乐商店的销量`——**参数原样跟着问题进了用户提示词**。
+
+症状极难认：模型答得挺好，只是把参数当成问题的一部分，于是「刚才我说的是啥」
+会连着 `--session aabbcc` 一起复述。**扫日志是扫不出来的**——每一行都长得正常。
+
+**为什么不改成「在 ask 里把认识的参数剔掉」：** 名单会增长，每加一个参数就多一个
+「忘了剔」的机会，而那种失败**一次都不报错**。「认不认识一个参数」与「它算不算问题」
+必须各只有一处判断，所以连 `--log-level`（原来由 `loglevel.go` 自己扫）也一起收进
+同一份名单——**两个子命令各扫各的，正是这个 bug 的成因**。
+
+**⚠️ 顺带钉住一条原则：认不出的参数宁可报错，也不当问题。** 敲错参数名
+（`--sesion`）如果被当问题，模型会拿到一句莫名其妙的话并**认真回答**——报出来是
+两秒的事，静默走过去是「模型今天答得好奇怪」加半天排查。
+
+**关联文件：** `cmd/fka/{ask.go,main.go,serve.go,login.go,loglevel.go}`、
+`cmd/fka/ask_test.go`、`Makefile`
+
+**验证：**
+- [x] `gofmt -l .` 无输出；`go vet ./...` 干净；`go test ./...` 全绿（`cmd/fka` 23 个用例）
+- [x] `make verify` 全绿，**含新增的 smoke 第 2 步**（不用模型就能验参数不进问题）
+- [x] `CGO_ENABLED=1 go test -race -count=2 ./cmd/fka/` 无竞态
+- [x] 真机手测：`fka ask --session aabbcc --principal wx_zhang`（不给问题）以 2 退出并打用法
+
 ## 2026-09-29 日志文件改成普通文本，行首多一格「这段事是哪一段」
 
 **类型：** feature（含三处顺手修的 BUG）
