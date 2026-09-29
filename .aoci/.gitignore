@@ -1,15 +1,14 @@
-# AOCI .aoci asset boundary
+# AOCI .aoci 资产边界
 #
-# Unknown files in this directory are local runtime assets and are excluded
-# from Git by default. Formal cognition and governance assets are explicitly
-# included below.
+# 默认规则：本目录中的未知文件均视为当前机器的运行时产物，不进入 Git。
+# 正式认知与治理资产通过下方白名单显式放行。
 
 *
 
-# This boundary file must be tracked.
+# 本边界文件自身必须进入 Git。
 !.gitignore
 
-# Formal AOCI cognition and governance assets.
+# AOCI 正式认知与治理资产。
 !baseline.json
 !database-baseline.json
 !config.json
