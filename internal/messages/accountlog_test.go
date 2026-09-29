@@ -3,7 +3,6 @@ package messages_test
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +35,7 @@ import (
 func readLogs(t *testing.T, since string) string {
 	t.Helper()
 
-	path := filepath.Join(config.LogDir(), "app."+time.Now().UTC().Format("2006-01-02")+".log")
+	path := config.LogFilePath(time.Now().UTC())
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("读不到日志文件 %s：%v", path, err)

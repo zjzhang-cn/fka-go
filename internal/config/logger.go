@@ -113,7 +113,7 @@ type Logger struct {
 	mu         sync.Mutex
 	dir        string
 	file       *os.File
-	fileDate   string
+	fileName   string
 	override   *Level
 	onCritical func(message string, ctx Context)
 }
@@ -135,17 +135,21 @@ func (l *Logger) init() {
 	l.rotate(time.Now())
 }
 
-// rotate 换到当天的文件。**按天轮转**，文件名 app.<date>.log。
+// rotate 换到当天的文件。**按天轮转**，文件名 <UTC 日期>.log。
+//
+// 拿**文件名**判「换天了」，不另存一个日期：名字里只多一个日期，两者等价，而名字
+// 是唯一该存在的那份东西（`logFileName`）。存日期的话这个函数里就有两处各自
+// 算出「今天该写哪个文件」。
 func (l *Logger) rotate(now time.Time) {
-	date := now.Format("2006-01-02")
-	if l.file != nil && l.fileDate == date {
+	name := logFileName(now)
+	if l.file != nil && l.fileName == name {
 		return
 	}
 	if l.file != nil {
 		_ = l.file.Close()
 		l.file = nil
 	}
-	f, err := os.OpenFile(filepath.Join(l.dir, "app."+date+".log"),
+	f, err := os.OpenFile(filepath.Join(l.dir, name),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		// 日志写不了不该让服务起不来：控制台仍然可用
@@ -153,7 +157,29 @@ func (l *Logger) rotate(now time.Time) {
 		return
 	}
 	l.file = f
-	l.fileDate = date
+	l.fileName = name
+}
+
+// logDateLayout 日志文件名里的日期，**UTC**——与行首时间戳（timeLayout）同源。
+// 差一天就够把「跨零点的链路」从日志里查不出来。
+const logDateLayout = "2006-01-02"
+
+// logFileName 某个时刻对应的文件名。**日期就是日期，不加任何前缀**：
+// 日志目录是这份安装专用的（`<安装根>/logs/`），文件名里再来一遍「这是 app 的
+// 日志」是废话，而那两个字会跟着改名一起被文档、脚本、测试记住。
+func logFileName(now time.Time) string {
+	return now.UTC().Format(logDateLayout) + ".log"
+}
+
+// LogFilePath 某个时刻对应的日志文件的完整路径。**只给测试与外部工具用**。
+//
+// ## 为什么文件名的出处只有这一个
+//
+// 写它的地方是 `rotate`，读它的地方是两个别的包的测试（以及文档里教人 grep 的那个
+// pattern）。三份手抄的拷贝里，改名那天**只会有两份被改到**——而漏掉的那份
+// 不报编译错，只是「读不到日志文件」。这跟 `AccountField` 是同一类事故。
+func LogFilePath(now time.Time) string {
+	return filepath.Join(LogDir(), logFileName(now))
 }
 
 // SetConsoleLevel 设置控制台的最低输出级别。

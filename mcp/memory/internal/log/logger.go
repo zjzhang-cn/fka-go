@@ -77,7 +77,7 @@ type Logger struct {
 	mu         sync.Mutex
 	dir        string
 	file       *os.File
-	fileDate   string
+	fileName   string
 	override   *Level
 	onCritical func(message string, ctx Context)
 }
@@ -115,17 +115,23 @@ func (l *Logger) init() {
 	l.rotate(time.Now())
 }
 
-// rotate 换到当天的文件。**按天轮转**，文件名 app.<date>.log。
+// rotate 换到当天的文件。**按天轮转**，文件名 <UTC 日期>.log。
+//
+// **与 agent 那边（internal/config）同名**：FKA_HOME 相同时两个进程写进**同一个**
+// 文件，这是有意的——排查「server 起不来」时，主程序报的那些错得在同一份里。
+// 而名字不能各叫各的：不一样就是同一天写出两个文件，`logs/` 里立刻分不清谁是谁。
+// 代价是这个包**引用不了** agent 那份（memory server 自给自足，见 boundary_test.go），
+// 所以下面这行是刻意复制的，改名时两边要一起改。
 func (l *Logger) rotate(now time.Time) {
-	date := now.Format("2006-01-02")
-	if l.file != nil && l.fileDate == date {
+	name := logFileName(now)
+	if l.file != nil && l.fileName == name {
 		return
 	}
 	if l.file != nil {
 		_ = l.file.Close()
 		l.file = nil
 	}
-	f, err := os.OpenFile(filepath.Join(l.dir, "app."+date+".log"),
+	f, err := os.OpenFile(filepath.Join(l.dir, name),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		// 日志写不了不该让服务起不来：控制台仍然可用
@@ -133,7 +139,16 @@ func (l *Logger) rotate(now time.Time) {
 		return
 	}
 	l.file = f
-	l.fileDate = date
+	l.fileName = name
+}
+
+// logDateLayout 日志文件名里的日期，**UTC**——与行首时间戳同源，差一天就够把
+// 「跨零点的链路」查不出来。
+const logDateLayout = "2006-01-02"
+
+// logFileName 某个时刻对应的文件名。
+func logFileName(now time.Time) string {
+	return now.UTC().Format(logDateLayout) + ".log"
 }
 
 // SetConsoleLevel 设置控制台的最低输出级别。

@@ -276,8 +276,8 @@ server 侧不认识 agent——所以 server 能单独构建、部署、换掉�
 
 ## 日志
 
-`<安装根>/logs/app.<UTC 日期>.log`，**按天轮转，永远全量**（控制台调静音也不丢）。
-一行一条，**普通文本**：
+`<安装根>/logs/<UTC 日期>.log`（比如 `2026-09-29.log`），**按天轮转，永远全量**
+（控制台调静音也不丢）。一行一条，**普通文本**：
 
 ```
 2026-09-29T08:03:47.683Z [INFO][account_002][LLM] 提交模型请求 account=account_002 host=127.0.0.1 messages=1 model=deepseek stream=true
@@ -287,9 +287,9 @@ server 侧不认识 agent——所以 server 能单独构建、部署、换掉�
 排版**（控制台没有时间戳），所以三种捞法都成立：
 
 ```bash
-grep '\[account_002\]' logs/app.*.log        # 那个账号的整条链路
-grep '\[LLM\]'            logs/app.*.log     # 模型这一段
-cut -d' ' -f2,3,4         logs/app.*.log     # 级别 / 账号 / 哪一段
+grep '\[account_002\]' logs/*.log              # 那个账号的整条链路
+grep '\[LLM\]'            logs/*.log           # 模型这一段
+cut -d' ' -f2,3,4         logs/*.log           # 级别 / 账号 / 哪一段
 ```
 
 「哪一段」是 `SYS` / `CHAN` / `MSG` / `PRM` / `LLM` / `RSN` / `TOOL` / `HIST`，
