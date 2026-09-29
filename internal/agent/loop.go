@@ -186,6 +186,25 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 		}
 	}
 
+	// ── 提示词拼好了 ────────────────────────────────────────
+	//
+	// **记结构，不记全文**：system 每轮都是那几千字，历史是家里的话，
+	// 全量落盘会让日志既大又把内容复制一份到别处。
+	// 账号、消息号由 ctx 带过来（见 `internal/config/scope.go`），
+	// 所以这里只说「这一步长什么样」。
+	//
+	// 提交与返回那两条**不在这里打**——那一层（`llm` 的 provider）才知道
+	// 打到了哪个 host、用了多久、推理有多长。两边都打就重了，排查时
+	// 看到两条意思相近的记录反而不知道该信哪条。
+	config.Log().Debug("提示词已拼接", config.Fields(ctx, config.Context{
+		"session": input.SessionID, "systemChars": len([]rune(system)),
+		"promptSections": len(deps.Tools.PromptSections(input.ToolContext)),
+		"historyKept":    len(kept.Messages), "historyDropped": len(prior) - len(kept.Messages),
+		"toolDefs": len(toolDefs), "messages": len(messages),
+		"contextBudget": budget, "fixedTokens": fixed,
+		"question": input.Question,
+	}))
+
 	usedTools := make([]string, 0, 8)
 	steps := 0
 
@@ -200,10 +219,10 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 
 		// 没有工具调用 = 它觉得可以答了。这就是最终答案
 		if len(result.ToolCalls) == 0 {
-			config.Log().Debug("工具循环结束：模型给出回答", config.Context{
+			config.Log().Debug("工具循环结束：模型给出回答", config.Fields(ctx, config.Context{
 				"model": deps.Model, "steps": index,
 				"tools": len(usedTools), "chars": len([]rune(result.Content)),
-			})
+			}))
 
 			messages = append(messages, llm.ChatMessage{
 				Role: llm.RoleAssistant, Content: result.Content,
@@ -257,18 +276,18 @@ func forcedAnswer(
 ) RunResult {
 	result, err := deps.Chat(ctx, messages, nil)
 	if err != nil {
-		config.Log().Warn("工具循环到达步数上限，收尾也失败了", config.Context{
+		config.Log().Warn("工具循环到达步数上限，收尾也失败了", config.Fields(ctx, config.Context{
 			"model": deps.Model, "steps": steps, "error": err.Error(),
-		})
+		}))
 		return RunResult{
 			Text: MaxStepsAnswer, UsedTools: usedTools,
 			Steps: steps, StoppedBy: StoppedByMaxSteps,
 		}
 	}
 
-	config.Log().Warn("工具循环到达步数上限，已用无工具收尾", config.Context{
+	config.Log().Warn("工具循环到达步数上限，已用无工具收尾", config.Fields(ctx, config.Context{
 		"model": deps.Model, "steps": steps, "tools": len(usedTools),
-	})
+	}))
 
 	messages = append(messages, llm.ChatMessage{Role: llm.RoleAssistant, Content: result.Content})
 	persistTurn()

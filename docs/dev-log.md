@@ -6,6 +6,81 @@
 >
 > 本项目是**独立仓库**。Node 版（`fka` 仓库）有自己的开发日志，两边历史互不相干。
 
+## 2026-09-29 一轮问答的全链路日志：每条都带账号
+
+**类型：** feature
+
+**内容：**
+- 新增 `internal/config/scope.go`：`Bind(ctx, fields)` / `FieldsOf(ctx)` / `Fields(ctx, extra)`。
+- `messages.Handler.Handle` 开头把 `channel / account / messageId / principal / conversation`
+  绑到 ctx 上，往下传；整条链上的日志点改用 `config.Fields(ctx, …)`。
+- 补齐缺的日志点：`收到消息`、`答复已发出`、`提示词已拼接`、`提交模型请求`、
+  `模型返回`、`模型的推理`（推理内容第一次进日志）。
+- `llm/session.go` 的 5 处告警从「只给 path」改成直接给 `account` + `session`。
+- 新增 `internal/config/scope_test.go`（9 条）与两处抓真实日志输出的用例
+  （`internal/messages/accountlog_test.go`、`internal/llm/openai/logscope_test.go`）。
+
+**为什么：**
+多账号并行之后，「这条日志是哪个账号触发的」成了排查的基本前提。而**账号只在
+消息层是现成的**——`agent` / `llm` / `tools` 三层都看不见渠道，往下就断了。
+
+**为什么不让人在每个日志点手写 `"account": …`**：这条链上以后还会新增日志点，
+写的人不会记得抄。而**漏抄的那条日志正是排查时最会误导人的那种**——它看起来
+完整，读的人会以为它属于同一轮。
+
+**为什么不能用进程级的「当前账号」**：消息处理是**按账号并行的**
+（见 `internal/messages/dispatch.go`）。两个 goroutine 轮流写同一个变量，
+出来的日志必然串号——而串号的日志比没有日志更坏，它会把注意力引到错误的账号上。
+
+**所以绑在 ctx 上**：`context.Context` 是唯一能穿过 `llm.ChatClient` 与工具调用
+而不改它们签名的载体。绑一次，往下每一层派生出来的 ctx 都带着它，
+`Fields` 自动合并。代价是 `context.Context` 与 `config.Context` 会出现在同一行——
+两个的区别是：**前者传「这一轮是谁」，后者是「这条日志额外说明什么」**。
+
+**记内容多少的取舍**（结构 + 截断）：
+- 提示词**只记结构**——systemChars / toolDefs / historyKept / historyDropped /
+  contextBudget / fixedTokens / messages，外加用户那句话原文。全量落盘会让日志
+  撑爆，也把家里的内容复制一份到别处。
+- 推理**记截断后的前 200 字，且标出总字数**。只看得到开头会让人以为那就是全部。
+  顺带一提：推理以前**只进控制台**，重定向到文件或 `LLM_SHOW_REASONING=0` 之后
+  就彻底没了，「模型为什么这么答」只能猜——这次才第一次落进日志。
+- 提交与返回**不记 key**。有一条用例专门盯着这点。
+
+**提交与返回那两条为什么放在 `llm` 层、不放在工具循环层**：那一层才知道
+打到了哪个 `host`、用了多久、推理有多长。两边都打就重了，排查时看到两条意思
+相近的记录反而不知道该信哪条。
+
+**会话历史那 5 处为什么没用 ctx**：`SessionHistoryStore.Load/Append` 的签名里
+没有 ctx（只有 sessionID 与 accountID）。而 accountID 就在作用域内，直接给更简单
+——**为了让加字段而改一个公共接口的签名，不值**。原来只给 `path`（`<账号>_<会话>.jsonl`，
+账号其实藏在里面）要人去反推，而这几个都是「按无历史处理」这类**会静默影响回答**的告警。
+
+**关联文件：** `internal/config/scope.go`、`internal/messages/handler.go`、
+`internal/agent/loop.go`、`internal/llm/openai/openai.go`、`internal/tools/registry.go`、
+`internal/llm/session.go`、`internal/config/scope_test.go`、
+`internal/messages/accountlog_test.go`、`internal/llm/openai/logscope_test.go`
+
+**验证：**
+- [x] `make verify` 全绿；`CGO_ENABLED=1 go test -race -count=2 ./...` 全绿
+- [x] `Test每一跳的日志都带账号` **逐行**核对（不是「出现过一次就算数」——
+      那样在单账号用例里必然通过，而漏掉的恰恰是工具层那几行）；
+      把 `Bind` 改成绑空集之后立刻变红
+- [x] `Test两个账号的日志不会串`：两个账号各发一条，每条「答复已发出」都要同时
+      对上**自己的** messageId——这才能证明是并行而没串
+- [x] `Test模型请求与返回的日志也带账号`：带 host/model/stream，且断言
+      **日志里不出现 API key**
+- [x] `Test推理太长会被截断`：完整推理不进日志，但总字数与「共 N 字」的标记都在
+- [x] `scope_test.go` 9 条：自动合并、调用点覆盖绑定、后绑覆盖先绑、
+      **合并不改到绑定的原值**（否则一个下游能改掉所有人的字段）、
+      派生 ctx 保留、空字段不绑、nil ctx 不崩
+- [x] `internal/llm/openai` **这个包原先一个用例都没有**，这次补了 3 条
+
+**⚠️ 记一条测试上的坑（已修，值得记）：** 抓日志最直接的做法是换掉 `os.Stdout`
+截控制台输出。**那是有竞态的**——`Logger.write` 每次写入时现读 `os.Stdout`，
+而恢复函数在写它，`-race` 当场报出 `DATA RACE`。改成读日志文件就没这个问题：
+写入全在 `Logger.mu` 之下，且文件**始终全量**（控制台才按级别过滤），
+所以连 `LOG_LEVEL` 都不用动，也就不会在用例之间互相影响。
+
 ## 2026-09-29 多账号并行：消息处理按账号分片，账号间不再互相等
 
 **类型：** feature

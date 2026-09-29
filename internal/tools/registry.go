@@ -196,8 +196,13 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 	started := time.Now()
 
 	// 每次调用都记一条「入」的 DEBUG：叫了什么、带什么参数。参数是模型给的，
-	// 可能很大，但 DEBUG 本就写进文件用于排查，不在这里改写它
-	config.Log().Debug("工具调用", config.Context{"tool": fullName, "args": args})
+	// 可能很大，但 DEBUG 本就写进文件用于排查，不在这里改写它。
+	//
+	// **账号与消息号由 ctx 带过来**（`config.Fields` 自动合并）——工具这一层
+	// 看不见渠道，不绑在 ctx 上的话这条日志就只有工具名，看不出是谁触发的
+	config.Log().Debug("工具调用", config.Fields(ctx, config.Context{
+		"tool": fullName, "args": args,
+	}))
 
 	var result Result
 	switch {
@@ -215,7 +220,7 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 			called, err := found.source.Call(ctx, found.spec.Name, args, tc)
 			if err != nil {
 				config.Log().Warn("工具执行抛错，已转成给模型的一句话",
-					config.Context{"tool": fullName, "error": err.Error()})
+					config.Fields(ctx, config.Context{"tool": fullName, "error": err.Error()}))
 				result = FailResult("工具执行出错：%s", err.Error())
 			} else {
 				result = called
@@ -224,13 +229,13 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 	}
 
 	// 「出」的 DEBUG：成败、耗时、长度与截断后的内容
-	config.Log().Debug("工具返回", config.Context{
+	config.Log().Debug("工具返回", config.Fields(ctx, config.Context{
 		"tool":   fullName,
 		"ok":     result.OK,
 		"ms":     time.Since(started).Milliseconds(),
 		"chars":  len([]rune(result.Content)),
 		"result": snippet(result.Content, toolResultLogChars),
-	})
+	}))
 
 	return result
 }

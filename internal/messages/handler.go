@@ -60,18 +60,33 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	message := event.Message
 	channel := event.Channel
 
-	fields := config.Context{
+	// **这一轮的归属绑在 ctx 上，往下传**——消息层是唯一知道账号的地方
+	//（agent / llm / tools 都看不见渠道），所以绑一次之后，工具循环、模型请求、
+	// 工具调用里打出来的每一条日志都会自动带上账号与消息号。
+	//
+	// 之所以不在下面每个日志点手写 `"account": …`：这条链上新加日志点的人
+	// 不会记得抄，而**漏抄的那条日志正是排查时最会误导人的那种**。
+	// 也不能用全局变量——消息处理是按账号并行的（见 `dispatch.go`），
+	// 详见 `internal/config/scope.go`。
+	ctx = config.Bind(ctx, config.Context{
 		"channel": message.ChannelID, "account": message.AccountID,
 		"messageId": message.MessageID, "principal": message.PrincipalID,
 		"conversation": message.ConversationID,
-	}
+	})
+	fields := config.FieldsOf(ctx)
+
+	// ── 收到 ────────────────────────────────────────────────
+	//
+	// **每一条都记，包括随后会拒答的那些**：「消息到了没有」与「为什么不答」
+	// 是两个问题，混在一条日志里就答不上来了。
+	config.Log().Info("收到消息", config.Fields(ctx, config.Context{
+		"parts": describeParts(message.Parts), "chars": len(message.Text()),
+	}))
 
 	// ── 没有可答的内容，先说清楚 ────────────────────────────
 	question := strings.TrimSpace(message.Text())
 	if question == "" {
-		config.Log().Info("收到不能作答的消息", mergeFields(fields, config.Context{
-			"parts": describeParts(message.Parts),
-		}))
+		config.Log().Info("收到不能作答的消息", fields)
 		h.reply(ctx, channel, message, replyNotText, fields)
 		return
 	}
@@ -146,7 +161,12 @@ func (h *Handler) reply(ctx context.Context, channel channels.Channel,
 		Text: text,
 	}); err != nil {
 		config.Log().Error("答复发送失败", mergeFields(fields, config.Context{"error": err.Error()}))
+		return
 	}
+
+	// **发成功也要记**：排查「机器人到底答没答」时，「已作答」与「答复已发出」
+	// 是两条独立的证据，缺一条就只能猜
+	config.Log().Info("答复已发出", config.Fields(ctx, config.Context{"chars": len(text)}))
 }
 
 // quotedTextOf 被引用那条的正文。**拿不到就返回空串**——

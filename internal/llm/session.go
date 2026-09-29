@@ -119,7 +119,7 @@ func (s *sessionHistory) Load(sessionID, accountID string) []ChatMessage {
 	if err != nil {
 		if !os.IsNotExist(err) {
 			config.Log().Warn("会话历史读取失败，按无历史处理", config.Context{
-				"path": path, "error": err.Error(),
+				"account": accountID, "session": sessionID, "error": err.Error(),
 			})
 		}
 		return nil
@@ -148,7 +148,7 @@ func (s *sessionHistory) Load(sessionID, accountID string) []ChatMessage {
 
 	if err := scanner.Err(); err != nil {
 		config.Log().Warn("会话历史读取中断，已返回读到的部分", config.Context{
-			"path": path, "error": err.Error(),
+			"account": accountID, "session": sessionID, "error": err.Error(),
 		})
 	}
 	return out
@@ -188,7 +188,7 @@ func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMess
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		config.Log().Warn("会话历史目录建不出来，本轮历史未持久化", config.Context{
-			"path": path, "error": err.Error(),
+			"account": accountID, "session": sessionID, "error": err.Error(),
 		})
 		return
 	}
@@ -196,7 +196,7 @@ func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMess
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		config.Log().Warn("会话历史追加失败（不影响回答）", config.Context{
-			"path": path, "error": err.Error(),
+			"account": accountID, "session": sessionID, "error": err.Error(),
 		})
 		return
 	}
@@ -204,7 +204,7 @@ func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMess
 
 	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
 		config.Log().Warn("会话历史写入失败（不影响回答）", config.Context{
-			"path": path, "error": err.Error(),
+			"account": accountID, "session": sessionID, "error": err.Error(),
 		})
 	}
 }

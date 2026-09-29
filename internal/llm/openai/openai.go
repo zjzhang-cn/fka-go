@@ -67,7 +67,7 @@ const DefaultTimeoutMs = 120_000
 
 // DefaultStreamTimeoutMs 流式接收的断流超时：这么久没有新数据就认为卡死。
 // **每收到一块都会重置**。
-const DefaultStreamTimeoutMs = 5_000
+const DefaultStreamTimeoutMs = 10_000
 
 // DefaultContextTokens 默认上下文预算。0 表示不压缩历史。
 const DefaultContextTokens = 0
@@ -323,11 +323,11 @@ func (p Provider) CreateComposer(cfg llm.Config) llm.Composer {
 			return "", errors.New("模型返回里没有 choices[0].message.content")
 		}
 
-		config.Log().Debug("语言模型已生成答案", config.Context{
+		config.Log().Debug("语言模型已生成答案", config.Fields(ctx, config.Context{
 			"model": cfg.Model, "host": host,
 			"passages": len(passages), "chars": len(result.Content),
 			"ms": time.Since(startedAt).Milliseconds(),
-		})
+		}))
 
 		// 本轮读进去的 user 正文与模型答复原样落进会话文件，供下一轮逐字重放
 		if store := historyStore(callCtx); store != nil && callCtx != nil && callCtx.SessionID != "" {
@@ -412,9 +412,25 @@ func postCompletion(
 	}
 	defer func() { _ = stream.Close() }()
 
+	// ── 提交了 ──────────────────────────────────────────────
+	//
+	// **Host 与 model 一定要记**：「答得不对」时第一件要确认的就是打到了哪个
+	// 接口、哪个模型——换过 baseURL 或 model 的部署，光看答案猜不出来。
+	// **绝不含 key**，见 `SanitizeError` 旁边那条同类的约定。
+	//
+	// 账号与会话号由 ctx 带过来（见 `internal/config/scope.go`）：
+	// 这一层看不见渠道，不绑在 ctx 上的话就只有一条「谁调的模型」都查不出来的日志。
+	startedAt := time.Now()
+	config.Log().Info("提交模型请求", config.Fields(ctx, config.Context{
+		"model": cfg.Model, "host": host, "stream": true,
+		"messages": len(request.Messages), "tools": len(request.Tools),
+		"timeoutMs": cfg.TimeoutMs, "streamTimeoutMs": cfg.StreamTimeoutMs,
+	}))
+
 	sink := newReasoningSink()
 	var (
 		content   strings.Builder
+		reasoning strings.Builder
 		toolCalls = map[int]*llm.ToolCall{}
 		order     []int
 		sawReason bool
@@ -438,8 +454,13 @@ func postCompletion(
 		delta := chunk.Choices[0].Delta
 
 		// 推理：送到前台打印，但**不进答案**
+		//
+		// **顺手也累加起来**，为了流结束后能记一条带原文的 DEBUG。
+		// 以前它只进控制台——重定向到文件或关掉前台之后就彻底没了，
+		// 「模型为什么这么答」就成了只能猜的事
 		if delta.ReasoningContent != "" {
 			sink(delta.ReasoningContent)
+			reasoning.WriteString(delta.ReasoningContent)
 			sawReason = true
 		}
 
@@ -482,7 +503,36 @@ func postCompletion(
 		}
 	}
 
-	return llm.ChatResult{Content: strings.TrimSpace(content.String()), ToolCalls: calls}, nil
+	// ── 推理与答案 ──────────────────────────────────────────
+	//
+	// **推理只记截断后的开头**：它可能有几千字，全量落盘会把日志撑爆。
+	// 完整的推理在控制台（`LLM_SHOW_REASONING=0` 可关）与 transcript 里。
+	config.Log().Debug("模型的推理", config.Fields(ctx, config.Context{
+		"chars": len([]rune(reasoning.String())),
+		"text":  snippetRunes(reasoning.String(), reasoningLogChars),
+	}))
+
+	answer := strings.TrimSpace(content.String())
+	config.Log().Info("模型返回", config.Fields(ctx, config.Context{
+		"chars": len([]rune(answer)), "toolCalls": len(calls),
+		"reasoningChars": len([]rune(reasoning.String())),
+		"ms":             time.Since(startedAt).Milliseconds(),
+	}))
+
+	return llm.ChatResult{Content: answer, ToolCalls: calls}, nil
+}
+
+// reasoningLogChars 推理在日志里最多记多少字。
+const reasoningLogChars = 200
+
+// snippetRunes 截断到前 n 个字（按字不是按字节，所以不会切坏一个汉字）。
+// 超长时**在末尾标出被截掉多少**——只看得到开头会让人以为那就是全部。
+func snippetRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + fmt.Sprintf("…（共 %d 字）", len(runes))
 }
 
 // wrapRequestError 把底层错误翻译成一句人话，并区分是被整体超时还是断流掐掉的。
