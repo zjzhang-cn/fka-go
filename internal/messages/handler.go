@@ -79,14 +79,14 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	//
 	// **每一条都记，包括随后会拒答的那些**：「消息到了没有」与「为什么不答」
 	// 是两个问题，混在一条日志里就答不上来了。
-	config.Log().Info("收到消息", config.Fields(ctx, config.Context{
+	config.Log().Info(config.TypeMSG, "收到消息", config.Fields(ctx, config.Context{
 		"parts": describeParts(message.Parts), "chars": len(message.Text()),
 	}))
 
 	// ── 没有可答的内容，先说清楚 ────────────────────────────
 	question := strings.TrimSpace(message.Text())
 	if question == "" {
-		config.Log().Info("收到不能作答的消息", fields)
+		config.Log().Info(config.TypeMSG, "收到不能作答的消息", fields)
 		h.reply(ctx, channel, message, replyNotText, fields)
 		return
 	}
@@ -97,13 +97,13 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	// tools.Context.PrincipalID）。缺了它，模型就得自己编一个——那等于没有过滤。
 	// 所以这里宁可回一句，也不让它猜。
 	if strings.TrimSpace(message.PrincipalID) == "" {
-		config.Log().Warn("入站消息没有全局身份，已拒答", fields)
+		config.Log().Warn(config.TypeMSG, "入站消息没有全局身份，已拒答", fields)
 		h.reply(ctx, channel, message, "这条消息里认不出你是谁，我不敢替你回答。", fields)
 		return
 	}
 
 	if h.Runner == nil {
-		config.Log().Warn("工具循环缺席，已回一句说明", fields)
+		config.Log().Warn(config.TypeMSG, "工具循环缺席，已回一句说明", fields)
 		h.reply(ctx, channel, message, replyNoLLM, fields)
 		return
 	}
@@ -121,21 +121,21 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	if err != nil {
 		// 模型的错如实报，**不静默降级**：「稍后再试」会把「接口没配好」
 		// 伪装成「模型偶尔不回」
-		config.Log().Error("问答失败", mergeFields(fields, config.Context{"error": err.Error()}))
+		config.Log().Error(config.TypeMSG, "问答失败", mergeFields(fields, config.Context{"error": err.Error()}))
 		h.reply(ctx, channel, message, fmt.Sprintf(replyAgentFail, err.Error()), fields)
 		return
 	}
 
 	text := strings.TrimSpace(result.Text)
 	if text == "" {
-		config.Log().Warn("模型没有给出正文", mergeFields(fields, config.Context{
+		config.Log().Warn(config.TypeMSG, "模型没有给出正文", mergeFields(fields, config.Context{
 			"steps": result.Steps, "stoppedBy": result.StoppedBy,
 		}))
 		h.reply(ctx, channel, message, replyEmpty, fields)
 		return
 	}
 
-	config.Log().Info("已作答", mergeFields(fields, config.Context{
+	config.Log().Info(config.TypeMSG, "已作答", mergeFields(fields, config.Context{
 		"steps": result.Steps, "stoppedBy": result.StoppedBy,
 		"tools": strings.Join(result.UsedTools, "、"),
 	}))
@@ -148,7 +148,7 @@ func (h *Handler) reply(ctx context.Context, channel channels.Channel,
 	message channels.InboundMessage, text string, fields config.Context) {
 	senders := channel.Senders()
 	if !senders.HasText() {
-		config.Log().Warn("渠道没有文本发送器，答复没发出去", mergeFields(fields,
+		config.Log().Warn(config.TypeMSG, "渠道没有文本发送器，答复没发出去", mergeFields(fields,
 			config.Context{"channel": channel.ID()}))
 		return
 	}
@@ -160,13 +160,13 @@ func (h *Handler) reply(ctx context.Context, channel channels.Channel,
 		},
 		Text: text,
 	}); err != nil {
-		config.Log().Error("答复发送失败", mergeFields(fields, config.Context{"error": err.Error()}))
+		config.Log().Error(config.TypeMSG, "答复发送失败", mergeFields(fields, config.Context{"error": err.Error()}))
 		return
 	}
 
 	// **发成功也要记**：排查「机器人到底答没答」时，「已作答」与「答复已发出」
 	// 是两条独立的证据，缺一条就只能猜
-	config.Log().Info("答复已发出", config.Fields(ctx, config.Context{"chars": len(text)}))
+	config.Log().Info(config.TypeMSG, "答复已发出", config.Fields(ctx, config.Context{"chars": len(text)}))
 }
 
 // quotedTextOf 被引用那条的正文。**拿不到就返回空串**——

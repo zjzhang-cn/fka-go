@@ -124,7 +124,7 @@ func Build(opts Options) *App {
 		app.Composer = provider.CreateComposer(cfg)
 	} else {
 		// 缺 key 或 model 就整块缺席，问答退回「回原文片段」
-		config.Log().Info("没配 LLM_API_KEY / LLM_MODEL，问答将不走模型", config.Context{})
+		config.Log().Info(config.TypeSYS, "没配 LLM_API_KEY / LLM_MODEL，问答将不走模型", config.Context{})
 	}
 
 	// ── 渠道 ──────────────────────────────────────────────
@@ -134,7 +134,7 @@ func Build(opts Options) *App {
 	// ── 会话历史 ──────────────────────────────────────────
 	app.History = llm.NewDefaultSessionHistory()
 	if app.History == nil {
-		config.Log().Info("SESSION_HISTORY 已关闭，历史不落盘", config.Context{})
+		config.Log().Info(config.TypeSYS, "SESSION_HISTORY 已关闭，历史不落盘", config.Context{})
 	}
 
 	// ── 工具循环 ──────────────────────────────────────────
@@ -149,7 +149,7 @@ func Build(opts Options) *App {
 			StreamTimeoutMs: app.LLMConfig.StreamTimeoutMs,
 		})
 		if app.Agent == nil {
-			config.Log().Info("LLM_TOOLS 已关闭，问答走单次路径", config.Context{})
+			config.Log().Info(config.TypeSYS, "LLM_TOOLS 已关闭，问答走单次路径", config.Context{})
 		}
 	}
 
@@ -173,11 +173,11 @@ func (a *App) registerMcp() {
 	read, err := mcp.ReadConfig()
 	if err != nil {
 		if configErr, ok := mcp.AsConfigError(err); ok {
-			config.Log().Error("MCP 配置读不了，本次不接 MCP", config.Context{
+			config.Log().Error(config.TypeSYS, "MCP 配置读不了，本次不接 MCP", config.Context{
 				"error": configErr.Message, "hint": configErr.Hint, "path": a.McpConfigPath,
 			})
 		} else {
-			config.Log().Error("MCP 配置读不了，本次不接 MCP", config.Context{
+			config.Log().Error(config.TypeSYS, "MCP 配置读不了，本次不接 MCP", config.Context{
 				"error": err.Error(), "path": a.McpConfigPath,
 			})
 		}
@@ -185,11 +185,11 @@ func (a *App) registerMcp() {
 	}
 
 	if read == nil {
-		config.Log().Info("未配置 MCP 服务器（"+a.McpConfigPath+" 不存在）", config.Context{})
+		config.Log().Info(config.TypeSYS, "未配置 MCP 服务器（"+a.McpConfigPath+" 不存在）", config.Context{})
 		return
 	}
 	if len(read.Servers) == 0 {
-		config.Log().Info("未配置 MCP 服务器（"+read.Path+" 为空）", config.Context{})
+		config.Log().Info(config.TypeSYS, "未配置 MCP 服务器（"+read.Path+" 为空）", config.Context{})
 		return
 	}
 
@@ -200,7 +200,7 @@ func (a *App) registerMcp() {
 	}
 	sortStrings(a.McpServers)
 
-	config.Log().Info("MCP 源就绪", config.Context{
+	config.Log().Info(config.TypeSYS, "MCP 源就绪", config.Context{
 		"path": read.Path, "servers": len(read.Servers),
 	})
 }
@@ -213,14 +213,14 @@ func (a *App) registerMcp() {
 // 写错了（比如 .env 里没有账号），此时继续跑只会让人以为「配了但没生效」。
 func (a *App) registerChannels(providers []channels.Provider) {
 	if len(providers) == 0 {
-		config.Log().Info("未配置任何渠道，只跑无头问答", config.Context{})
+		config.Log().Info(config.TypeSYS, "未配置任何渠道，只跑无头问答", config.Context{})
 		return
 	}
 
 	ctx := context.Background()
 	for _, provider := range providers {
 		if _, err := a.Channels.Register(ctx, provider); err != nil {
-			config.Log().Error("渠道起不来，已跳过", config.Context{
+			config.Log().Error(config.TypeSYS, "渠道起不来，已跳过", config.Context{
 				"kind": provider.ID(), "error": err.Error(),
 			})
 			continue
@@ -260,7 +260,7 @@ func (a *App) Serve(ctx context.Context) error {
 	if len(a.Channels.Instances()) == 0 {
 		return fmt.Errorf("没有接上任何渠道，无事可做")
 	}
-	config.Log().Info("服务就绪，等待消息", config.Context{"kinds": strings.Join(a.ChannelKinds, "、")})
+	config.Log().Info(config.TypeSYS, "服务就绪，等待消息", config.Context{"kinds": strings.Join(a.ChannelKinds, "、")})
 
 	<-ctx.Done()
 	a.Channels.StopAll(context.WithoutCancel(ctx))
@@ -272,7 +272,7 @@ func (a *App) Serve(ctx context.Context) error {
 	select {
 	case <-dispatched:
 	case <-time.After(drainTimeout):
-		config.Log().Warn("消息层没能在停机时限内排空", config.Context{"timeout": drainTimeout})
+		config.Log().Warn(config.TypeSYS, "消息层没能在停机时限内排空", config.Context{"timeout": drainTimeout})
 	}
 	return nil
 }
@@ -284,7 +284,7 @@ func (a *App) Close() {
 	}
 	if a.Tools != nil {
 		if err := a.Tools.Close(); err != nil {
-			config.Log().Warn("工具源关闭有问题", config.Context{"error": err.Error()})
+			config.Log().Warn(config.TypeSYS, "工具源关闭有问题", config.Context{"error": err.Error()})
 		}
 	}
 	_ = config.Log().Close()
@@ -302,6 +302,6 @@ func (a *App) WarmMcp(ctx context.Context) {
 	}
 	// 一次空 Context 足够——列举工具只需要连接，不依赖任何身份
 	if _, err := a.Tools.Tools(ctx, tools.Context{}); err != nil {
-		config.Log().Warn("MCP 预热有问题", config.Context{"error": err.Error()})
+		config.Log().Warn(config.TypeSYS, "MCP 预热有问题", config.Context{"error": err.Error()})
 	}
 }

@@ -131,12 +131,12 @@ func (r *registry) ensure(ctx context.Context, tc Context) error {
 		id := SanitizeSourceID(source.ID())
 
 		if id == "" {
-			config.Log().Warn("工具源的前缀不合法，整源跳过", config.Context{"source": source.ID()})
+			config.Log().Warn(config.TypeTOOL, "工具源的前缀不合法，整源跳过", config.Context{"source": source.ID()})
 			continue
 		}
 		if usedIDs[id] {
 			// 两个源共用一个前缀，后一个的工具会覆盖前一个。宁可整个跳过
-			config.Log().Warn("工具源前缀重复，后一个整源跳过",
+			config.Log().Warn(config.TypeTOOL, "工具源前缀重复，后一个整源跳过",
 				config.Context{"source": source.ID(), "prefix": id})
 			continue
 		}
@@ -145,7 +145,7 @@ func (r *registry) ensure(ctx context.Context, tc Context) error {
 		specs, err := source.List(ctx, tc)
 		if err != nil {
 			// 源坏了不等于服务坏了：少一批工具，别的照常。这与嵌入模型缺失同一条原则
-			config.Log().Warn("工具源列举失败，按没有工具处理",
+			config.Log().Warn(config.TypeTOOL, "工具源列举失败，按没有工具处理",
 				config.Context{"source": source.ID(), "error": err.Error()})
 			continue
 		}
@@ -153,7 +153,7 @@ func (r *registry) ensure(ctx context.Context, tc Context) error {
 		for _, spec := range specs {
 			fullName := id + ToolNameSeparator + spec.Name
 			if _, exists := byName[fullName]; exists {
-				config.Log().Warn("工具名重复，后一个跳过",
+				config.Log().Warn(config.TypeTOOL, "工具名重复，后一个跳过",
 					config.Context{"tool": fullName, "source": source.ID()})
 				continue
 			}
@@ -200,7 +200,7 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 	//
 	// **账号与消息号由 ctx 带过来**（`config.Fields` 自动合并）——工具这一层
 	// 看不见渠道，不绑在 ctx 上的话这条日志就只有工具名，看不出是谁触发的
-	config.Log().Debug("工具调用", config.Fields(ctx, config.Context{
+	config.Log().Debug(config.TypeTOOL, "工具调用", config.Fields(ctx, config.Context{
 		"tool": fullName, "args": args,
 	}))
 
@@ -219,7 +219,7 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 		} else {
 			called, err := found.source.Call(ctx, found.spec.Name, args, tc)
 			if err != nil {
-				config.Log().Warn("工具执行抛错，已转成给模型的一句话",
+				config.Log().Warn(config.TypeTOOL, "工具执行抛错，已转成给模型的一句话",
 					config.Fields(ctx, config.Context{"tool": fullName, "error": err.Error()}))
 				result = FailResult("工具执行出错：%s", err.Error())
 			} else {
@@ -229,7 +229,7 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 	}
 
 	// 「出」的 DEBUG：成败、耗时、长度与截断后的内容
-	config.Log().Debug("工具返回", config.Fields(ctx, config.Context{
+	config.Log().Debug(config.TypeTOOL, "工具返回", config.Fields(ctx, config.Context{
 		"tool":   fullName,
 		"ok":     result.OK,
 		"ms":     time.Since(started).Milliseconds(),
@@ -247,7 +247,7 @@ func (r *registry) PromptSections(ctx Context) []string {
 		section, err := source.PromptSection(ctx)
 		if err != nil {
 			// 少一段说明不影响回答，但要留下痕迹——否则「技能怎么没列出来」无从查起
-			config.Log().Warn("工具源的说明生成失败，已跳过",
+			config.Log().Warn(config.TypeTOOL, "工具源的说明生成失败，已跳过",
 				config.Context{"source": source.ID(), "error": err.Error()})
 			continue
 		}
@@ -262,7 +262,7 @@ func (r *registry) PromptSections(ctx Context) []string {
 func (r *registry) Close() error {
 	for _, source := range r.Sources() {
 		if err := source.Close(); err != nil {
-			config.Log().Warn("工具源关闭失败",
+			config.Log().Warn(config.TypeTOOL, "工具源关闭失败",
 				config.Context{"source": source.ID(), "error": err.Error()})
 		}
 	}

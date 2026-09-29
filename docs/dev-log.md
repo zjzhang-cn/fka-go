@@ -6,6 +6,52 @@
 >
 > 本项目是**独立仓库**。Node 版（`fka` 仓库）有自己的开发日志，两边历史互不相干。
 
+## 2026-09-29 日志文件改成普通文本，行首多一格「这段事是哪一段」
+
+**类型：** feature（含三处顺手修的 BUG）
+
+**内容：**
+- **落盘格式从 JSON 改成普通文本**：`[级别][账号][哪一段] 消息 键=值 …`，文件行前面
+  多一个 UTC 时间戳。`internal/config/logger.go` 与 `mcp/memory/internal/log/logger.go`
+  两份 logger 一起改。
+- 字段按**字典序**排；值**不加工**，只收拾排版：换行/回车/制表符转成可见的
+  `\n`、`\t`，带空格、引号、`=` 的值加引号。
+- **控制台与文件共用一个 `renderLine`**：控制台上看见的排版就是文件里的排版。
+- 新增 `Type`（`SYS/CHAN/MSG/PRM/LLM/RSN/TOOL/HIST`），每条日志点显式说出自己属于
+  哪一段；`--log-level` 参数与 `LOG_LEVEL` 一起定控制台级别，认不出就以用法错（2）退出。
+- 顺手修：`rotate` 写成了 `<date>.log`，丢掉了 `app.` 前缀（注释与两个读日志的
+  用例都写着 `app.<date>.log`）；`cmd/fka` 那个真跑 `serve` 的用例会被前一个登录
+  用例漏进进程环境的 `ILINK_ACCOUNT_1_*` 带着真起长轮询，卡到测试超时；**记忆 MCP
+  server 把 INFO 日志打进了 stdout**——那是 JSON-RPC 通道。
+
+**为什么：**
+JSON 落盘是给机器看的，而这份日志**几乎只在排查时被 `grep` / `tail` / `cut`**：
+`{"account":"acct-1"}` 要写成 `grep '"account":"acct-1"'`，而 `account=acct-1` 是
+肉眼就能写出来的。改文本之后还多一样好处：`cut -d' ' -f3` 一下就是级别与阶段。
+
+**⚠️ 换格式最容易丢的一条性质：「一条日志 = 一行」。** JSON 时代换行被 `\n` 天然
+转义掉了，普通文本得自己转——工具参数、推理片段、数据库驱动的报错都能带换行，
+不转的话一条日志会摊成两三行，后半截看起来像**另一条**的，`cut` 出来的级别与阶段
+全错。所以 `oneLine` / `field` 这两个转义函数是有用例钉着的，不是顺手加的。
+
+**为什么 MCP server 的日志一律走 stderr**：`mcp.json` 里给了 `env` 时子进程只拿到
+那几项，**没有 `LOG_LEVEL`**，级别落回默认的 debug，于是「server 就绪」那行直接打进
+JSON-RPC 通道。之所以没天天把主程序打挂：客户端偶尔会跳过解析不了的行——**这种
+「没事」纯属侥幸**。
+
+**关联文件：** `internal/config/logger.go`、`internal/config/scope.go`、
+`internal/config/format_test.go`、`mcp/memory/internal/log/logger.go`、
+`cmd/fka/loglevel.go`、`internal/{agent,app,channels,llm,messages,tools}/**`
+
+**验证：**
+- [x] `gofmt -l .` 无输出；`go vet ./...` 干净；`go test ./...` 全绿；`make verify`
+      （含 smoke：真机 `fka tools` 列出两个技能与两个 memory 工具）
+- [x] `CGO_ENABLED=1 go test -race -count=2` 覆盖改动的四个包全绿
+- [x] 真机：`fka-memory` 手动跑一次，**stdout 只剩 JSON-RPC**，日志在 stderr 与
+      `logs/app.<date>.log`（普通文本）
+- [ ] `make ci` 跑不通：Makefile 全局 `export CGO_ENABLED=0`，而 `go test -race`
+      要 cgo。要竞态检测得手动 `CGO_ENABLED=1 go test -race -count=2 ./...`
+
 ## 2026-09-29 一轮问答的全链路日志：每条都带账号
 
 **类型：** feature

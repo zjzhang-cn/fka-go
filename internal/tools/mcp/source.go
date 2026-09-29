@@ -101,7 +101,7 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 
 	result, err := server.connection.CallTool(ctx, locator.toolName, args)
 	if err != nil {
-		config.Log().Warn("MCP 工具调用失败",
+		config.Log().Warn(config.TypeTOOL, "MCP 工具调用失败",
 			config.Context{"tool": name, "error": err.Error()})
 		return tools.FailResult("MCP 工具调用失败：%s", err.Error()), nil
 	}
@@ -128,7 +128,7 @@ func (s *source) Close() error {
 	// stdio 服务器是被我们拉起的子进程，不关就留在后台
 	for _, server := range servers {
 		if err := server.connection.Close(); err != nil {
-			config.Log().Warn("MCP 连接关闭失败",
+			config.Log().Warn(config.TypeSYS, "MCP 连接关闭失败",
 				config.Context{"server": server.name, "error": err.Error()})
 		}
 	}
@@ -189,7 +189,7 @@ func (s *source) connectOne(ctx context.Context, name string) {
 
 	key := sanitizeServerKey(name)
 	if key == "" {
-		config.Log().Warn("MCP 服务器名归一化后为空，已跳过", config.Context{"server": name})
+		config.Log().Warn(config.TypeSYS, "MCP 服务器名归一化后为空，已跳过", config.Context{"server": name})
 		return
 	}
 
@@ -197,7 +197,7 @@ func (s *source) connectOne(ctx context.Context, name string) {
 	_, duplicate := s.connected[key]
 	s.mu.Unlock()
 	if duplicate {
-		config.Log().Warn("MCP 服务器名归一化后重复，后一个跳过",
+		config.Log().Warn(config.TypeSYS, "MCP 服务器名归一化后重复，后一个跳过",
 			config.Context{"server": name, "key": key})
 		return
 	}
@@ -205,7 +205,7 @@ func (s *source) connectOne(ctx context.Context, name string) {
 	connection, err := s.connect(ctx, name, cfg)
 	if err != nil {
 		// 一个服务器连不上不能把别的带走——少一批工具，服务照常
-		config.Log().Warn("MCP 服务器连接失败，已跳过",
+		config.Log().Warn(config.TypeSYS, "MCP 服务器连接失败，已跳过",
 			config.Context{"server": name, "error": err.Error()})
 		return
 	}
@@ -213,7 +213,7 @@ func (s *source) connectOne(ctx context.Context, name string) {
 	listed, err := connection.ListTools(ctx)
 	if err != nil {
 		_ = connection.Close()
-		config.Log().Warn("MCP 服务器列举工具失败，已跳过",
+		config.Log().Warn(config.TypeSYS, "MCP 服务器列举工具失败，已跳过",
 			config.Context{"server": name, "error": err.Error()})
 		return
 	}
@@ -232,7 +232,7 @@ func (s *source) connectOne(ctx context.Context, name string) {
 	for _, tool := range listed {
 		shortName := key + tools.ToolNameSeparator + tool.Name
 		if _, exists := s.toolIndex[shortName]; exists {
-			config.Log().Warn("MCP 工具名重复，后一个跳过",
+			config.Log().Warn(config.TypeSYS, "MCP 工具名重复，后一个跳过",
 				config.Context{"tool": shortName, "server": name})
 			continue
 		}
@@ -246,5 +246,5 @@ func (s *source) connectOne(ctx context.Context, name string) {
 		})
 	}
 
-	config.Log().Info("MCP 服务器已连接："+name, config.Context{"tools": len(listed)})
+	config.Log().Info(config.TypeSYS, "MCP 服务器已连接："+name, config.Context{"tools": len(listed)})
 }

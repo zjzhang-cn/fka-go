@@ -166,14 +166,14 @@ func (s *Service) Register(ctx context.Context, provider Provider) ([]Channel, e
 	if shouldStart {
 		for _, channel := range created {
 			if err := s.startOne(ctx, channel); err != nil {
-				config.Log().Warn("渠道开始接收失败", config.Context{
+				config.Log().Warn(config.TypeCHAN, "渠道开始接收失败", config.Context{
 					"channel": channel.ID(), "account": channel.AccountID(), "error": err.Error(),
 				})
 			}
 		}
 	}
 
-	config.Log().Info("渠道已注册", config.Context{
+	config.Log().Info(config.TypeCHAN, "渠道已注册", config.Context{
 		"kind": provider.ID(), "accounts": len(created),
 	})
 	return created, nil
@@ -401,7 +401,7 @@ func (s *Service) Subscribe() *Subscription {
 	count := len(s.subscribers)
 	s.mu.Unlock()
 
-	config.Log().Debug("入站订阅已建立", config.Context{"subscribers": count})
+	config.Log().Debug(config.TypeCHAN, "入站订阅已建立", config.Context{"subscribers": count})
 	return &Subscription{C: sub.ch, cancel: sub.close}
 }
 
@@ -418,7 +418,7 @@ func (s *Service) broadcast(channel Channel, message InboundMessage) {
 		}
 		// **队列满**：宁可吵一点也不阻塞收包循环。消息代理丢消息是不能接受的
 		// 默认行为，所以一定要留下痕迹
-		config.Log().Warn("入站队列已满，丢弃一条消息", config.Context{
+		config.Log().Warn(config.TypeCHAN, "入站队列已满，丢弃一条消息", config.Context{
 			"channel": channel.ID(), "account": channel.AccountID(),
 			"messageId": message.MessageID, "queue": inboundQueueSize,
 		})
@@ -444,7 +444,7 @@ func (s *Service) StartAll(ctx context.Context) {
 	for _, channel := range channels {
 		if err := s.startOne(ctx, channel); err != nil {
 			// 一个渠道起不来**不能把别的带走**——少一个渠道，服务照常
-			config.Log().Warn("渠道开始接收失败", config.Context{
+			config.Log().Warn(config.TypeCHAN, "渠道开始接收失败", config.Context{
 				"channel": channel.ID(), "account": channel.AccountID(), "error": err.Error(),
 			})
 		}
@@ -461,7 +461,7 @@ func (s *Service) startOne(ctx context.Context, channel Channel) error {
 func (s *Service) StopAll(ctx context.Context) {
 	for _, channel := range s.Instances() {
 		if err := channel.Stop(ctx); err != nil {
-			config.Log().Warn("渠道停止接收失败", config.Context{
+			config.Log().Warn(config.TypeCHAN, "渠道停止接收失败", config.Context{
 				"channel": channel.ID(), "account": channel.AccountID(), "error": err.Error(),
 			})
 		}

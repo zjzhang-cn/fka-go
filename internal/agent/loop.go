@@ -196,7 +196,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 	// 提交与返回那两条**不在这里打**——那一层（`llm` 的 provider）才知道
 	// 打到了哪个 host、用了多久、推理有多长。两边都打就重了，排查时
 	// 看到两条意思相近的记录反而不知道该信哪条。
-	config.Log().Debug("提示词已拼接", config.Fields(ctx, config.Context{
+	config.Log().Debug(config.TypePRM, "提示词已拼接", config.Fields(ctx, config.Context{
 		"session": input.SessionID, "systemChars": len([]rune(system)),
 		"promptSections": len(deps.Tools.PromptSections(input.ToolContext)),
 		"historyKept":    len(kept.Messages), "historyDropped": len(prior) - len(kept.Messages),
@@ -219,7 +219,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 
 		// 没有工具调用 = 它觉得可以答了。这就是最终答案
 		if len(result.ToolCalls) == 0 {
-			config.Log().Debug("工具循环结束：模型给出回答", config.Fields(ctx, config.Context{
+			config.Log().Debug(config.TypeLLM, "工具循环结束：模型给出回答", config.Fields(ctx, config.Context{
 				"model": deps.Model, "steps": index,
 				"tools": len(usedTools), "chars": len([]rune(result.Content)),
 			}))
@@ -276,7 +276,7 @@ func forcedAnswer(
 ) RunResult {
 	result, err := deps.Chat(ctx, messages, nil)
 	if err != nil {
-		config.Log().Warn("工具循环到达步数上限，收尾也失败了", config.Fields(ctx, config.Context{
+		config.Log().Warn(config.TypeLLM, "工具循环到达步数上限，收尾也失败了", config.Fields(ctx, config.Context{
 			"model": deps.Model, "steps": steps, "error": err.Error(),
 		}))
 		return RunResult{
@@ -285,7 +285,7 @@ func forcedAnswer(
 		}
 	}
 
-	config.Log().Warn("工具循环到达步数上限，已用无工具收尾", config.Fields(ctx, config.Context{
+	config.Log().Warn(config.TypeLLM, "工具循环到达步数上限，已用无工具收尾", config.Fields(ctx, config.Context{
 		"model": deps.Model, "steps": steps, "tools": len(usedTools),
 	}))
 

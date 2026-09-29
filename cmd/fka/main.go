@@ -60,9 +60,18 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// CLI 的 stdout 是给人和脚本消费的结果输出，不该混入内部日志
-	// （那些仍然完整写进日志文件）
-	config.Log().SetConsoleLevel(config.LevelWarn)
+	// 控制台日志级别：**先于任何子命令**定下来。
+	//
+	// 定成「先设默认、再让 --log-level 覆盖」，而不是让 applyLogLevel 自己
+	// 设——这样不给参数时的行为**一字未变**，而 `--log-level` 只是压过它。
+	//
+	// 必须早于 switch：首个入站消息可能在任何子命令的代码跑起来之前就记日志。
+	config.Log().SetConsoleLevel(defaultConsoleLevel)
+	if err := applyLogLevel(args); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		printUsage()
+		return exitUsage
+	}
 
 	switch args[0] {
 	case "ask":
@@ -107,6 +116,9 @@ LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要�
 
   fka ask --principal <身份> --session <会话> "…"
 `)
+
+	// 日志那行印在正文之外：**它是每个子命令都认的**，不属于任何一个
+	printLogLevelUsage(os.Stderr)
 }
 
 // runVersion 打版本信息。

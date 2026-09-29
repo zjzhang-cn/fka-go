@@ -121,7 +121,7 @@ func Test模型请求与返回的日志也带账号(t *testing.T) {
 	if result.Content != "查到了，去年的事。" {
 		t.Fatalf("该拿到回答，实际 %q", result.Content)
 	}
-	logged := readLogs(t, `"messageId":"m-7"`)
+	logged := readLogs(t, "messageId=m-7")
 
 	for _, want := range []string{"提交模型请求", "模型返回"} {
 		if !strings.Contains(logged, want) {
@@ -138,10 +138,10 @@ func Test模型请求与返回的日志也带账号(t *testing.T) {
 			continue
 		}
 		checked++
-		if !strings.Contains(line, `"account":"account_002"`) {
+		if !strings.Contains(line, "account=account_002") {
 			t.Errorf("该带账号归属，实际：\n%s", line)
 		}
-		if !strings.Contains(line, `"messageId":"m-7"`) {
+		if !strings.Contains(line, "messageId=m-7") {
 			t.Errorf("该带消息号，实际：\n%s", line)
 		}
 	}
@@ -151,7 +151,7 @@ func Test模型请求与返回的日志也带账号(t *testing.T) {
 
 	// 提交那一条要能回答「打到了哪个接口」——这是排查换过 baseURL 的部署时
 	// 第一件要确认的事，光看答案猜不出来
-	for _, want := range []string{`"host":`, `"model":"test-model"`, `"stream":true`} {
+	for _, want := range []string{"host=", "model=test-model", "stream=true"} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("提交日志该带 %s，实际输出：\n%s", want, logged)
 		}
@@ -181,7 +181,7 @@ func Test推理会被记下来(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("调假模型失败：%v", err)
 	}
-	logged := readLogs(t, `"messageId":"m-9"`)
+	logged := readLogs(t, "messageId=m-9")
 
 	if !strings.Contains(logged, "模型的推理") {
 		t.Fatalf("该记下推理，实际输出：\n%s", logged)
@@ -189,11 +189,11 @@ func Test推理会被记下来(t *testing.T) {
 	if !strings.Contains(logged, "先查三亚的行程单再回答") {
 		t.Errorf("该记下推理的原文，实际输出：\n%s", logged)
 	}
-	if !strings.Contains(logged, `"account":"account_003"`) {
+	if !strings.Contains(logged, "account=account_003") {
 		t.Errorf("推理日志也要带账号，实际输出：\n%s", logged)
 	}
 	// 字数与截断后的开头都要在
-	if !strings.Contains(logged, `"chars":11`) {
+	if !strings.Contains(logged, "chars=11") {
 		t.Errorf("该记推理的字数，实际输出：\n%s", logged)
 	}
 }
@@ -222,7 +222,7 @@ func Test推理太长会被截断(t *testing.T) {
 	if !strings.Contains(logged, fmt.Sprintf("共 %d 字", len([]rune(long)))) {
 		t.Errorf("截断处该标出总字数，实际输出：\n%s", logged)
 	}
-	if !strings.Contains(logged, fmt.Sprintf(`"chars":%d`, len([]rune(long)))) {
+	if !strings.Contains(logged, fmt.Sprintf("chars=%d", len([]rune(long)))) {
 		t.Errorf("该如实记下完整字数（截断只影响记多少，不影响记多少字），实际输出：\n%s", logged)
 	}
 }

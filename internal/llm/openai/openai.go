@@ -323,7 +323,7 @@ func (p Provider) CreateComposer(cfg llm.Config) llm.Composer {
 			return "", errors.New("模型返回里没有 choices[0].message.content")
 		}
 
-		config.Log().Debug("语言模型已生成答案", config.Fields(ctx, config.Context{
+		config.Log().Debug(config.TypeLLM, "语言模型已生成答案", config.Fields(ctx, config.Context{
 			"model": cfg.Model, "host": host,
 			"passages": len(passages), "chars": len(result.Content),
 			"ms": time.Since(startedAt).Milliseconds(),
@@ -421,7 +421,7 @@ func postCompletion(
 	// 账号与会话号由 ctx 带过来（见 `internal/config/scope.go`）：
 	// 这一层看不见渠道，不绑在 ctx 上的话就只有一条「谁调的模型」都查不出来的日志。
 	startedAt := time.Now()
-	config.Log().Info("提交模型请求", config.Fields(ctx, config.Context{
+	config.Log().Info(config.TypeLLM, "提交模型请求", config.Fields(ctx, config.Context{
 		"model": cfg.Model, "host": host, "stream": true,
 		"messages": len(request.Messages), "tools": len(request.Tools),
 		"timeoutMs": cfg.TimeoutMs, "streamTimeoutMs": cfg.StreamTimeoutMs,
@@ -507,13 +507,13 @@ func postCompletion(
 	//
 	// **推理只记截断后的开头**：它可能有几千字，全量落盘会把日志撑爆。
 	// 完整的推理在控制台（`LLM_SHOW_REASONING=0` 可关）与 transcript 里。
-	config.Log().Debug("模型的推理", config.Fields(ctx, config.Context{
+	config.Log().Debug(config.TypeRSN, "模型的推理", config.Fields(ctx, config.Context{
 		"chars": len([]rune(reasoning.String())),
 		"text":  snippetRunes(reasoning.String(), reasoningLogChars),
 	}))
 
 	answer := strings.TrimSpace(content.String())
-	config.Log().Info("模型返回", config.Fields(ctx, config.Context{
+	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(ctx, config.Context{
 		"chars": len([]rune(answer)), "toolCalls": len(calls),
 		"reasoningChars": len([]rune(reasoning.String())),
 		"ms":             time.Since(startedAt).Milliseconds(),

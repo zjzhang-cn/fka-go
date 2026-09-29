@@ -9,13 +9,20 @@
 //
 // **stderr + 按天轮转的文件**。stdout 一个字都不能有——那是 JSON-RPC 的通道，
 // 一个 fmt.Println 就能把 server 打挂（见各 server 的 main.go）。
+//
+// ## 落盘格式：普通文本，不是 JSON
+//
+// 一行一条，`[级别] 消息 键=值 键=值`，文件行多一个 UTC 时间戳。
+// **换行会被转义、带空格的值会被加引号**，守住「一条日志 = 一行」——
+// 报错字符串与数据库返回都可能带换行，不收拾的话一条日志会摊成两三行。
 package log
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,8 +67,8 @@ func parseLevel(value string) (Level, bool) {
 	return 0, false
 }
 
-// Context 是日志的附加字段。**值不再加工**——与 Node 版一致，写进文件的就是
-// 调用方给的那份，排查时看到什么就是什么。
+// Context 是日志的附加字段。**值不加工**——排查时看到什么就是调用方给的那份。
+// 唯一的例外是**排版**：换行转义、带空格的值加引号（见 `oneLine`）。
 type Context map[string]any
 
 // Logger 进程级日志：控制台按级别过滤，**文件始终全量**——日志文件是排查用的，
@@ -161,13 +168,6 @@ func (l *Logger) currentConsoleLevel() Level {
 	return LevelDebug
 }
 
-type logEntry struct {
-	Timestamp string  `json:"timestamp"`
-	Level     string  `json:"level"`
-	Message   string  `json:"message"`
-	Context   Context `json:"context,omitempty"`
-}
-
 func (l *Logger) write(level Level, message string, ctx Context) {
 	now := time.Now().UTC()
 
@@ -175,15 +175,7 @@ func (l *Logger) write(level Level, message string, ctx Context) {
 	l.mu.Lock()
 	l.rotate(now)
 	if l.file != nil {
-		entry, err := json.Marshal(logEntry{
-			Timestamp: now.Format("2006-01-02T15:04:05.000Z"),
-			Level:     level.String(),
-			Message:   message,
-			Context:   ctx,
-		})
-		if err == nil {
-			_, _ = l.file.Write(append(entry, '\n'))
-		}
+		_, _ = l.file.WriteString(renderEntry(now, level, message, ctx) + "\n")
 	}
 	handler := l.onCritical
 	l.mu.Unlock()
@@ -192,21 +184,100 @@ func (l *Logger) write(level Level, message string, ctx Context) {
 	if level < l.currentConsoleLevel() {
 		return
 	}
-	line := fmt.Sprintf("[%s] %s", strings.ToUpper(level.String()), message)
-	if len(ctx) > 0 {
-		if rendered, err := json.Marshal(ctx); err == nil {
-			line += " " + string(rendered)
-		}
-	}
-	if level >= LevelError {
-		fmt.Fprintln(os.Stderr, line)
-	} else {
-		fmt.Fprintln(os.Stdout, line)
-	}
+
+	// **一律 stderr，包括 info 与 debug。**
+	//
+	// 这个进程是 **stdio 子进程**：stdout 是与主程序之间的 JSON-RPC 通道，
+	// 一行非 JSON 的日志就可能让对端解析失败（main.go 里 ServeStdio 前后都
+	// 明写着「不要往 stdout 打任何东西」）。
+	//
+	// ## 之前是 info 走 stdout，而那正是**默认级别**
+	//
+	// `mcp.json` 里给了 `env` 时，子进程只拿到那几项——**没有 LOG_LEVEL**，
+	// 于是级别落回默认的 debug，`log.Log().Info("记忆 MCP server 就绪", …)`
+	// 直接打进 JSON-RPC 通道。手动跑一次 `fka-memory` 就能看见 stdout 里的日志行。
+	// 之所以没天天把主程序打挂：客户端偶尔会跳过解析不了的行，**这种「没事」
+	// 纯属侥幸**，不构成「可以往 stdout 写日志」的依据。
+	fmt.Fprintln(os.Stderr, renderLine(level, message, ctx))
 
 	if level == LevelCritical && handler != nil {
 		handler(message, ctx)
 	}
+}
+
+// timeLayout 日志行开头那个时间戳的写法。**保持 UTC**：文件按天轮转的名字
+// 也是按 UTC 算的，两边差一个时区的话跨零点的排序就乱了。
+const timeLayout = "2006-01-02T15:04:05.000Z"
+
+// renderLine 拼控制台那一行：`[级别] 消息 键=值 …`。
+//
+// **纯函数**：格式能被直接测，不用去换 `os.Stdout` 抓输出（那是**有竞态**的，
+// `write` 每次写入时现读那个变量，恢复函数在写它，`-race` 会当场报出来）。
+func renderLine(level Level, message string, ctx Context) string {
+	var line strings.Builder
+	line.WriteByte('[')
+	line.WriteString(strings.ToUpper(level.String()))
+	line.WriteString("] ")
+	line.WriteString(oneLine(message))
+	line.WriteString(renderFields(ctx))
+	return line.String()
+}
+
+// renderEntry 拼**文件里**那一行：时间戳 + 与控制台完全一样的排版。
+// 两边共用一个 `renderLine`，所以控制台上看见的排版就是文件里的排版。
+func renderEntry(now time.Time, level Level, message string, ctx Context) string {
+	return now.Format(timeLayout) + " " + renderLine(level, message, ctx)
+}
+
+// renderFields 把字段拼成行尾的 ` 键=值 键=值`。
+//
+// **键按字典序排**：Go 遍历 map 的顺序是随机的，不排序的话同一份字段两次落盘
+// 排出来的行不一样，diff 出来的全是噪音。
+func renderFields(ctx Context) string {
+	if len(ctx) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(ctx))
+	for key := range ctx {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var out strings.Builder
+	for _, key := range keys {
+		out.WriteByte(' ')
+		out.WriteString(oneLine(key))
+		out.WriteByte('=')
+		out.WriteString(field(fmt.Sprint(ctx[key])))
+	}
+	return out.String()
+}
+
+// oneLine 把换行、回车、制表符换成看得见的两字符转义——
+// **一条日志必须占一行**，否则 grep/tail/cut 会把后半截当成另一条。
+//
+// **只转这三个**：换行与回车断行、制表符让对齐歪，其余控制字符实际不会出现。
+func oneLine(text string) string {
+	return lineEscaper.Replace(text)
+}
+
+// lineEscaper 预编译的替换表，`strings.NewReplacer` 只在第一次调用时建表。
+var lineEscaper = strings.NewReplacer("\n", `\n`, "\r", `\r`, "\t", `\t`)
+
+// field 收拾一个**字段值**（或键）：既占一行，也不跟相邻的键值粘在一起。
+// 带空格、引号、`=` 的加引号（`strconv.Quote` 顺带转义换行），干净的短值
+// 保持裸着，`grep 'path=/x/y.db'` 这类朴素写法才成立。
+//
+// **加引号那条路上不能先过 `oneLine`**：真换行先被换成 `\n` 两个字符再 Quote，
+// 出来的是 `\\n`。
+func field(text string) string {
+	for _, r := range text {
+		// 半角空格会切开字段；全角空格不断字段，只是对齐会歪，一并归到引号里
+		if r == ' ' || r == '"' || r == '=' || r == 0x3000 {
+			return strconv.Quote(text)
+		}
+	}
+	return oneLine(text)
 }
 
 func (l *Logger) Debug(message string, ctx Context) { l.write(LevelDebug, message, ctx) }

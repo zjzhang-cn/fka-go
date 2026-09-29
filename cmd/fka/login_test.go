@@ -152,6 +152,9 @@ func withAccount1Env() []string {
 }
 
 // clearAccountEnv 把账号 1 的键从进程环境里摘掉（摘完复原）。
+//
+// **只复原「本来就有」的那些**，所以它挡不住别人往进程环境里写账号——
+// 下面 `blankAccountEnv` 才是那个方向的工具，`serve` 那种真起渠道的用例要用它。
 func clearAccountEnv(t *testing.T) {
 	t.Helper()
 
@@ -162,5 +165,24 @@ func clearAccountEnv(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+// blankAccountEnv 把账号 1 的键**就地置空**，且用 `t.Setenv` 复原原值。
+//
+// ## 为什么多一个「置空」而不是接着用 clearAccountEnv
+//
+// 账号表是从**进程环境**读的，而同一个测试二进制里别的用例会往环境里写账号
+// （`loginProvider` 自己会 `LoadEnv`，把临时 `.env` 灌进进程）。于是：
+// 单独跑 `run(["serve"])` 时它 3 毫秒就以 1 退出（没接上渠道），
+// 跟在那些用例后面跑时它**认得出账号、真去起长轮询**，卡在网络请求上直到测试超时。
+//
+// 置空对两种来路都成立：`AccountsFromEnv` 把没有 token 的槽位当空壳跳过，
+// 而 `t.Setenv` 会在用例结束时把原值放回去——**结果与前面跑了谁无关**。
+func blankAccountEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range accountEnvKeys {
+		t.Setenv(key, "")
 	}
 }

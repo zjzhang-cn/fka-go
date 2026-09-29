@@ -116,14 +116,14 @@ func ReadToolPolicy() Policy {
 	}
 
 	if len(unknown) > 0 {
-		config.Log().Warn(ToolEffectsEnv+" 里有认不出的取值，已忽略", config.Context{
+		config.Log().Warn(config.TypeTOOL, ToolEffectsEnv+" 里有认不出的取值，已忽略", config.Context{
 			"unknown": unknown,
 			"valid":   toStrings(AllEffects),
 		})
 	}
 
 	if len(allow) == 0 {
-		config.Log().Warn(ToolEffectsEnv+" 没解析出任何合法取值，按默认只读处理", config.Context{
+		config.Log().Warn(config.TypeTOOL, ToolEffectsEnv+" 没解析出任何合法取值，按默认只读处理", config.Context{
 			"raw": raw,
 		})
 		return DefaultPolicy()

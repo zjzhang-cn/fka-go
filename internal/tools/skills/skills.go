@@ -253,7 +253,7 @@ func (s *source) scan() [][2]any {
 			// 目录不存在是**正常状态**（这份安装没放技能）；别的错误才值得看一眼，且只看一次
 			if !os.IsNotExist(err) && !s.warnedDirs[dir] {
 				s.warnedDirs[dir] = true
-				config.Log().Warn("技能目录读不了，按没有技能处理",
+				config.Log().Warn(config.TypeTOOL, "技能目录读不了，按没有技能处理",
 					config.Context{"dir": dir, "error": err.Error()})
 			}
 			continue
@@ -311,7 +311,7 @@ func (s *source) load() []Skill {
 			raw, err := os.ReadFile(filepath.Join(dir, name, SkillFile))
 			if err != nil {
 				// 一个技能读不了，不能把别的技能一起带走
-				config.Log().Warn("技能读不了，已跳过",
+				config.Log().Warn(config.TypeTOOL, "技能读不了，已跳过",
 					config.Context{"skill": dir + "/" + name, "error": err.Error()})
 				continue
 			}

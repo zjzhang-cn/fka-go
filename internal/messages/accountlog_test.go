@@ -27,8 +27,12 @@ import (
 //
 // ## 怎么只取这一轮
 //
-// 文件是包级 logger 写的，**同包所有用例共用一份**。所以按本轮特有的 messageId
-// 过滤——`logOwnerMessage` 里的消息号是这条用例独占的。
+// 文件是包级 logger 写的，**同包所有用例共用一份**，而且按天累积——上一次跑留下的行
+// 也都在里面。所以按本轮特有的消息号过滤：`logOwnerMessage` 里的消息号是这条用例独占的。
+//
+// **过滤串要带上字段的写法**（`messageId=…` 而不是光一个消息号）：只拿消息号的话，
+// 升级前那批 JSON 格式的老行也会被捞进来，逐行验归属时全红——而红的原因跟归属无关。
+// 写成 `键=值` 之后，老格式的行天然不匹配（它们的字段是 `"messageId":"…"`）。
 func readLogs(t *testing.T, since string) string {
 	t.Helper()
 
@@ -58,7 +62,7 @@ const logOwnerMessage = "logscope-owner"
 //
 // 「字段会自动合并」是 `config.Fields` 自己的性质，用例在 config 包里。
 // 真正会坏的是**链路**——ctx 到底有没有从消息层传到工具层。而那种坏法在代码
-// 上完全看不出来：`config.Log().Debug("工具调用", config.Context{...})` 编译得过、
+// 上完全看不出来：`config.Log().Debug(config.TypeTOOL, "工具调用", config.Context{...})` 编译得过、
 // 包内测试全绿，只是日志里没有归属。所以必须真跑一遍、看真的输出。
 func Test每一跳的日志都带账号(t *testing.T) {
 	f := newFixture(t, "答完了")
@@ -66,7 +70,7 @@ func Test每一跳的日志都带账号(t *testing.T) {
 	message := textMessage("我们去年三亚玩得怎么样")
 	message.MessageID = logOwnerMessage
 	f.deliver(t, message)
-	logged := readLogs(t, logOwnerMessage)
+	logged := readLogs(t, "messageId="+logOwnerMessage)
 
 	if strings.TrimSpace(logged) == "" {
 		t.Fatal("一条日志都没抓到，测不到任何东西")
@@ -102,10 +106,10 @@ func Test每一跳的日志都带账号(t *testing.T) {
 			continue
 		}
 		checked++
-		if !strings.Contains(line, `"account":"acct-1"`) {
+		if !strings.Contains(line, "account=acct-1") {
 			t.Errorf("这条日志该带 acct-1 的归属，实际：\n%s", line)
 		}
-		if !strings.Contains(line, `"messageId":"`+logOwnerMessage+`"`) {
+		if !strings.Contains(line, "messageId="+logOwnerMessage) {
 			t.Errorf("这条日志该带消息号（同账号的多条消息要分得开），实际：\n%s", line)
 		}
 	}
@@ -142,7 +146,7 @@ func Test两个账号的日志不会串(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	logged := readLogs(t, `"messageId":"msg-`)
+	logged := readLogs(t, "messageId=msg-")
 
 	// 每条「答复已发出」都要同时对上账号**与它自己的消息号**：
 	// 消息号不同才说明两条真的各自走完了自己的链路，而不是互相抄了归属
@@ -153,11 +157,11 @@ func Test两个账号的日志不会串(t *testing.T) {
 			continue
 		}
 		for account, messageID := range pairs {
-			if !strings.Contains(line, `"account":"`+account+`"`) {
+			if !strings.Contains(line, "account="+account) {
 				continue
 			}
 			matched[account] = true
-			if !strings.Contains(line, `"messageId":"`+messageID+`"`) {
+			if !strings.Contains(line, "messageId="+messageID) {
 				t.Errorf("%s 的答复带错了消息号（串号了）：\n%s", account, line)
 			}
 		}
