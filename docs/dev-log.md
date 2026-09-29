@@ -51,6 +51,29 @@
       （「该认得已登录的账号 1 … 实际：当前没有配置任何 iLink 账号」），加回来即绿
 - [x] `make test-count`（`-count=2`）全绿
 
+## 2026-09-29 make verify 从来没通过过：smoke 里的 SIGPIPE
+
+**类型：** bugfix
+
+**内容：**
+- `Makefile` 的 smoke 第 1 步由 `$(FKA) tools | head -3` 改为「落盘再 `head -3`」。
+
+**为什么：**
+recipe 的 `.SHELLFLAGS` 是 `-eu -o pipefail -c`。`head` 读够 3 行就退出，`fka tools`
+写剩余部分时收到 SIGPIPE（**141**），pipefail 把它当成失败——整条 smoke 挂在
+「打印工具列表」上，**跟渠道接没接上毫无关系**。
+
+`fka tools` 的输出恒多于 3 行，所以这一行**从 `1d327d5` 引入 Makefile 起就没通过过**。
+这意味着能力链路唯一的自动闸门（技能读到了吗 / MCP server 连上了吗）一直是失效状态，
+而它失效的表现恰好是「gate 报错」，容易被当成环境问题忽略过去。
+
+**关联文件：** `Makefile`
+
+**验证：**
+- [x] 改前 `make verify` 挂在 `smoke`（Error 141）；改后 `make verify` 末尾打印
+      「✓ 全部通过」，且 smoke 第 3 步的四个能力断言（`skills__load` / `skills__list` /
+      `mcp__memory__search_memories` / `mcp__memory__remember_memory`）全绿
+
 ## 2026-09-28 文档 MCP server（只读）：权限行为钉死，agent 第一次搜到真实家庭文档
 
 **类型：** feature

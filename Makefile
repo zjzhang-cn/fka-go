@@ -225,7 +225,11 @@ ci: verify test-race test-count
 smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@rm -rf $(smoke_dir); mkdir -p $(smoke_dir)
 	@echo "$(BOLD)── 1. 空配置 ──$(RESET)"
-	@$(FKA) tools | head -3
+	@# **落盘再截前 3 行，而不是 `fka tools | head -3`**：recipe 开着 pipefail，
+	@# 而 head 读够就退出，fka tools 写剩余部分时收到 SIGPIPE（141）——
+	@# 整条 smoke 于是挂在「打印工具列表」上，跟渠道接没接上毫无关系。
+	@$(FKA) tools > $(smoke_dir)/tools.txt
+	@head -3 $(smoke_dir)/tools.txt
 	@echo
 	@echo "$(BOLD)── 2. 空配置下 serve 该明确说没有渠道并以 1 退出 ──$(RESET)"
 	@set +e; $(FKA) serve >$(smoke_log) 2>&1; code=$$?; set -e; \
