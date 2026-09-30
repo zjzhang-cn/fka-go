@@ -380,6 +380,49 @@ func Test协议失败不退避退出(t *testing.T) {
 	waitFor(t, "重试后推进游标", func() bool { return fixture.cursors.Get("acct-1") == "buf-ok" })
 }
 
+// Test失败轮次不算成功 见 `pollOnce` 的第一个返回值：失败路径**在函数内部已经
+// 退避过了**，所以它必须把「这一轮失败了」与「成功」分开。混在一起（失败也返回
+// nil error）时，调用方每轮 `backoff.Reset()`——退避永远停在初始值，`DefaultBackoff`
+// 文档里那个 60s 上限**永远到不了**，服务端故障期间就是固定 2s 一次的稳定节奏猛刷。
+//
+// 这里直接调 pollOnce，而不是量端到端的请求间隔：真实退避 2s 起步，量出一次递增
+// 要等 8 秒，而坏掉的地方就是这个返回值。
+func Test失败轮次不算成功(t *testing.T) {
+	// 协议层失败（ret 非零且不是 -14）：退避后重试，不退出
+	failing := newPollerFixture(t, `{"ret":-1}`)
+	backoff := NewBackoff(BackoffOptions{Initial: time.Millisecond, Factor: 2, Jitter: 0})
+
+	for round := 1; round <= 3; round++ {
+		ok, err := failing.poller.pollOnce(context.Background(), backoff)
+		if err != nil {
+			t.Fatalf("第 %d 轮：失败已在函数内部退避过，不该再往外抛：%v", round, err)
+		}
+		if ok {
+			t.Fatalf("第 %d 轮：协议失败被报成「成功的一轮」——调用方会据此 Reset 退避", round)
+		}
+		if got := backoff.Attempts(); got != round {
+			t.Fatalf("第 %d 轮后 Attempts = %d，期望 %d（退避被重置了？）", round, got, round)
+		}
+	}
+
+	// 合法应答才算成功——「长轮询正常、游标推进」那条路不能反过来
+	healthy := newPollerFixture(t, `{"msgs":[],"get_updates_buf":"buf-1"}`)
+	ok, err := healthy.poller.pollOnce(context.Background(), NewBackoff(BackoffOptions{Initial: time.Millisecond}))
+	if err != nil || !ok {
+		t.Errorf("合法应答该算成功（ok=%v err=%v）", ok, err)
+	}
+
+	// 凭证失效：把 errSessionExpired 交给循环（那是内部信号），但不算成功
+	expired := newPollerFixture(t, `{"ret":-14}`)
+	ok, err = expired.poller.pollOnce(context.Background(), NewBackoff(BackoffOptions{Initial: time.Millisecond}))
+	if !errors.Is(err, errSessionExpired) {
+		t.Errorf("ret=-14 该返回 errSessionExpired：%v", err)
+	}
+	if ok {
+		t.Error("凭证失效不该算成功")
+	}
+}
+
 // Test停机后goroutine一定退出 直接返回的话，调用方紧接着关掉 HTTP 传输层，
 // 而长轮询还挂在那儿等着应答——那会产生一堆看不懂的连接错误。
 func Test停机后goroutine一定退出(t *testing.T) {

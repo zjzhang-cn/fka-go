@@ -622,6 +622,32 @@ func TestRet缺席算成功(t *testing.T) {
 	}
 }
 
+// TestCheckRet_三种形状必须分开 上一条说「ret 缺席算成功」，而这条说
+// **「缺席」与「根本不是 JSON 对象」不是一回事**：前者是成功响应的正常形状，
+// 后者说明我们根本没拿到协议应答（网关 HTML、门户页、空体、`null`）。
+// 混为一谈，一个门户页就是一次「发送成功」。
+func TestCheckRet_三种形状必须分开(t *testing.T) {
+	// 成功：字段缺席，或显式为 0
+	if err := checkRet([]byte(`{"msgs":[]}`), "试"); err != nil {
+		t.Errorf("ret 缺席是成功响应的正常形状，不该报错：%v", err)
+	}
+	if err := checkRet([]byte(`{"ret":0}`), "试"); err != nil {
+		t.Errorf("ret=0 该成功：%v", err)
+	}
+
+	// 协议层失败：带 ret 码
+	if err := checkRet([]byte(`{"ret":-2,"errmsg":"invalid arguments"}`), "试"); err == nil {
+		t.Error("ret=-2 该失败")
+	}
+
+	// **不是我们的服务端**：这几种都不算成功
+	for _, raw := range []string{`<html>login required</html>`, ``, `null`, `[1,2]`, `"ok"`} {
+		if err := checkRet([]byte(raw), "试"); err == nil {
+			t.Errorf("%q 不是 JSON 对象，该失败——它被读成「没有 ret → 成功」就是静默丢消息", raw)
+		}
+	}
+}
+
 // ── 辅助 ───────────────────────────────────────────────
 
 func mustParseOne(t *testing.T, raw string) WeixinMessage {

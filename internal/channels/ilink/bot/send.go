@@ -216,11 +216,22 @@ func (s *sender) PostMessage(ctx context.Context, msg OutboundMsg, what string,
 		MessageID json.RawMessage `json:"message_id"`
 		MsgID     json.RawMessage `json:"msg_id"`
 	}
-	_ = json.Unmarshal(data, &payload)
+	// 解析失败**必须报错**：以前这里是 `_ = json.Unmarshal(...)`，解不出来就当作
+	// 没有 id，于是「发送成功」的空 SendResult 顺着往上走
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return SendResult{Raw: data}, fmt.Errorf("发送%s失败：解析应答失败：%w", what, err)
+	}
 
 	id := stringID(payload.MessageID)
 	if id == "" {
 		id = stringID(payload.MsgID)
+	}
+	// **成功必须带回一个 id**：拿不到就说明这不是一次成功的发送（协议变了，或者
+	// 应答根本不是我们的服务端）。返回空 id + nil error 会让上层以为消息已送达
+	// ——那正是本文件开头声明绝不允许的事。
+	if id == "" {
+		return SendResult{Raw: data}, fmt.Errorf("发送%s失败：应答里没有 message_id / msg_id：%s",
+			what, snippet(data))
 	}
 	return SendResult{MessageID: id, Raw: data}, nil
 }

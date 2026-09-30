@@ -97,6 +97,15 @@ func (p *Provider) pollerFor() pollerFor {
 		poller := bot.NewPoller(account, cursors, p.HTTPClient)
 		poller.OnMessage = onMessage
 		poller.OnSessionExpired = onExpired
+		// **失败必须有人接。** 这个回调以前全仓无人赋值：网络与协议失败于是彻底
+		// 静默，而 `parse.go` 的注释正好在骂这件事（「静默忽略正是过去『出问题
+		// 完全看不见』的原因」）。协议层是唯一有话说却没嘴的一层——整棵 ilink
+		// 树里一条日志都没有。
+		poller.OnError = func(err error) {
+			config.Log().Warn(config.TypeCHAN, "长轮询失败，退避后重试", config.Context{
+				"channel": ID, "account": account.ID, "error": err.Error(),
+			})
+		}
 		return poller
 	}
 }

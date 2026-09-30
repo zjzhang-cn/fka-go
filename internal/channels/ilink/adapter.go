@@ -556,12 +556,25 @@ func (c *Channel) Start(ctx context.Context, onMessage func(channels.InboundMess
 		// session 过期要**标为 expired 而不是 offline**：
 		// 前者表示凭证失效需重新扫码，后者只是没在跑。运维要靠这个区分该做什么
 		c.table.setStatus(c.accountID, bot.AccountExpired)
+
 		// 继续拉只会反复拿到 -14，所以停掉这个账号。
-		// 用 WithoutCancel：触发它的那个 ctx 可能已经取消，
-		// 而 Stop 还要用它——顺带避免「自己取消自己等自己」的死锁
-		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopTimeout)
-		defer cancel()
-		_ = c.Stop(stopCtx)
+		//
+		// ## 为什么必须换一个 goroutine 停，而不是就地在回调里停
+		//
+		// 这个回调是**轮询器在自己的 goroutine 上叫的**（`poller.go` 的 `loop` 里
+		// 那句 `p.OnSessionExpired()`），而 `Stop` 要等那个 goroutine 退出
+		// （`p.Wait()`）——就地停就是「等自己」，**永久阻塞**。症状不是报错，而是
+		// 每过期一次泄漏一个 goroutine，账号停在 `running=false` 的假停机态。
+		// 原来那句 `context.WithoutCancel` 只解决了 ctx 取消，解决不了「等的对象
+		// 是自己」。
+		//
+		// 新 goroutine 自带超时，且**不复用触发它的那个 ctx**：那时它可能已经取消，
+		// 而它的 `defer cancel` 会让刚起的停机立刻被取消掉。
+		go func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+			defer cancel()
+			_ = c.Stop(stopCtx)
+		}()
 	})
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -572,6 +585,15 @@ func (c *Channel) Start(ctx context.Context, onMessage func(channels.InboundMess
 }
 
 // Stop 停止接收。**幂等**，且会等轮询真的退出。
+//
+// ## 为什么要等，又为什么不能无限等
+//
+// 等：调用方紧接着可能关掉 HTTP 传输层，而长轮询还挂在一次读上——直接返回会产生
+// 一堆看不懂的连接错误。
+//
+// 不无限等：真卡住时停机不该跟着卡住（`stopTimeout` 就是那个上限）。放弃等待不是
+// 放弃停机——`cancel` 已经调过，那个 goroutine 会随着 ctx 取消自己结束；这里把
+// 超时**如实返错**，由调用方记一条警告，而不是安静地装作停好了。
 func (c *Channel) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	if !c.running {
@@ -587,8 +609,17 @@ func (c *Channel) Stop(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
+
+	stopped := true
 	if p != nil {
-		p.Stop()
+		waited := make(chan struct{})
+		go func() { p.Stop(); close(waited) }()
+
+		select {
+		case <-waited:
+		case <-ctx.Done():
+			stopped = false
+		}
 	}
 
 	// **别把 expired 覆盖成 offline。** session 过期的路径是「先标 expired
@@ -596,6 +627,10 @@ func (c *Channel) Stop(ctx context.Context) error {
 	// 就被抹掉了——运维看到「没在跑」只会反复重启，而真正要做的是重新扫码。
 	if account, ok := c.table.get(c.accountID); ok && account.Status != bot.AccountExpired {
 		c.table.setStatus(c.accountID, bot.AccountOffline)
+	}
+
+	if !stopped {
+		return fmt.Errorf("账号 %s 的轮询没在停机时限内退出（%s）", c.accountID, stopTimeout)
 	}
 	return nil
 }

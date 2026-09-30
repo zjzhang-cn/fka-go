@@ -554,6 +554,42 @@ func Test下载解密往返(t *testing.T) {
 	}
 }
 
+// Test下载_大响应体不会被提前取消 见 http.go 的 withTimeout：
+// **只有读完 body 的那一层能持有那个超时 ctx**。以前超时套在 `doResponse` 里，
+// `cancel` 在响应交出来的一瞬间就触发，而调用方是之后才读 body 的——大于读缓冲的
+// 响应一律以 `context canceled` 收尾，重试三次也一样。
+//
+// 上面那条往返用例的密文只有 32 字节，小到整段已经在 bufio 里，所以一直是绿的。
+// 这条把响应体做到明显大于读缓冲，并让服务端**先出头、歇一下再发体**。
+func Test下载_大响应体不会被提前取消(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+
+	plain := bytes.Repeat([]byte("家庭照片内容"), 200_000) // ≈2.4MB，远大于读缓冲
+	ciphertext, err := EncryptMedia(plain, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()           // 响应头先到
+		time.Sleep(150 * time.Millisecond) // 给「提前取消」留出发生的窗口
+		_, _ = w.Write(ciphertext)
+	}))
+	defer server.Close()
+
+	// 用 httptest 的客户端（没有 Client.Timeout），把变量收在 ctx 这一条上
+	got, err := DownloadMedia(context.Background(),
+		NewClient(WeixinAccount{}, server.Client()),
+		CDNMedia{FullURL: server.URL + "/download"}, key)
+	if err != nil {
+		t.Fatalf("大响应体下载失败（超时 ctx 被提前取消）：%v", err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Errorf("解出来的内容不对：长度 %d，期望 %d", len(got), len(plain))
+	}
+}
+
 // Test下载4xx不重试
 func Test下载4xx不重试(t *testing.T) {
 	var attempts int32
@@ -661,6 +697,58 @@ func Test发送失败要抛(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid arguments") {
 		t.Errorf("该带上应答内容：%v", err)
+	}
+}
+
+// Test发送_网关502不当成功 见 http.go 的 `do`：`checkRet` 只知道「ret 缺席 = 成功」，
+// 若不在 HTTP 层先拦状态码，502 的 HTML 就会被读成一次成功的发送——
+// 而 `SendText` 返回 nil error，上层于是以为消息已送达。
+func Test发送_网关502不当成功(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html><body>Bad Gateway</body></html>"))
+	}))
+	defer server.Close()
+
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	result, err := s.SendText(context.Background(), "to-user", "ctx-1", "在的")
+	if err == nil {
+		t.Fatalf("HTTP 502 该报错，实际 result=%+v err=nil——上层会以为消息已送达", result)
+	}
+	if result.MessageID != "" {
+		t.Errorf("失败时不该给出 message_id：%q", result.MessageID)
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("该说清是 HTTP 502：%v", err)
+	}
+}
+
+// Test发送_非JSON应答不当成功 HTTP 200 也可能是别人的 HTML（反代、门户页）。
+// 这条钉的是 `readRet` 里「没有 ret」与「根本不是 JSON 对象」必须分开那件事：
+// 混为一谈的话，一个门户页就是一次「发送成功」。
+func Test发送_非JSON应答不当成功(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html>login required</html>"))
+	}))
+	defer server.Close()
+
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	if _, err := s.SendText(context.Background(), "to-user", "ctx-1", "在的"); err == nil {
+		t.Fatal("HTTP 200 但不是 JSON 对象，该报错——以前它被读成「没有 ret → 成功」")
+	}
+}
+
+// Test发送_没有消息id不当成功 实测服务端成功时返回 message_id；拿不到它就不能算
+// 一次成功的发送。返回空 id + nil error 等于静默丢消息（`send.go` 开头的那条约定）。
+func Test发送_没有消息id不当成功(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"errcode":40001}`))
+	}))
+	defer server.Close()
+
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	if _, err := s.SendText(context.Background(), "to-user", "ctx-1", "在的"); err == nil {
+		t.Fatal("应答里没有 message_id / msg_id，该报错")
 	}
 }
 

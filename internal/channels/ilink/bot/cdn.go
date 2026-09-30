@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -88,24 +87,23 @@ func DownloadMedia(ctx context.Context, c *client, media CDNMedia, aeskey string
 }
 
 // fetchEncrypted 取回加密字节。第二个返回值 false 表示**不该重试**。
+//
+// 读 body 与超时都交给 `getBytes`：**谁读完 body 谁才持有那个超时 ctx**
+// （见 http.go 的 withTimeout）。以前这里是「先拿响应、再自己读 body」，而超时的
+// `cancel` 在响应交出来的那一刻就触发了——大于读缓冲的媒体一律以 `context canceled`
+// 收尾，而且重试三次都栽在同一个原因上。
 func fetchEncrypted(ctx context.Context, c *client, downloadURL string) ([]byte, bool, error) {
-	response, err := c.getResponse(ctx, downloadURL, defaultDownloadTimeout)
+	body, status, err := c.getBytes(ctx, downloadURL, defaultDownloadTimeout)
 	if err != nil {
 		return nil, true, err // 网络层失败：可重试
 	}
-	defer func() { _ = response.Body.Close() }()
 
 	// 403/404 这类是确定性的——资源没了或没权限，重下多少次都一样
-	if IsClientError(statusOf(response)) {
-		return nil, false, fmt.Errorf("媒体下载失败，HTTP %d（不重试）", statusOf(response))
+	if IsClientError(status) {
+		return nil, false, fmt.Errorf("媒体下载失败，HTTP %d（不重试）", status)
 	}
-	if statusOf(response) != http.StatusOK {
-		return nil, true, fmt.Errorf("媒体下载返回 HTTP %d", statusOf(response))
-	}
-
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, true, fmt.Errorf("读媒体响应失败：%w", err)
+	if status != http.StatusOK {
+		return nil, true, fmt.Errorf("媒体下载返回 HTTP %d", status)
 	}
 	if len(body) == 0 {
 		return nil, true, fmt.Errorf("媒体下载返回空内容")

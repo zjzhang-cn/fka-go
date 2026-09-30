@@ -464,6 +464,23 @@ func (p *fakePoller) isStopped() bool {
 	return p.stopped
 }
 
+// waitFor 等一个条件成立，最多等 timeout。
+//
+// **不 sleep 一个固定时长**：等的是「这件事发生了」，而不是「大概够久了」——
+// 固定 sleep 在慢机器上会偶发红，在快机器上白等。
+func waitFor(t *testing.T, timeout time.Duration, done func() bool, message string) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if done() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error(message)
+}
+
 // newTestChannel 造一个带假轮询器的渠道实例。
 func newTestChannel(t *testing.T, accountID string) *Channel {
 	t.Helper()
@@ -557,6 +574,24 @@ func Test入站先记上下文再上抛(t *testing.T) {
 	}
 }
 
+// Test长轮询失败有人接 见 `provider.pollerFor`：`OnError` 以前全仓无人赋值，
+// 于是网络与协议失败彻底静默——而 `parse.go` 的注释正好在骂这件事。协议层是唯一
+// 有话说却没嘴的一层，这条钉住那只嘴接上了。
+func Test长轮询失败有人接(t *testing.T) {
+	provider := NewProvider()
+
+	created := provider.pollerFor()(bot.WeixinAccount{ID: "account_001"},
+		bot.NewCursorStore(""), func(bot.WeixinMessage) {}, func() {})
+
+	real, ok := created.(*bot.Poller)
+	if !ok {
+		t.Fatalf("默认实现该是 *bot.Poller，实际 %T", created)
+	}
+	if real.OnError == nil {
+		t.Error("OnError 没人接：长轮询失败会彻底静默，日志里什么都看不到")
+	}
+}
+
 // TestSession过期要停掉并标Expired 继续拉只会反复拿到 -14。
 func TestSession过期要停掉并标Expired(t *testing.T) {
 	provider := NewProvider()
@@ -575,11 +610,70 @@ func TestSession过期要停掉并标Expired(t *testing.T) {
 
 	fake.expire()
 
-	if !fake.isStopped() {
-		t.Error("过期后该停掉这个账号")
-	}
+	// **停机是异步的**（见下一条用例：回调跑在轮询自己的 goroutine 上，就地停
+	// 就是等自己），所以这里等它一下，而不是马上断言。
+	waitFor(t, 2*time.Second, fake.isStopped, "过期后该停掉这个账号")
 	if got := channel.Status(); got != channels.StatusExpired {
 		t.Errorf("状态 = %q，期望 expired（它表示需重新扫码，而 offline 只表示没在跑）", got)
+	}
+}
+
+// TestSession过期的回调不在轮询自己的goroutine上等待
+//
+// ## 为什么这条必须用**真的** bot.Poller
+//
+// `fakePoller.expire()` 是**测试 goroutine** 调的，而真实的过期回调由**轮询自己的
+// goroutine** 触发（`poller.go` 的 `loop`）。于是「回调里同步停机」在真实链路上是
+// 「等自己退出」——`p.Wait()` 永远不返回，每次 token 过期泄漏一个 goroutine，
+// 而账号停在 `running=false` 的假停机态。假轮询器**结构上测不出**这条。
+//
+// 回归点：过期之后，轮询 goroutine 必须能退出。
+func TestSession过期的回调不在轮询自己的goroutine上等待(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 官方协议：session 失效是 ret=-14，pollOnce 据此退出并上报
+		_, _ = w.Write([]byte(`{"ret":-14}`))
+	}))
+	defer server.Close()
+
+	provider := NewProvider()
+	provider.DataDir = t.TempDir()
+	provider.HTTPClient = server.Client()
+	provider.Accounts = []bot.WeixinAccount{{
+		ID: "account_001", BotToken: "t", BaseURL: server.URL, Status: bot.AccountOnline,
+	}}
+
+	// 用真的 bot.Poller，但把它的两个回调接到渠道实例上——这正是生产里的装法
+	var real *bot.Poller
+	provider.NewPoller = func(account bot.WeixinAccount, cursors *bot.CursorStore,
+		onMessage func(bot.WeixinMessage), onExpired func()) poller {
+		real = bot.NewPoller(account, cursors, server.Client())
+		real.OnMessage = onMessage
+		real.OnSessionExpired = onExpired
+		return real
+	}
+
+	created, err := provider.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := created[0]
+
+	if err := channel.Start(context.Background(), func(channels.InboundMessage) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 过期是回调里同步处理的（标 expired 在停机之前）
+	waitFor(t, 5*time.Second, func() bool { return channel.Status() == channels.StatusExpired },
+		"过期没被处理")
+
+	exited := make(chan struct{})
+	go func() { real.Wait(); close(exited) }()
+
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("过期回调卡在「等自己退出」上：轮询 goroutine 没有退出" +
+			"（每次 token 过期泄漏一个，账号停在假停机态）")
 	}
 }
 
