@@ -36,6 +36,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -78,11 +79,33 @@ func run(args []string) int {
 	register(mcpServer, db)
 
 	// ServeStdio 独占 stdin/stdout。**不要**在它前后往 stdout 打任何东西
-	if err := server.ServeStdio(mcpServer); err != nil {
+	err = server.ServeStdio(mcpServer)
+	if code := exitCodeFor(err); code != 0 {
 		fmt.Fprintln(os.Stderr, "记忆 server 退出："+err.Error())
-		return 1
+		return code
+	}
+	if err != nil {
+		log.Log().Info("收到停机信号，已退出", log.Context{})
 	}
 	return 0
+}
+
+// exitCodeFor 把 `ServeStdio` 的返回翻成退出码。
+//
+// ## 为什么正常停机必须是 0
+//
+// **退出码是契约**（0 成功 / 1 预期内的失败，见 AGENTS.md）。而 SDK 自己也注册了
+// SIGINT / SIGTERM，收到信号时 `ServeStdio` 返回 `context.Canceled`——照直报成 1
+// 的话，**每一次干净的停机都会被记成一次崩溃**：systemd 的 Restart 策略跟着走，
+// 「服务起不来」的假象就有了。
+//
+// 实测过（fifo 喂住 stdin，1.5 秒后 `kill -TERM`）：修之前退出码是 **1**，
+// 日志最后一行是「记忆 server 退出：context canceled」。
+func exitCodeFor(err error) int {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return 0
+	}
+	return 1
 }
 
 // dbFileName **自己的**库文件名。见文件头「默认库是自己的文件」。

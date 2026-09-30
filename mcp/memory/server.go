@@ -40,13 +40,13 @@ const (
 )
 
 // server 记忆 server 的实现。**只有本目录内的 main 与测试用得到**。
-type serverImpl struct {
+type memoryServer struct {
 	db *store.DB
 }
 
 // register 把工具挂到一个 MCP server 上。db 已打开且已迁移到最新。
 func register(mcpServer *server.MCPServer, db *store.DB) {
-	s := &serverImpl{db: db}
+	s := &memoryServer{db: db}
 
 	mcpServer.AddTool(mcp.NewTool(ToolSearch,
 		mcp.WithDescription(
@@ -85,7 +85,7 @@ func register(mcpServer *server.MCPServer, db *store.DB) {
 	), s.handleRemember)
 }
 
-func (s *serverImpl) handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *memoryServer) handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	viewer := strings.TrimSpace(request.GetString("viewer_wxid", ""))
 	if viewer == "" {
 		// **不返异常**：返回一句给模型看的话，它下一轮会自己补上。
@@ -94,10 +94,13 @@ func (s *serverImpl) handleSearch(ctx context.Context, request mcp.CallToolReque
 			"请照实填调用方告诉你的那个微信 ID。"), nil
 	}
 
-	limit := 0
-	if raw := request.GetString("limit", ""); raw != "" {
-		limit = atoiSafe(raw)
-	}
+	// **声明是 number（`mcp.WithNumber`），就必须按数字读。**
+	//
+	// `GetString` 只在值是 Go `string` 时返回，而 JSON 数字解出来是 `float64`——
+	// 于是它永远返回空串，limit 永远是默认的 10：「最多返回几条」这条参数整个失效，
+	// 而界面上看不出任何异常（照样返回结果，只是条数不由你定）。
+	// `GetInt` 认 float64 / int / 数字字符串三种。
+	limit := request.GetInt("limit", 0)
 
 	result, err := s.db.FindMemories(ctx, store.FindMemoriesInput{
 		Query:      request.GetString("query", ""),
@@ -121,7 +124,7 @@ func (s *serverImpl) handleSearch(ctx context.Context, request mcp.CallToolReque
 	return text(out.String()), nil
 }
 
-func (s *serverImpl) handleRemember(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *memoryServer) handleRemember(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	viewer := strings.TrimSpace(request.GetString("viewer_wxid", ""))
 	if viewer == "" {
 		return fail("viewer_wxid 是必填的：没有记录者就不知道这条记忆归谁。"), nil
@@ -198,20 +201,6 @@ func text(body string) *mcp.CallToolResult {
 // 它下一轮能改；而抛异常只会让它看到「工具坏了」。
 func fail(body string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{mcp.NewTextContent(body)}}
-}
-
-func atoiSafe(raw string) int {
-	value := 0
-	for _, r := range raw {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		value = value*10 + int(r-'0')
-		if value > 1000 {
-			return 1000
-		}
-	}
-	return value
 }
 
 // IsUnavailable 判断一个连接错误是不是「没建库」。主程序据此提示。

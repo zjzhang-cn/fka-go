@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,10 +31,11 @@ func TestMigrate_全新库建到最新(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	for _, table := range expectedTables() {
-		if _, err := tableColumns(context.Background(), db, table); err != nil {
-			t.Errorf("%s 不可读：%v", table, err)
-		}
+	// **真的查一次**，而不是用包内的 `tableColumns` 自证：建出来的表要能被 SQL 查询，
+	// 那是调用方（server）实际会做的事；用同一个 introspection 辅助函数去验
+	// 「表建对了」等于自己证明自己。
+	if _, err := db.Query("SELECT id, type, content, owner_wxid, visibility, created_at FROM memories"); err != nil {
+		t.Errorf("memories 不可查：%v", err)
 	}
 }
 
@@ -298,20 +300,86 @@ func TestMigrate_幂等(t *testing.T) {
 	}
 }
 
+// TestMigrate_库比代码新要拒绝 **回滚**场景：二进制退回旧版，而库已被新版迁过。
+//
+// 此时 `pending` 是空的，若没有这道闸门，代码会把 user_version **谎报**成自己的
+// 最新版然后继续服务——以一份自己并不认识的结构读写。按包注释自己的原则，
+// 宁可拒绝启动。
+func TestMigrate_库比代码新要拒绝(t *testing.T) {
+	path := filepath.Join(t.TempDir(), dbName)
+
+	// 先正常建到最新，再把版本号推到「未来」——这就是旧二进制面对的那份库
+	if _, err := Migrate(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA user_version = 99"); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+
+	state, err := Migrate(context.Background(), path)
+	if err == nil {
+		t.Fatalf("库版本比代码新时必须拒绝启动，实际成功了：%+v", state)
+	}
+	var tooNew *ErrTooNew
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("错误该是 *ErrTooNew，实际 %T：%v", err, err)
+	}
+	if tooNew.DB != 99 || tooNew.Code != LatestVersion() {
+		t.Errorf("错误里该带上两边版本：db=%d code=%d", tooNew.DB, tooNew.Code)
+	}
+
+	// **绝不谎报**：拒绝启动时不能动库里的版本号
+	conn2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn2.Close() }()
+
+	version, err := readUserVersion(context.Background(), conn2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 99 {
+		t.Errorf("库版本被改成了 v%d——拒绝启动时不该碰它", version)
+	}
+}
+
 // TestMigrate_真库认领 真库在这台机器上存在时，认领它并逐行核对行数没变。
 func TestMigrate_真库认领(t *testing.T) {
-	real := filepath.Join("..", "..", "..", "..", "..", "data", "memory.sqlite")
+	// **4 层上去才是仓库根**（store → internal → memory → mcp）。
+	//
+	// 这里以前写的是 5 层，于是它指向 `<家目录>/data/memory.sqlite`：真库在仓库里时
+	// 这条用例**永远跳过**（看起来像「这台机器还没建过库」），而家目录里恰好有个同名
+	// 文件时它还会去认领一个**无关的库**。所以先确认层级没写错，再谈跳不跳。
+	root := filepath.Join("..", "..", "..", "..")
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("层级数写错了：%s 之上不是仓库根（%v）", root, err)
+	}
+
+	real := filepath.Join(root, "data", dbName)
 	if _, err := os.Stat(real); err != nil {
 		t.Skip("真库不存在（这台机器还没建过库），跳过")
 	}
 
+	// **-wal / -shm 一起拷**：库是 WAL 模式，只拷主文件可能拿到一份缺最近提交的
+	// 快照（见 Open 里的 `PRAGMA journal_mode = WAL`）。
 	copyOf := filepath.Join(t.TempDir(), dbName)
-	data, err := os.ReadFile(real)
-	if err != nil {
-		t.Skipf("复制真库失败，跳过：%v", err)
-	}
-	if err := os.WriteFile(copyOf, data, 0o644); err != nil {
-		t.Fatal(err)
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		data, err := os.ReadFile(real + suffix)
+		if err != nil {
+			if suffix == "" {
+				t.Skipf("复制真库失败，跳过：%v", err)
+			}
+			continue // 没有 -wal / -shm 是正常的（没在跑，或已 checkpoint）
+		}
+		if err := os.WriteFile(copyOf+suffix, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	before := memoryCount(t, copyOf)

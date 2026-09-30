@@ -111,27 +111,20 @@ func TestServer是一个可执行程序(t *testing.T) {
 	}
 }
 
-// Test认领只认自己那张表 这一条是「自己管理自己」在**数据**上的落点：别人的表在
-// 共用库文件时必须被忽略，而自己缺列时必须拒绝认领。
+// 「认领只认自己那张表」这条不变量**不在这个文件里守**，理由值得写下来：
 //
-// 真正的行为由 internal/store 的用例钉（缺列拒绝、别人的表忽略）；这里只把
-// 「这件事是有意为之」记在边界上，免得以后有人当成巧合去优化掉。
-func Test认领只认自己那张表(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("internal", "store", "schema.go"))
-	if err != nil {
-		t.Fatalf("读 schema.go 失败：%v", err)
-	}
-	text := string(source)
-
-	if !strings.Contains(text, `"memories": {`) {
-		t.Error("schema.go 该显式声明自己拥有哪张表")
-	}
-	for _, foreign := range []string{"documents", "messages"} {
-		if strings.Contains(text, `"`+foreign+`": {`) {
-			t.Errorf("schema.go 声明了 %s —— 那是别人的表", foreign)
-		}
-	}
-}
+// 它以前是这里的一个用例，做法是 `os.ReadFile("internal/store/schema.go")` 再
+// `strings.Contains` 找 `"memories": {` / 断言没有 `"documents": {`。那是**与源码格式
+// 耦合**的断言——改一下字面量写法、或者把表名抽成常量，它就开始说谎，而真正的行为
+// 一个字都没验。
+//
+// 它现在由 `internal/store` 的两个用例按行为守：
+//
+//   - `TestMigrate_共用库文件时只认自己那张` —— 别人的表在共用库里被忽略；
+//   - `TestMigrate_缺列就拒绝认领` / `TestMigrate_缺表也拒绝认领` —— 自己缺东西就拒。
+//
+// 这也是这个文件里前两条用例的写法：**扫 import / 断言包名**，都是编译器管不到、
+// 只能靠扫源码的约束。凡是能用行为验的，就不该在这里扫文本。
 
 func itoa(n int) string {
 	if n == 0 {

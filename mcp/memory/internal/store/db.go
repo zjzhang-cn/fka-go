@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/domain"
 	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/searchterms"
 )
 
@@ -58,21 +59,23 @@ const DefaultMemoryLimit = 10
 // 会按需扩容**，多几次拷贝而已。
 const capacityHint = 64
 
+// capacityFor 预分配多少个元素。**上限就是 capacityHint**——理由见上，
+// 三个分支写出来与这个 min 是同一件事。
 func capacityFor(limit int) int {
 	if limit <= 0 {
 		return capacityHint
 	}
-	if limit < capacityHint {
-		return limit
-	}
-	return capacityHint
+	return min(limit, capacityHint)
 }
 
 // InsertMemory 记一条记忆。
 func (d *DB) InsertMemory(ctx context.Context, m Memory) error {
+	// **默认值取自领域词汇，不写字符串字面量**：`domain.VisPublic` 是那条规则的
+	// 一处出处（包注释写着「schema 反过来 import 它」——以前并没有，字面量散在
+	// 这里和 `server.go` 两处，改一级可见性只会改到一处）
 	visibility := m.Visibility
 	if visibility == "" {
-		visibility = "public"
+		visibility = string(domain.VisPublic)
 	}
 	_, err := d.db.ExecContext(ctx,
 		`INSERT INTO memories (id, type, content, owner_wxid, visibility, created_at)
@@ -111,8 +114,13 @@ func (d *DB) FindMemories(ctx context.Context, in FindMemoriesInput) (FindMemori
 		limit = DefaultMemoryLimit
 	}
 
+	// **权限过滤在 WHERE 里，每次查询都带**（见类型上的注释）。公开那一档取自
+	// 领域词汇——它同时是「写进去的那个值」与「人人能查到的那个值」，两处必须一致，
+	// 所以只留一处出处。
+	//
+	// 用例里仍然写字符串字面量：那钉的是**库里实际存的是什么**；用常量去测就是自证。
 	where := []string{`(visibility = ? OR owner_wxid = ?)`}
-	args := []any{"public", in.ViewerWxid}
+	args := []any{string(domain.VisPublic), in.ViewerWxid}
 
 	// 词之间是「且」：每个词都要出现在内容里
 	for _, term := range searchterms.SplitTerms(in.Query) {

@@ -16,8 +16,12 @@
 //
 //   - 加一列 = 加一条 v2 迁移（`ALTER TABLE ... ADD COLUMN`），**不丢数据**；
 //   - 现有库（Node 版建的、user_version=0）走**认领**路径：逐列核对 `memories`，
-//     对得上就���上 v1，对不上就**明确报错**而不是猜；
-//   - 启动时若有待迁移就**拒绝启动**，把话说清楚，而不是凑合跑。
+//     对得上就认下 v1，对不上就**明确报错**而不是猜；
+//   - 库落后于代码 → **启动时自动升级**（每条迁移一个事务）；
+//   - 库**比代码新**（回滚场景）→ **拒绝启动**，见 ErrTooNew。
+//
+// 这两条的方向刻意不同：落后是「该往前走」，而比代码新是「这份代码不认识它」——
+// 后者凑合跑的代价是以一份自己不认识的结构读写。
 //
 // ## 为什么用 user_version 而不是自建 __migrations 表
 //
@@ -40,19 +44,6 @@ import (
 	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/log"
 )
 
-// ErrNeedsMigration 库落后于当前代码。Hint 说明该做什么。
-type ErrNeedsMigration struct {
-	Path    string
-	From    int
-	To      int
-	Pending string
-}
-
-func (e *ErrNeedsMigration) Error() string {
-	return fmt.Sprintf("数据库结构落后：现在是 v%d，代码要 v%d（%s）。用 --db 指向的库需要先升级，旧数据保留。",
-		e.From, e.To, e.Pending)
-}
-
 // ErrShapeMismatch 认领失败：这份库不是我们认识的那一份。
 type ErrShapeMismatch struct {
 	Path   string
@@ -63,6 +54,27 @@ func (e *ErrShapeMismatch) Error() string {
 	return fmt.Sprintf("这份数据库里的 memories 表不是当前代码认识的版本：%s。"+
 		"它可能来自更早的 Node 版结构，而本 server 的第一条迁移就以今天的结构为 v1。",
 		e.Reason)
+}
+
+// ErrTooNew 库比这份代码新——**回滚**场景：二进制退回旧版，而库已经被新版迁过。
+//
+// ## 为什么必须拒绝启动，而不是凑合跑
+//
+// 此时 `pending` 返回空（没有比它更高的迁移），代码于是会把 `user_version` 谎报成
+// 自己的最新版，然后以一份**自己并不认识的 schema** 提供服务。按本包自己的原则
+// （见包头），宁可拒绝启动也不凑合跑。数据一行都不会动——认领路径根本走不到。
+type ErrTooNew struct {
+	Path string
+	// DB 库里记的版本号
+	DB int
+	// Code 这份代码期望的最新版本
+	Code int
+}
+
+func (e *ErrTooNew) Error() string {
+	return fmt.Sprintf("数据库版本（v%d）比这份代码（v%d）新：这份库被更新过的版本建过。"+
+		"**别用旧二进制打开它**——换回新版，或用 --db 指向另一个库（这份库不会被改动）。",
+		e.DB, e.Code)
 }
 
 // Open 打开（必要时创建）库。**不跑迁移**——建库与迁移是分开的一步。
@@ -168,6 +180,13 @@ func Migrate(ctx context.Context, path string) (ReadState, error) {
 	state.Tables = tables
 	state.Fresh = len(tables) == 0
 
+	// **库比代码新就拒绝服务**（回滚场景）。绝不能把 user_version 谎报成自己的
+	// 最新版往下跑——那会以一份不认识的结构读写。见 ErrTooNew。
+	if version > state.Latest {
+		state.Error = fmt.Sprintf("库版本 v%d 比代码 v%d 新", version, state.Latest)
+		return state, &ErrTooNew{Path: path, DB: version, Code: state.Latest}
+	}
+
 	if version == 0 && !state.Fresh {
 		// 认领路径
 		if reason := verifyShape(ctx, db); reason != "" {
@@ -216,7 +235,7 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := m.Apply(execAdapter{tx: tx}); err != nil {
+	if err := m.Apply(tx); err != nil {
 		return fmt.Errorf("迁移 v%d（%s）失败：%w", m.Version, m.Note, err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.Version)); err != nil {

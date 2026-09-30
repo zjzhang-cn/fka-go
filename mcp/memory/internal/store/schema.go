@@ -56,25 +56,7 @@ type migration struct {
 	// Note 一句话说明这条改了什么。报错会显示它
 	Note string
 	// Apply 在一个事务里跑。**只写增量**：建表或 ALTER，绝不重建
-	Apply func(exec execer) error
-}
-
-// execer 只要能执行语句就够——迁移里不读数据。
-type execer interface {
-	Exec(query string, args ...any) (sqlResult, error)
-}
-
-// sqlResult 是 database/sql.Result 的最小别名。**刻意不直接写 database/sql.Result**：
-// 那样 `execer` 就必须 import database/sql，而这个接口的全部意义是「迁移不关心
-// 插入了几行」。抽象到只暴露「不报错」这一点。
-type sqlResult interface{}
-
-// execAdapter 把 *sql.Tx 的返回值丢掉，只留下「有没有错」。
-type execAdapter struct{ tx *sql.Tx }
-
-func (a execAdapter) Exec(query string, args ...any) (sqlResult, error) {
-	_, err := a.tx.Exec(query, args...)
-	return nil, err
+	Apply func(tx *sql.Tx) error
 }
 
 var migrations = []migration{
@@ -104,9 +86,15 @@ func pending(from int) []migration {
 	return out
 }
 
-func applyV1(exec execer) error {
+// applyV1 建表 + 建索引。**在一个事务里**（由 applyMigration 提供）。
+//
+// 这里曾经绕了一层：`execer` 接口 + `sqlResult = interface{}` 空别名 + 一个包装
+// `*sql.Tx` 的 adapter，理由是「迁移不关心插入了几行，也不该 import database/sql」。
+// 但那个文件**本来就 import 了 database/sql**，而接口只有一个实现——
+// 零收益的间接层，还顺便把 `Result` 的信息全丢了。签名直接说 `*sql.Tx` 更诚实。
+func applyV1(tx *sql.Tx) error {
 	for _, statement := range v1Statements {
-		if _, err := exec.Exec(statement); err != nil {
+		if _, err := tx.Exec(statement); err != nil {
 			return fmt.Errorf("建表语句失败（%s）：%w", firstLine(statement), err)
 		}
 	}
