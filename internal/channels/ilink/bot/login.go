@@ -138,8 +138,17 @@ func qrcodeParamOf(content string) string {
 
 // PollQRCodeStatus 轮询扫码状态直到确认或过期。
 //
-// onStatus 每次状态变化调一次（给控制面转发给 CLI）。ctx 取消即中止——
+// onStatus **每次状态变化**调一次（给控制面转发给 CLI）。ctx 取消即中止——
 // **CLI 被 Ctrl-C 后服务不该继续替一个没人看的二维码轮询**。
+//
+// ## 「变化」是这里的关键字
+//
+// 以前它在每一轮无条件 `onStatus(QRStatusWait)`，而轮询间隔是 2 秒——于是 CLI 每 2 秒
+// 重印一次「等待扫码…」，而 `QRStatusScanned`（"scaned"）**从来没被上报过**：
+// CLI 里那句「扫到了，在手机上确认…」是一段死代码，用户扫码后界面上毫无反应，
+// 直到确认成功。
+//
+// 现在由 `checkQRCodeStatus` 报它**这一轮看到的状态**，这里只做去重。
 func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Client, token string,
 	onStatus func(string)) (Credentials, error) {
 
@@ -150,13 +159,15 @@ func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Clie
 		baseURL = DefaultBaseURL
 	}
 
+	reporter := newStatusReporter(onStatus)
+
 	c := NewClient(WeixinAccount{BaseURL: baseURL}, httpClient)
 	for {
 		if ctx.Err() != nil {
 			return Credentials{}, fmt.Errorf("登录已取消")
 		}
 
-		credentials, done, err := checkQRCodeStatus(ctx, c, token)
+		credentials, done, err := checkQRCodeStatus(ctx, c, token, reporter.report)
 		if done {
 			return credentials, err
 		}
@@ -170,13 +181,34 @@ func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Clie
 			}
 		}
 
-		if onStatus != nil {
-			onStatus(QRStatusWait)
-		}
 		if !sleepCtxOK(ctx, qrPollGap) {
 			return Credentials{}, fmt.Errorf("登录已取消")
 		}
 	}
+}
+
+// statusReporter 只上报**变化**的状态。
+//
+// 轮询每 2 秒问一次「现在什么状态」，而服务端的答案绝大多数时候是同一个 `wait`。
+// **重复报同一句话既没用又吵**：终端会每 2 秒重印一次「等待扫码…」。
+//
+// 摘成一个纯逻辑的小类型，是为了让它能被直接测——真实的 2 秒轮询间隔没法在用例里等。
+type statusReporter struct {
+	onStatus func(status string)
+	last     string
+}
+
+func newStatusReporter(onStatus func(string)) *statusReporter {
+	return &statusReporter{onStatus: onStatus}
+}
+
+// report 状态与上次不同才交出去。空状态不算状态（服务端没给 `status` 时）。
+func (r *statusReporter) report(status string) {
+	if r.onStatus == nil || status == "" || status == r.last {
+		return
+	}
+	r.last = status
+	r.onStatus(status)
 }
 
 // sleepCtxOK 睡一会儿，**响应 ctx 取消**。返回 false 表示被取消了。
@@ -194,7 +226,11 @@ func sleepCtxOK(ctx context.Context, d time.Duration) bool {
 // checkQRCodeStatus 查一次状态。
 //
 // 第二个返回值 true 表示**轮询该结束了**（已确认或已过期）。
-func checkQRCodeStatus(ctx context.Context, c *client, token string) (Credentials, bool, error) {
+//
+// `report` 报这一轮**看到的状态**（`wait` / `scaned` / 服务端将来新加的别的中间态）：
+// 终态（confirmed / expired）不走它——它们由返回值表达，调用方那边有更好的话可以说。
+func checkQRCodeStatus(ctx context.Context, c *client, token string,
+	report func(string)) (Credentials, bool, error) {
 	endpoint := c.baseURL + "/ilink/bot/get_qrcode_status?qrcode=" + url.QueryEscape(token)
 
 	if timeout := qrPollTimeout; timeout > 0 {
@@ -248,6 +284,12 @@ func checkQRCodeStatus(ctx context.Context, c *client, token string) (Credential
 	case QRStatusExpired:
 		return Credentials{}, true, fmt.Errorf("二维码已过期，请重新获取")
 	default:
+		// 中间态（`wait` / **`scaned`** / 将来新加的）如实上报，去重交给调用方。
+		// `scaned` 这条以前没人报，于是 CLI 里「扫到了，在手机上确认…」是死代码
+		// ——用户扫码之后界面上毫无反应，直到确认成功
+		if report != nil {
+			report(payload.Status)
+		}
 		return Credentials{}, false, nil
 	}
 }

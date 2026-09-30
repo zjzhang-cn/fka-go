@@ -98,8 +98,12 @@ func Test游标往返(t *testing.T) {
 		t.Errorf("未见过的账号该返回空串，实际 %q", got)
 	}
 
-	store.Set("acct-1", "buf-1")
-	store.Set("acct-2", "buf-2")
+	if err := store.Set("acct-1", "buf-1"); err != nil {
+		t.Fatalf("写游标失败：%v", err)
+	}
+	if err := store.Set("acct-2", "buf-2"); err != nil {
+		t.Fatalf("写游标失败：%v", err)
+	}
 
 	// 重新打开要能读回来——**游标必须活过进程**
 	reopened := NewCursorStore(path)
@@ -310,7 +314,9 @@ func Test请求体带当前游标(t *testing.T) {
 	defer server.Close()
 
 	cursors := NewCursorStore(fixture.path)
-	cursors.Set("acct-1", "buf-start")
+	if err := cursors.Set("acct-1", "buf-start"); err != nil {
+		t.Fatalf("写游标失败：%v", err)
+	}
 
 	poller := NewPoller(WeixinAccount{ID: "acct-1", BaseURL: server.URL, BotToken: "t"},
 		cursors, server.Client())
@@ -342,7 +348,9 @@ func TestSession过期时退出循环并清游标(t *testing.T) {
 	fixture := newPollerFixture(t, `{"ret":-14}`)
 
 	cursors := NewCursorStore(fixture.path)
-	cursors.Set("acct-1", "buf-old")
+	if err := cursors.Set("acct-1", "buf-old"); err != nil {
+		t.Fatalf("写游标失败：%v", err)
+	}
 
 	poller := NewPoller(WeixinAccount{ID: "acct-1", BaseURL: fixture.server.URL, BotToken: "t"},
 		cursors, fixture.server.Client())
@@ -550,7 +558,7 @@ func Test扫码轮询到确认(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		var done bool
 		var err error
-		credentials, done, err = checkQRCodeStatus(ctx, c, "token-1")
+		credentials, done, err = checkQRCodeStatus(ctx, c, "token-1", nil)
 		if done {
 			if err != nil {
 				t.Fatalf("不该失败：%v", err)
@@ -580,7 +588,7 @@ func Test扫码过期是失败(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
-	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1")
+	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1", nil)
 	if !done {
 		t.Error("过期该结束轮询")
 	}
@@ -598,7 +606,7 @@ func Test说已确认却不给Token不算成功(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
-	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1")
+	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1", nil)
 	if !done {
 		t.Error("该结束轮询")
 	}
@@ -859,3 +867,113 @@ type net_TimeoutError struct{}
 func (e *net_TimeoutError) Error() string   { return "读超时" }
 func (e *net_TimeoutError) Timeout() bool   { return true }
 func (e *net_TimeoutError) Temporary() bool { return true }
+
+// Test游标落盘失败要返回错误 见 `persistLocked`：那四个错误以前全被吞掉，
+// 于是游标卡在旧值（重复收消息）或丢失（漏消息）都不可观测。
+func Test游标落盘失败要返回错误(t *testing.T) {
+	// 把游标路径指到一个**文件**下面：MkdirAll 必然失败
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewCursorStore(filepath.Join(blocker, "cursors.json"))
+	if err := store.Set("acct-1", "buf-1"); err == nil {
+		t.Error("父路径是个文件时该报错——以前这里静默吞掉，游标停在哪没人知道")
+	}
+	// 内存里仍然记下了：这一轮的消息照常处理，只是没落盘
+	if got := store.Get("acct-1"); got != "buf-1" {
+		t.Errorf("内存里该记下，实际 %q", got)
+	}
+}
+
+// Test游标落盘失败走OnError 落盘失败**必须有人知道**：它决定「重启后是重放还是漏
+// 消息」，而失败时既没重放也没有任何痕迹是最坏的一种。
+func Test游标落盘失败走OnError(t *testing.T) {
+	fixture := newPollerFixture(t, `{"msgs":[],"get_updates_buf":"buf-1"}`)
+
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 换掉夹具的游标存储（同包，够得着私有字段）
+	fixture.poller.cursors = NewCursorStore(filepath.Join(blocker, "cursors.json"))
+
+	failures := make(chan error, 4)
+	fixture.poller.OnError = func(err error) { failures <- err }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.poller.Start(ctx)
+	defer fixture.poller.Stop()
+
+	select {
+	case err := <-failures:
+		if !strings.Contains(err.Error(), "游标") {
+			t.Errorf("该说清是游标的问题，实际：%v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("游标落盘失败没有报出来——它会静默变成「重放」或「漏消息」")
+	}
+}
+
+// Test扫码状态只报变化 见 `statusReporter`：以前 `PollQRCodeStatus` 每轮无条件报
+// `wait`，而轮询间隔就是 2 秒——终端于是每 2 秒重印一次「等待扫码…」。
+func Test扫码状态只报变化(t *testing.T) {
+	var got []string
+	reporter := newStatusReporter(func(status string) { got = append(got, status) })
+
+	reporter.report(QRStatusWait)
+	reporter.report(QRStatusWait)    // 同一状态，不报
+	reporter.report(QRStatusScanned) // ← 这一条以前永远不会出现
+	reporter.report(QRStatusScanned) // 同上
+	reporter.report(QRStatusWait)    // 真的变回去了，要报
+	reporter.report("")              // 空状态不当状态
+
+	if want := QRStatusWait + "," + QRStatusScanned + "," + QRStatusWait; strings.Join(got, ",") != want {
+		t.Errorf("上报序列 = %v，期望 %q", got, want)
+	}
+
+	// 允许没有回调（PollQRCodeStatus 的 onStatus 可以为 nil），且不该炸
+	newStatusReporter(nil).report(QRStatusWait)
+}
+
+// Test扫码中间态如实上报 `checkQRCodeStatus` 报**这一轮看到的状态**；终态
+// （confirmed / expired）不走它——那两个由返回值表达，调用方那边有更好的话可以说。
+func Test扫码中间态如实上报(t *testing.T) {
+	for _, status := range []string{QRStatusWait, QRStatusScanned} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"status":"` + status + `"}`))
+		}))
+
+		var got []string
+		client := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
+		_, done, err := checkQRCodeStatus(context.Background(), client, "tok",
+			func(s string) { got = append(got, s) })
+		server.Close()
+
+		if done || err != nil {
+			t.Errorf("%s 是中间态，不该结束轮询（done=%v err=%v）", status, done, err)
+		}
+		if len(got) != 1 || got[0] != status {
+			t.Errorf("%s 该如实上报一次，实际 %v", status, got)
+		}
+	}
+
+	// 终态：结束轮询 + 返错，且**不**走 report
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"expired"}`))
+	}))
+	defer server.Close()
+
+	var got []string
+	client := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
+	_, done, err := checkQRCodeStatus(context.Background(), client, "tok",
+		func(s string) { got = append(got, s) })
+	if !done || err == nil {
+		t.Errorf("expired 该结束轮询并返错（done=%v err=%v）", done, err)
+	}
+	if len(got) != 0 {
+		t.Errorf("终态不该走 report：%v", got)
+	}
+}

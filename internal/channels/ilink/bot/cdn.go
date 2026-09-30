@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,6 +22,12 @@ import (
 // 而那两种要走的路完全不同（前者会走解析入库，产出难以追查的脏数据）。
 // 渠道层的 `FetchMedia` 同样如此。
 const defaultDownloadTimeout = 60 * time.Second
+
+// maxDownloadBytes 一次下载的字节上限。**是 var**：用例要把它调小（见 send_test）。
+//
+// CDN 上的那份长度是远端说了算的，而无条件 `ReadAll` 等于让对面决定我们分配多少内存。
+// 512MB 对家庭照片/视频够用，又不至于一次 OOM。
+var maxDownloadBytes int64 = 512 << 20
 
 // BuildDownloadURL 拼出下载地址。
 //
@@ -93,8 +100,12 @@ func DownloadMedia(ctx context.Context, c *client, media CDNMedia, aeskey string
 // `cancel` 在响应交出来的那一刻就触发了——大于读缓冲的媒体一律以 `context canceled`
 // 收尾，而且重试三次都栽在同一个原因上。
 func fetchEncrypted(ctx context.Context, c *client, downloadURL string) ([]byte, bool, error) {
-	body, status, err := c.getBytes(ctx, downloadURL, defaultDownloadTimeout)
+	body, status, err := c.getBytes(ctx, downloadURL, defaultDownloadTimeout, maxDownloadBytes)
 	if err != nil {
+		// 超过上限是**确定性的**：重下同一份还是这么大，试三次只是白等
+		if errors.Is(err, errResponseTooLarge) {
+			return nil, false, err
+		}
 		return nil, true, err // 网络层失败：可重试
 	}
 

@@ -839,3 +839,56 @@ func Test发图片用MediaType1(t *testing.T) {
 		t.Error("media_type 与 item 的 type 不该是同一个序号")
 	}
 }
+
+// Test发送_超大文件要拒（出站） 整个文件要先读进内存、再加密（又是一份），而路径是
+// **模型填的工具参数**——一句「把那个 4GB 的视频发我」就能把进程打爆，失败形态是
+// OOM kill：连一条日志都不会留下。
+func Test发送_超大文件要拒(t *testing.T) {
+	// 上限调小到 16 字节：不然验一次超限得造 64MB 的文件，比这条用例要防的问题还费资源
+	original := maxSendBytes
+	maxSendBytes = 16
+	t.Cleanup(func() { maxSendBytes = original })
+
+	path := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 17), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewSender(WeixinAccount{BaseURL: "https://example.invalid", BotToken: "t"}, nil)
+	_, err := s.SendFile(context.Background(), "to-user", "ctx-1", path, "big.bin")
+	if err == nil {
+		t.Fatal("超过上限的文件该被拒——它要先整个读进内存")
+	}
+	if !strings.Contains(err.Error(), "上限") {
+		t.Errorf("该说清是大小超限：%v", err)
+	}
+
+	// 目录不是文件：报错要说清，而不是让 os.ReadFile 抛一句 "is a directory"
+	if _, err := readCapped(t.TempDir(), maxSendBytes); err == nil {
+		t.Error("目录该被拒")
+	}
+}
+
+// Test下载_超大响应要拒（入站） 长度是**远端说了算**的：无条件 ReadAll 等于让对面
+// 决定我们分配多少内存。超限要**报错而不是截断**——截断的密文会在解密那一步报
+// 「填充不一致」，把「文件太大」伪装成「数据损坏」。
+func Test下载_超大响应要拒(t *testing.T) {
+	original := maxDownloadBytes
+	maxDownloadBytes = 32
+	t.Cleanup(func() { maxDownloadBytes = original })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte{0xAA}, 33))
+	}))
+	defer server.Close()
+
+	_, err := DownloadMedia(context.Background(),
+		NewClient(WeixinAccount{}, server.Client()),
+		CDNMedia{FullURL: server.URL + "/download"}, "0123456789abcdef0123456789abcdef")
+	if err == nil {
+		t.Fatal("超过上限的响应该被拒")
+	}
+	if !strings.Contains(err.Error(), "上限") {
+		t.Errorf("该说清是大小超限（而不是解密失败）：%v", err)
+	}
+}

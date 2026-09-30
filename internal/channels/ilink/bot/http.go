@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -151,11 +152,18 @@ func (c *client) postBytes(ctx context.Context, url string, contentType string,
 		http.Header{"Content-Type": []string{contentType}}, bytes.NewReader(data))
 }
 
+// errResponseTooLarge 响应体超过上限。
+//
+// **它是「可判定的失败」**：重下同一份还是这么大，所以调用方不该白试三次
+// （`fetchEncrypted` 据此把它归到「不重试」那一类，与 4xx 同理）。
+var errResponseTooLarge = errors.New("响应体超过上限")
+
 // getBytes 取一段原始字节，并把 HTTP 状态码一并交给调用方。
 //
 // **超时与读 body 都归它**（见 withTimeout 那条规矩），状态码则必须交出去——
 // CDN 那两条路各自有重试策略，判据是「4xx 不重试 / 5xx 重试」。
-func (c *client) getBytes(ctx context.Context, url string, timeout time.Duration) ([]byte, int, error) {
+func (c *client) getBytes(ctx context.Context, url string, timeout time.Duration,
+	maxBytes int64) ([]byte, int, error) {
 	ctx, cancel := c.withTimeout(ctx, timeout)
 	defer cancel()
 
@@ -165,9 +173,17 @@ func (c *client) getBytes(ctx context.Context, url string, timeout time.Duration
 	}
 	defer func() { _ = response.Body.Close() }()
 
-	data, err := io.ReadAll(response.Body)
+	// **上限由调用方给**：这一段的长度是**远端说了算**的（CDN 上的那份媒体），
+	// 无条件 ReadAll 就是让对面决定我们分配多少内存。
+	// 超限**报错而不是截断**：截断的密文会在解密那一步报「填充不一致」，
+	// 把「文件太大」伪装成「数据损坏」。
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
 	if err != nil {
 		return nil, response.StatusCode, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, response.StatusCode, fmt.Errorf(
+			"%w（上限 %d 字节，长度由远端决定）", errResponseTooLarge, maxBytes)
 	}
 	return data, response.StatusCode, nil
 }

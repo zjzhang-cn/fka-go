@@ -110,15 +110,16 @@ func toPart(item bot.MessageItem) (channels.Part, bool) {
 		if item.Voice == nil || item.Voice.Media.EncryptQueryParam == "" {
 			return channels.Part{}, false
 		}
-		ref := channels.MediaRef{}
-		if item.Voice.Text != "" {
-			// 语音转文字有了就带上——那往往是这条消息**唯一**可读的内容
-			ref.Checksum = ""
-		}
-		part := channels.Part{Kind: channels.KindVoice, Media: ref, DurationMs: item.Voice.Duration}
-		part.Media = mediaRefOf(item.Voice.Media, ref, item.Voice.Aeskey)
-		part.Transcript = item.Voice.Text
-		return part, true
+		// 语音转文字的正文挂在 `Transcript` 上——那往往是这条消息**唯一**可读的内容。
+		//
+		// 这里曾经有一段 `if item.Voice.Text != "" { ref.Checksum = "" }`：给一个零值
+		// 字段赋零值，注释却写着「有了就带上」。**空操作**，删掉。
+		return channels.Part{
+			Kind:       channels.KindVoice,
+			Media:      mediaRefOf(item.Voice.Media, channels.MediaRef{}, item.Voice.Aeskey),
+			DurationMs: item.Voice.Duration,
+			Transcript: item.Voice.Text,
+		}, true
 
 	case bot.ItemTypeFile:
 		if item.File == nil || item.File.Media.EncryptQueryParam == "" {
@@ -216,6 +217,13 @@ func newSessionState() *sessionState {
 	return &sessionState{byAcct: map[string]map[string]sessionEntry{}}
 }
 
+// maxSessionsPerAccount 每个账号最多记多少条「最近一次入站」。
+//
+// 会话上下文是**只增不减**的：每个跟 Bot 说过话的人都会留下一条。家庭规模下它长不到
+// 哪去，但「只增不减」的结构迟早要有个上限——而策略很清楚：**留最近的 N 条**，
+// 因为 `lastOf` 要的就是最近的那个（同 `at` 时与会话名定序，与 lastOf 同一套规则）。
+const maxSessionsPerAccount = 64
+
 // recordInbound 记下某账号与某人的最近一次入站。
 func (s *sessionState) recordInbound(accountID, conversationID, replyToken string, at int64) {
 	if replyToken == "" {
@@ -232,6 +240,21 @@ func (s *sessionState) recordInbound(accountID, conversationID, replyToken strin
 	conversations[conversationID] = sessionEntry{
 		conversation: conversationID, replyToken: replyToken, at: at,
 	}
+
+	if len(conversations) <= maxSessionsPerAccount {
+		return
+	}
+
+	// 超了就把最老的挤掉（按 `at`，同 at 用会话名定序）
+	oldestID := ""
+	var oldest sessionEntry
+	for id, entry := range conversations {
+		if oldestID == "" || entry.at < oldest.at ||
+			(entry.at == oldest.at && id < oldestID) {
+			oldestID, oldest = id, entry
+		}
+	}
+	delete(conversations, oldestID)
 }
 
 // lastOf 某账号最近一次入站。没有就是零值。
@@ -530,13 +553,17 @@ func (c *Channel) Start(ctx context.Context, onMessage func(channels.InboundMess
 	if c.running {
 		return nil
 	}
-	c.running = true
-	c.onMessage = onMessage
 
+	// **先校验再改状态**：以前这两句在查询之后，于是「账号不在账号表里」之后这个
+	// 实例永远停在 `running=true`——后续 Start 走幂等分支直接返 nil，而它一个轮询
+	// 都没起（`Service.StartAll` 那边只记一条 Warn，界面上看不出区别）。
 	account, ok := c.table.get(c.accountID)
 	if !ok {
 		return fmt.Errorf("账号 %s 不在账号表里", c.accountID)
 	}
+
+	c.running = true
+	c.onMessage = onMessage
 
 	// 回调闭在**渠道实例**上而不是 provider 上：一个 poller 管一个账号，
 	// 而入站消息要带上这一账号的会话上下文

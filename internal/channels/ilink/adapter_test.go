@@ -3,6 +3,7 @@ package ilink
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -994,4 +995,66 @@ func fakeLoginServer(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+// TestStart_账号不在表里时不留已启动状态
+//
+// 以前 `running = true` 在查询账号表**之前**：一句「账号不在表里」之后，这个实例
+// 永远停在「已启动」——第二次 Start 走幂等分支直接返 nil，而它一个轮询都没起。
+func TestStart_账号不在表里时不留已启动状态(t *testing.T) {
+	// 直接造一个账号表里没有自己的实例（newPoller 给 nil：这条路上不该用到它）
+	channel := NewChannel(bot.WeixinAccount{ID: "gone"},
+		newAccountTable(nil), newSessionState(), bot.NewCursorStore(""), nil)
+
+	if err := channel.Start(context.Background(), func(channels.InboundMessage) {}); err == nil {
+		t.Fatal("账号不在表里该报错")
+	}
+	if err := channel.Start(context.Background(), func(channels.InboundMessage) {}); err == nil {
+		t.Error("第二次 Start 也不该假装成功——那正是「界面上看不出区别」的那一半")
+	}
+}
+
+// TestLogin_没Create过要说清 见 provider.Login：那句检查以前在 pickSlot **之后**，
+// 而「下一个空槽」那条路会读 nil 账号表 → panic，于是这句话永远不可达。
+func TestLogin_没Create过要说清(t *testing.T) {
+	provider := NewProvider() // 刻意不调 Create
+
+	if _, err := provider.Login(channels.LoginParams{Account: ""}); err == nil {
+		t.Fatal("没 Create 过时该返错，而不是崩在 nil 账号表上")
+	} else if !strings.Contains(err.Error(), "Create") {
+		t.Errorf("该说清是「还没 Create 过」：%v", err)
+	}
+}
+
+// Test会话上下文有上限 「只增不减」的结构迟早要有个上限，而这里的策略很清楚：
+// **留最近的 N 条**——`lastOf` 要的就是最近的那个。
+func Test会话上下文有上限(t *testing.T) {
+	state := newSessionState()
+
+	total := maxSessionsPerAccount + 20
+	for i := 0; i < total; i++ {
+		state.recordInbound("account_001", fmt.Sprintf("conv-%03d", i), "tok", int64(i))
+	}
+
+	held := state.byAcct["account_001"]
+	if len(held) != maxSessionsPerAccount {
+		t.Errorf("该只留 %d 条，实际 %d 条", maxSessionsPerAccount, len(held))
+	}
+	if _, ok := held["conv-000"]; ok {
+		t.Error("最早的那条该被挤掉")
+	}
+	// **最近的一条必须在**：它是「发消息给最近说话的人」唯一靠得住的那条
+	latest := fmt.Sprintf("conv-%03d", total-1)
+	if _, ok := held[latest]; !ok {
+		t.Errorf("最新那条（%s）必须留着", latest)
+	}
+	if entry, ok := state.lastOf("account_001"); !ok || entry.conversation != latest {
+		t.Errorf("lastOf 该给出最新的那条，实际 %+v", entry)
+	}
+
+	// 别的账号不受影响（上限是**每账号**的）
+	state.recordInbound("account_002", "other", "tok-2", 1)
+	if len(state.byAcct["account_002"]) != 1 {
+		t.Errorf("另一个账号该有自己的账：%v", state.byAcct["account_002"])
+	}
 }

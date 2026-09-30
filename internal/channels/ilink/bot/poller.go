@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -178,6 +179,17 @@ func (p *Poller) loop(ctx context.Context) {
 // errSessionExpired 凭证失效的哨兵错误。
 var errSessionExpired = errors.New("session 过期，需重新登录")
 
+// report 上报一次失败。
+//
+// **所有失败都走这里**：这样「失败有没有人接」只有一处判断——渠道适配层在
+// `Provider.pollerFor` 里把 `OnError` 接到日志上（以前它全仓无人赋值，于是网络与
+// 协议失败彻底静默；见那儿的注释）。
+func (p *Poller) report(err error) {
+	if p.OnError != nil {
+		p.OnError(err)
+	}
+}
+
 // pollOnce 跑一轮 getupdates。
 //
 // 第一个返回值是**这一轮算不算成功**（拿到了一次合法的协议应答）。
@@ -204,9 +216,7 @@ func (p *Poller) pollOnce(ctx context.Context, backoff *Backoff) (bool, error) {
 		if isTimeout(err) {
 			return true, nil
 		}
-		if p.OnError != nil {
-			p.OnError(err)
-		}
+		p.report(err)
 		// 网络层失败：退避后重试，**不退出**
 		sleepCtx(ctx, backoff.Next())
 		return false, nil
@@ -214,9 +224,7 @@ func (p *Poller) pollOnce(ctx context.Context, backoff *Backoff) (bool, error) {
 
 	batch, err := ParseGetUpdates(data, p.account.ID)
 	if err != nil {
-		if p.OnError != nil {
-			p.OnError(err)
-		}
+		p.report(err)
 		// 协议层失败（ret 非零）：同样是暂时的，退避后重试
 		sleepCtx(ctx, backoff.Next())
 		return false, nil
@@ -226,14 +234,20 @@ func (p *Poller) pollOnce(ctx context.Context, backoff *Backoff) (bool, error) {
 		// **游标要清掉**：留着旧游标的话，重新登录后服务端会以为客户端已消费到
 		// 那一段，于是那段时间的消息永久收不到
 		if p.cursors != nil {
-			p.cursors.Clear(p.account.ID)
+			if err := p.cursors.Clear(p.account.ID); err != nil {
+				p.report(fmt.Errorf("清游标失败（重新登录后那一段消息可能收不到）：%w", err))
+			}
 		}
 		return false, errSessionExpired
 	}
 
 	// **先落盘游标，再上抛消息**
 	if batch.Cursor != "" && batch.Cursor != p.cursors.Get(p.account.ID) {
-		p.cursors.Set(p.account.ID, batch.Cursor)
+		if err := p.cursors.Set(p.account.ID, batch.Cursor); err != nil {
+			// 落盘失败不是「这一轮失败」（消息还是要处理的），但**必须有人知道**：
+			// 游标停在这儿意味着重启后会重放这一段
+			p.report(fmt.Errorf("游标落盘失败（重启后会重放这一段消息）：%w", err))
+		}
 	}
 
 	for _, message := range batch.Messages {

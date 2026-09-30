@@ -211,6 +211,13 @@ func (p *Provider) Context() any {
 //
 // account 选择器：给空串或 `next` 时用「下一个还没登录的槽位」。
 func (p *Provider) Login(params channels.LoginParams) (any, error) {
+	// **先确认 Create 过了**：下面 `pickSlot` 与 `table.replace` 都要用账号表。
+	// 这句检查以前在 `pickSlot` **之后**，而「下一个空槽」那条路会直接读 nil 表
+	// （`accountTable.get` 对 nil 接收者取锁 → panic）——于是这句话永远不可达。
+	if p.table == nil {
+		return nil, fmt.Errorf("provider 还没 Create 过")
+	}
+
 	index, err := p.pickSlot(params.Account)
 	if err != nil {
 		return nil, err
@@ -259,13 +266,15 @@ func (p *Provider) Login(params channels.LoginParams) (any, error) {
 		ILinkUserID: credentials.ILinkUserID,
 		Status:      bot.AccountOnline,
 	}
-	if p.table == nil {
-		return nil, fmt.Errorf("provider 还没 Create 过")
-	}
 	p.table.replace(account)
 	// **游标要清掉**：留着旧游标的话，重新登录后服务端会以为客户端已消费到
-	// 那一段，于是那段时间的消息永久收不到
-	p.cursors.Clear(account.ID)
+	// 那一段，于是那段时间的消息永久收不到。
+	// 清不掉也要让用户知道——它的后果是「刚登录就漏消息」，而那看上去像「没人发消息」
+	if err := p.cursors.Clear(account.ID); err != nil {
+		config.Log().Warn(config.TypeCHAN, "清游标失败，重新登录后那一段消息可能收不到", config.Context{
+			"account": account.ID, "error": err.Error(),
+		})
+	}
 
 	emit("login:done", map[string]any{"accountId": account.ID})
 	return map[string]any{"accountId": account.ID, "status": account.Status}, nil

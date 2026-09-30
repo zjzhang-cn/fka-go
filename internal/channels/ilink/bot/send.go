@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -301,6 +302,50 @@ func (s *sender) SendFileReference(ctx context.Context, toUserID, contextToken s
 	return s.PostMessage(ctx, msg, "文件引用", referenceTimeout)
 }
 
+// maxSendBytes 一次发送的文件大小上限。
+//
+// ## 为什么必须有
+//
+// 整个文件要先读进内存、再加密（又是一份），**路径还是模型填的工具参数**——
+// 一句「把那个 4GB 的视频发我」就能把进程打爆，而失败形态是 OOM kill：连一条
+// 日志都不会留下（那正是本仓库最讨厌的那种失败）。
+//
+// **是 var 而不是 const**：用例要把它调小，否则验一次超限得造 64MB 的文件
+// ——那比这条用例要防的问题还费资源。
+var maxSendBytes int64 = 64 << 20
+
+// readCapped 读一个本地文件，**超过上限就直接拒**。
+//
+// 先看大小再读，而不是「读完再看长度」：目的是**不让那份内存被分配出去**。
+// stat 之后文件被追加的情况由 LimitReader 兜住。
+func readCapped(path string, max int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("是个目录，不是文件：%s", path)
+	}
+	if info.Size() > max {
+		return nil, fmt.Errorf("文件 %d 字节，超过上限 %d 字节", info.Size(), max)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(file, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("文件在读取过程中变大，超过上限 %d 字节", max)
+	}
+	return data, nil
+}
+
 // SendFile 发送本地文件。完整路径：**先上传到 CDN，再引用返回的下载参数**。
 //
 // 为什么不直接引用入站消息里的 CDN 资源：**实测不可行**（服务端收下但不投递）。
@@ -309,7 +354,7 @@ func (s *sender) SendFile(ctx context.Context, toUserID, contextToken, localPath
 		return SendResult{}, err
 	}
 
-	data, err := os.ReadFile(localPath)
+	data, err := readCapped(localPath, maxSendBytes)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("读取待发送文件失败（%s）：%w", localPath, err)
 	}
@@ -342,7 +387,7 @@ func (s *sender) SendImage(ctx context.Context, toUserID, contextToken, localPat
 		return SendResult{}, err
 	}
 
-	data, err := os.ReadFile(localPath)
+	data, err := readCapped(localPath, maxSendBytes)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("读取待发送图片失败（%s）：%w", localPath, err)
 	}
