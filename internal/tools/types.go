@@ -117,12 +117,16 @@ type Context struct {
 //
 // 由消息层逐条提供（从渠道的发送器里取），因为「能发给谁」取决于当前这条消息的
 // 会话与回复令牌——工具拿不到、也不该猜到这些。
+//
+// **两个方法都收 ctx**：发文件要走网络（上传），而「谁在发」这一轮的取消信号在
+// 工具的 ctx 上。实现里换成 `context.Background()` 的话，停机时这一发就断不掉
+// （而且从签名上完全看不出来）。
 type Reply interface {
 	// File 把一个本地文件发给当前会话。FileName 缺省时用路径里的文件名
-	File(path string, fileName string) error
-	// Image 把一张图片发给当前会话。**nil = 这个渠道发不了图片**，
-	// 调用方据此退回 File——发成文件比发不出去强
-	Image(path string, fileName string) error
+	File(ctx context.Context, path string, fileName string) error
+	// Image 把一张图片发给当前会话。渠道发不了图片时**调用方退回 File**——
+	// 发成文件比发不出去强
+	Image(ctx context.Context, path string, fileName string) error
 }
 
 // Source 一撮工具。实现只需管自己那批，前缀与合并由注册表做。

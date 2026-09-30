@@ -158,7 +158,7 @@ func Build(opts Options) *App {
 	// **必须建在 Agent 之后**：它持有 runner，而 runner 可能因为 LLM_TOOLS=off
 	// 或没配模型而缺席。先建后赋值会让它永远拿到 nil——症状是「每条消息都回
 	// 没接上模型」，而配置看上去完全正常。
-	app.Messages = messages.NewHandler(app.Agent, app.Tools)
+	app.Messages = messages.NewHandler(app.Agent)
 
 	return app
 }

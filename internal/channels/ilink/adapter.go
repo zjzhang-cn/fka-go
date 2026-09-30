@@ -387,25 +387,8 @@ func (c *Channel) Label() string { return Label }
 // AccountID 本实例的账号标识。
 func (c *Channel) AccountID() string { return c.accountID }
 
-// StorageID 本账号在**存储层**用的稳定标识。
-//
-// 用 USER_ID（`ILINK_ACCOUNT_<N>_USER_ID`）而不是槽位推出来的 `account_001`：
-// 前者更稳定也更可读，而按账号落盘的目录希望用它。登录前拿不到 USER_ID 时退回账号 id。
-//
-// **每次都重读账号表**——重新登录会整只替换表里的对象，而这里若缓存了创建时的
-// 副本，重登后就会一直用旧值。
-func (c *Channel) StorageID() string {
-	account, ok := c.table.get(c.accountID)
-	if !ok {
-		return c.accountID
-	}
-	if account.ILinkUserID != "" {
-		return account.ILinkUserID
-	}
-	return account.ID
-}
-
-// Status 运行状态。同样每次重读——状态只有账号表那一份真相。
+// Status 运行状态。**每次重读账号表**——重新登录会整只替换表里的对象，
+// 而状态（与凭证）只有账号表那一份真相。
 func (c *Channel) Status() channels.Status {
 	account, ok := c.table.get(c.accountID)
 	if !ok {
@@ -689,23 +672,30 @@ func (c *Channel) FetchMedia(ctx context.Context, ref channels.MediaRef) ([]byte
 //
 // iLink 是**有状态**的渠道：要拿到 context_token 就必须读过「最近一次入站」，
 // 而那是渠道自己的状态（sessionState），不是入参能带的信息。
-func (c *Channel) ResolveAddress(params channels.ResolveAddressParams) (channels.OutboundAddress, bool, error) {
+//
+// **推不出来就返错，不是返回一个 `ok=false`**：接口里没有「可以不实现」这回事
+// （不实现就是另一个接口，见 `channels.AddressResolver`），所以这里的 error 只有
+// 一个意思——「这个渠道支持推断，但这次推不出来」，而调用方要据此告诉用户去发条
+// 消息或显式指定收件人。
+func (c *Channel) ResolveAddress(params channels.ResolveAddressParams) (channels.OutboundAddress, error) {
 	conversation := strings.TrimSpace(params.To)
 	token := strings.TrimSpace(params.Token)
 
 	if conversation == "" {
 		entry, ok := c.state.lastOf(c.accountID)
 		if !ok {
-			return channels.OutboundAddress{}, false, nil
+			return channels.OutboundAddress{}, fmt.Errorf(
+				"账号 %s 还没收到过任何消息：iLink 协议要求回传收到消息时的 context_token", c.accountID)
 		}
 		conversation, token = entry.conversation, entry.replyToken
 	} else if token == "" {
 		entry, ok := c.state.of(c.accountID, conversation)
 		if !ok {
-			return channels.OutboundAddress{}, false, nil
+			return channels.OutboundAddress{}, fmt.Errorf(
+				"没有 %s 与 %s 的会话上下文：协议要求回传收到消息时的 context_token", c.accountID, conversation)
 		}
 		token = entry.replyToken
 	}
 
-	return channels.OutboundAddress{ConversationID: conversation, ReplyToken: token}, true, nil
+	return channels.OutboundAddress{ConversationID: conversation, ReplyToken: token}, nil
 }

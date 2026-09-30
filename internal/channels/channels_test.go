@@ -45,11 +45,13 @@ func TestBoundary_接缝不import任何具体渠道(t *testing.T) {
 }
 
 // fakeChannel 一个可控的假渠道。
+//
+// **它只实现必填的三组**（身份 + 出站 + 起停）：可选能力（`AddressResolver` /
+// `MediaFetcher`）各自是一个独立接口，不该逼每个假替身都写桩——那正是拆接口的理由。
 type fakeChannel struct {
 	id        string
 	label     string
 	account   string
-	storage   string
 	caps      Capabilities
 	senders   Senders
 	state     Status
@@ -61,7 +63,6 @@ type fakeChannel struct {
 func (c *fakeChannel) ID() string                 { return c.id }
 func (c *fakeChannel) Label() string              { return c.label }
 func (c *fakeChannel) AccountID() string          { return c.account }
-func (c *fakeChannel) StorageID() string          { return c.storage }
 func (c *fakeChannel) Capabilities() Capabilities { return c.caps }
 func (c *fakeChannel) Senders() Senders           { return c.senders }
 func (c *fakeChannel) Status() Status             { c.mu.Lock(); defer c.mu.Unlock(); return c.state }
@@ -81,12 +82,21 @@ func (c *fakeChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (c *fakeChannel) FetchMedia(ctx context.Context, ref MediaRef) ([]byte, error) {
-	return nil, nil
+// resolvable 一个**额外**实现了可选能力 `AddressResolver` 的假渠道。
+//
+// 可选能力单独一个类型，是为了让两条路都有人测：实现它的（能自己推断发给谁）与
+// 不实现它的（调用方必须显式给收件人）。这两件事以前挤在同一个 `ok=false` 里。
+type resolvable struct {
+	*fakeChannel
 }
 
-func (c *fakeChannel) ResolveAddress(p ResolveAddressParams) (OutboundAddress, bool, error) {
-	return OutboundAddress{ConversationID: p.To, ReplyToken: p.Token}, true, nil
+func (c *resolvable) ResolveAddress(p ResolveAddressParams) (OutboundAddress, error) {
+	return OutboundAddress{ConversationID: p.To, ReplyToken: p.Token}, nil
+}
+
+// resolvableTextOnly 能收能发文本、还会自己推断收件人的渠道。
+func resolvableTextOnly(id, account string) *resolvable {
+	return &resolvable{fakeChannel: textOnly(id, account)}
 }
 
 // emit 假装渠道收到了一条消息。
@@ -106,9 +116,11 @@ func (c *fakeChannel) isStarted() bool {
 }
 
 // textOnly 一个最小可用的渠道：能收能发文本。
+//
+// **只实现必填的三组**，可选能力一概不实现——这就是拆接口之后新渠道的门槛。
 func textOnly(id, account string) *fakeChannel {
 	return &fakeChannel{
-		id: id, label: id + " 渠道", account: account, storage: account,
+		id: id, label: id + " 渠道", account: account,
 		state: StatusOffline,
 		caps:  Capabilities{Text: KindCapability{Send: true, Receive: true}},
 		senders: Senders{
@@ -313,7 +325,7 @@ func TestSeam_解析目标(t *testing.T) {
 
 	if _, err := service.Register(ctx, &fakeProvider{
 		id: "ilink", accounts: map[string]string{"2": "account_002"},
-		channels: []Channel{textOnly("ilink", "account_002")},
+		channels: []Channel{resolvableTextOnly("ilink", "account_002")},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +349,30 @@ func TestSeam_解析目标(t *testing.T) {
 	t.Run("只有一个实例时可以什么都不给", func(t *testing.T) {
 		if _, err := service.ResolveTarget(ResolveTargetParams{To: "wx1"}); err != nil {
 			t.Errorf("= %v", err)
+		}
+	})
+
+	t.Run("渠道不支持推断时要指路", func(t *testing.T) {
+		// 一个**没有** ResolveAddress 的渠道：接口里没有「可以不实现」这回事，
+		// 不实现就是另一个接口——这里验的是「断言失败」那条路有人走。
+		plain := NewService()
+		if _, err := plain.Register(ctx, &fakeProvider{
+			id: "tg", accounts: map[string]string{"1": "account_001"},
+			channels: []Channel{textOnly("tg", "account_001")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := plain.ResolveTarget(ResolveTargetParams{})
+		if err == nil {
+			t.Fatal("渠道不能自己推断时该报错，而不是编一个收件人")
+		}
+		if ErrorKindOf(err) != KindAddress {
+			t.Errorf("应是寻址失败，实际 %v", ErrorKindOf(err))
+		}
+		var channelErr *Error
+		if !asError(err, &channelErr) || !strings.Contains(channelErr.Hint, "--to") {
+			t.Errorf("该指路「用 --to 明确指定收件人」：%v", err)
 		}
 	})
 
@@ -450,4 +486,45 @@ func asError(err error, target **Error) bool {
 		err = unwrapper.Unwrap()
 	}
 	return false
+}
+
+// TestSeam_注册失败不留半个 见 `Register`：它以前「边校验边写」，第 N 个实例撞账号时
+// 前 N-1 个已经进了 instances/accounts/order，而 providers 还没 append——那些实例
+// 活着、能被列出来，但再也问不到它们的 provider。注册期的唯一性检查本意是
+// **拒绝启动**，部分提交把它变成了一半。
+func TestSeam_注册失败不留半个(t *testing.T) {
+	service := NewService()
+	ctx := context.Background()
+
+	// 先正常接一个（用带 AddressResolver 的那种，好在最后验它仍然可用）
+	if _, err := service.Register(ctx, &fakeProvider{
+		id: "ilink", accounts: map[string]string{"1": "acct-1"},
+		channels: []Channel{resolvableTextOnly("ilink", "acct-1")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 再注册一个 provider，它产出两个实例：**第二个与自己撞号**
+	_, err := service.Register(ctx, &fakeProvider{
+		id: "tg", accounts: map[string]string{"1": "acct-2"},
+		channels: []Channel{textOnly("tg", "acct-2"), textOnly("tg", "acct-2")},
+	})
+	if err == nil {
+		t.Fatal("同一个 provider 产出两个同账号的实例，该报错")
+	}
+
+	// **第一个实例不该留下**：既不能出现在实例表里，provider 也不能进候选表
+	for _, channel := range service.Instances() {
+		if channel.ID() == "tg" {
+			t.Errorf("注册失败却留下了 %s 的实例（账号 %s）——半接入状态",
+				channel.ID(), channel.AccountID())
+		}
+	}
+	if len(service.providers) != 1 {
+		t.Errorf("失败的 provider 不该进候选表：%d 个", len(service.providers))
+	}
+	// 先接上的那个照常可用
+	if _, err := service.ResolveTarget(ResolveTargetParams{Account: "acct-1", To: "wx1"}); err != nil {
+		t.Errorf("先接上的渠道不该受影响：%v", err)
+	}
 }

@@ -52,6 +52,19 @@ type Config struct {
 	// 各家上下文窗口差别很大、也探测不到，所以给一个保守的总预算：历史装不下时
 	// 按 CompressHistory 从最老整条丢。
 	ContextTokens int
+
+	// ExtraBody 请求体**外层**额外并入的字段（`map` 的键即 JSON 的键）。
+	//
+	// ## 为什么它在契约上，而不是写死在某个 provider 里
+	//
+	// 有些厂商在 `/chat/completions` 上加了扩展字段（例如推理开关
+	// `enable_thinking`），而它们**不是 OpenAI 规范的一部分**。写死在实现里意味着
+	// 「所有 OpenAI 兼容端点都被塞上这一家的开关」；而 `ReadConfig` 是纯函数、
+	// 只读环境变量，所以这个口子必须由配置带进来。
+	//
+	// **nil / 空 map = 什么都不并**。默认值（不是 nil）由各 provider 的 ReadConfig
+	// 决定——那是它的产品决定，见 `openai.ReadConfig` 的说明。
+	ExtraBody map[string]any
 }
 
 // Role 一条消息的角色。

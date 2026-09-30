@@ -54,16 +54,19 @@ type Runner interface {
 }
 
 // Handler 处理入站消息。
+//
+// **它只持有 Runner**：以前这里还有一个 `Tools tools.Service` 字段，注释写着
+// 「给工具提供身份与回话能力」——而它从来没有被读过一次。工具要的东西（身份、
+// 回话能力）是**逐条消息**经 `RunnerInput` 传进去的，不是一个注册表。
+// 少一个字段也少一条装配依赖：`NewHandler` 现在不需要装配根把注册表也递进来。
 type Handler struct {
 	// Runner 工具循环。缺席时也是一个实现了 Runner 的对象，见上
 	Runner Runner
-	// Tools 工具注册表。给工具提供身份与回话能力
-	Tools tools.Service
 }
 
 // NewHandler 造消息处理器。
-func NewHandler(runner Runner, registry tools.Service) *Handler {
-	return &Handler{Runner: runner, Tools: registry}
+func NewHandler(runner Runner) *Handler {
+	return &Handler{Runner: runner}
 }
 
 // Handle 处理一条入站消息。**永不返错**——
@@ -223,24 +226,28 @@ func newChannelReply(channel channels.Channel, message channels.InboundMessage) 
 	return &channelReply{channel: channel, message: message}
 }
 
-func (r *channelReply) File(path string, fileName string) error {
-	return r.send(channels.KindFile, path, fileName, "")
+func (r *channelReply) File(ctx context.Context, path string, fileName string) error {
+	return r.send(ctx, channels.KindFile, path, fileName, "")
 }
 
-func (r *channelReply) Image(path string, fileName string) error {
+func (r *channelReply) Image(ctx context.Context, path string, fileName string) error {
 	// 渠道发不了图片就退成文件——**发成文件比发不出去强**
 	if r.channel.Capabilities().Image.Send {
-		return r.send(channels.KindImage, path, fileName, "image/*")
+		return r.send(ctx, channels.KindImage, path, fileName, "image/*")
 	}
-	return r.send(channels.KindFile, path, fileName, "")
+	return r.send(ctx, channels.KindFile, path, fileName, "")
 }
 
-func (r *channelReply) send(kind channels.MediaKind, path, fileName, mimeType string) error {
+// send 把文件交给渠道的发送器。
+//
+// ctx 由调用方（工具那一步）给：发文件是一次网络上传，而**停机时它该能被打断**。
+// 这里以前写死 `context.Background()`——调用方传什么都断不掉，而签名上看不出来。
+func (r *channelReply) send(ctx context.Context, kind channels.MediaKind, path, fileName, mimeType string) error {
 	sender, ok := r.channel.Senders().For(kind)
 	if !ok {
 		return fmt.Errorf("渠道 %s 发不了 %s", r.channel.ID(), kind)
 	}
-	_, err := sender(context.Background(), channels.SendMediaParams{
+	_, err := sender(ctx, channels.SendMediaParams{
 		Target: channels.SendTarget{
 			ConversationID: r.message.ConversationID,
 			ReplyToken:     r.message.ReplyToken,

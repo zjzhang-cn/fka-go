@@ -143,6 +143,17 @@ func key(channelID, accountID string) string { return channelID + ":" + accountI
 //
 // **账号标识重复会返错**：两个渠道共用一个 accountId 会让状态快照、会话历史与
 // 游标互相覆盖——而那不会当场报，症状出现在很远的地方。
+//
+// ## 要么全部生效，要么全都不生效
+//
+// 这里以前是「边校验边写」：第 N 个实例撞账号时，前 N-1 个**已经进了**
+// `instances` / `accounts` / `order`，而 `providers` 还没 append。那些实例于是活着、
+// 能被 `Instances()` 列出来，但 `pickChannel` 不会再问它们的 provider
+// （`ResolveAccount` 走 `providers`）——**半接入状态**，而注册期的唯一性检查本意是
+// 「拒绝启动」（见包头）。
+//
+// 现在先在**一份草稿上**把活干完，全通过了才落到真表上。草稿还顺带挡住了
+// 「同一个 provider 自己的两个实例撞号」——以前那种情况会写进去一个再报错。
 func (s *Service) Register(ctx context.Context, provider Provider) ([]Channel, error) {
 	created, err := provider.Create(ctx)
 	if err != nil {
@@ -150,13 +161,25 @@ func (s *Service) Register(ctx context.Context, provider Provider) ([]Channel, e
 			"渠道 %s 起不来：%s", provider.Label(), err.Error())
 	}
 
+	s.mu.Lock()
+	draft := &Service{
+		instances: cloneChannels(s.instances),
+		accounts:  cloneStrings(s.accounts),
+		order:     append([]string(nil), s.order...),
+	}
 	for _, channel := range created {
-		if err := s.Attach(channel); err != nil {
+		if err := ValidateChannel(channel); err != nil {
+			s.mu.Unlock()
+			return nil, Errorf(KindGeneric, "这是渠道实现的问题，去看它的能力声明与发送器对不对得上",
+				"%s", err.Error())
+		}
+		if err := draft.attachLocked(channel); err != nil {
+			s.mu.Unlock()
 			return nil, err
 		}
 	}
-
-	s.mu.Lock()
+	// 全过了才落真表
+	s.instances, s.accounts, s.order = draft.instances, draft.accounts, draft.order
 	s.providers = append(s.providers, provider)
 	// 已经 startAll 过的渠道立即开收（登录那条路）：服务在收消息了，
 	// 那一步没有「先挂订阅者再开收」的窗口可用
@@ -181,24 +204,32 @@ func (s *Service) Register(ctx context.Context, provider Provider) ([]Channel, e
 
 // Attach 动态接入一个渠道实例（登录那条路：服务已经起来了，新账号要用得上）。
 //
-// 与 Register 同一套唯一性检查与能力核对。**调用方负责在接入后让它开始接收**。
-//
-// ## 两处唯一性，都要查
-//
-//  1. `(渠道种类, 账号)` 相同 —— 同一个渠道里的同一个账号，重复就是重复；
-//  2. **账号标识跨渠道撞号** —— 键是 channel:account，所以 `ilink:1` 与 `tg:1`
-//     上面那一条查不出来，但会话历史文件名是 `<账号>_<会话>.jsonl`，两者会写进
-//     **同一个文件**。症状是「A 渠道的对话出现在 B 渠道的上下文里」，且不报错。
+// 与 Register 同一套能力核对与唯一性检查（后者见 `attachLocked` 的说明）。
+// **调用方负责在接入后让它开始接收**。
 func (s *Service) Attach(channel Channel) error {
 	if err := ValidateChannel(channel); err != nil {
 		return Errorf(KindGeneric, "这是渠道实现的问题，去看它的能力声明与发送器对不对得上",
 			"%s", err.Error())
 	}
 
-	k := key(channel.ID(), channel.AccountID())
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	return s.attachLocked(channel)
+}
+
+// attachLocked 唯一性检查 + 登记。**调用方必须已持锁**。
+//
+// 检查分两处，缺一不可：
+//
+//  1. `(渠道种类, 账号)` 相同 —— 同一个渠道里的同一个账号，重复就是重复；
+//  2. **账号标识跨渠道撞号** —— 键是 channel:account，所以 `ilink:1` 与 `tg:1`
+//     上面那一条查不出来，但会话历史文件名是 `<账号>_<会话>.jsonl`，两者会写进
+//     **同一个文件**。症状是「A 渠道的对话出现在 B 渠道的上下文里」，且不报错。
+//
+// 拆出来是为了让 `Register` 能在**草稿**上跑同一套检查（要么全部生效，要么全不生效）。
+func (s *Service) attachLocked(channel Channel) error {
+	k := key(channel.ID(), channel.AccountID())
 
 	if _, exists := s.instances[k]; exists {
 		return Errorf(KindGeneric, "换个渠道种类，或改一个账号标识",
@@ -215,11 +246,21 @@ func (s *Service) Attach(channel Channel) error {
 	return nil
 }
 
-// Providers 已注册的渠道**种类**，按注册顺序。
-func (s *Service) Providers() []Provider {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]Provider(nil), s.providers...)
+// cloneChannels / cloneStrings 给「草稿」用：只在注册期跑一次，量级是渠道实例数。
+func cloneChannels(source map[string]Channel) map[string]Channel {
+	out := make(map[string]Channel, len(source))
+	for k, v := range source {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneStrings(source map[string]string) map[string]string {
+	out := make(map[string]string, len(source))
+	for k, v := range source {
+		out[k] = v
+	}
+	return out
 }
 
 // Instances 全部渠道**实例**（一个 provider 可以产出多个），按注册顺序。
@@ -288,16 +329,20 @@ func (s *Service) ResolveTarget(params ResolveTargetParams) (ResolvedTarget, err
 		return ResolvedTarget{}, err
 	}
 
-	address, ok, err := channel.ResolveAddress(ResolveAddressParams{To: params.To, Token: params.Token})
-	if err != nil {
-		return ResolvedTarget{}, Errorf(KindAddress, "换个渠道，或明确指定收件人",
-			"渠道 %s 解析收件人失败：%s", channel.Label(), err.Error())
-	}
-	if !ok {
-		// 渠道是无状态的（不提供 ResolveAddress），而调用方又没给收件人
+	// **「不支持推断」靠类型断言，不靠返回值。** 以前这两件事挤在同一个 `ok=false`：
+	// 无状态的渠道（不实现）与「实现了但这次推不出来」（还没收到过消息）长得一样，
+	// 于是提示语只能说一句最含糊的。
+	resolver, canResolve := channel.(AddressResolver)
+	if !canResolve {
 		return ResolvedTarget{}, AddressError(
 			"用 --to 明确指定收件人",
 			"渠道 %s 不能自己推断发给谁", channel.Label())
+	}
+
+	address, err := resolver.ResolveAddress(ResolveAddressParams{To: params.To, Token: params.Token})
+	if err != nil {
+		return ResolvedTarget{}, Errorf(KindAddress, "去发条消息，或用 --to / --token 明确指定",
+			"渠道 %s 解析收件人失败：%s", channel.Label(), err.Error())
 	}
 
 	return ResolvedTarget{Channel: channel, Address: address}, nil

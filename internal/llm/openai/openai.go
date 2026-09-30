@@ -74,6 +74,44 @@ const DefaultContextTokens = 0
 // Temperature 采样温度。问答要的是**贴着资料**，不是发挥，所以调得很低。
 const Temperature = 0.2
 
+// ExtraBodyEnv 请求体额外字段的环境变量。**整份替换**默认值，不是深合并——
+// 「我写了什么就发什么」比「一半我写的、一半默认的」好推理。
+const ExtraBodyEnv = "LLM_EXTRA_BODY_JSON"
+
+// DefaultExtraBody 默认并入请求体外层的字段。
+//
+// ## 这是**产品决定**，不是协议要求
+//
+// `enable_thinking` 是推理模型那类实现的扩展字段，OpenAI 规范里没有它。本仓库原来
+// 把它硬编在 `newClient` 里——于是**每一个** OpenAI 兼容端点都被塞上这一家的开关，
+// 而有些兼容实现会对不认识的字段回 400。
+//
+// 所以默认值收在这里（一处），并且可以整份替换：
+//
+//	LLM_EXTRA_BODY_JSON='{"reasoning_effort":"high"}'   # 换一家厂商的扩展
+//	LLM_EXTRA_BODY_JSON='{}'                            # 什么都不并
+func DefaultExtraBody() map[string]any {
+	return map[string]any{"enable_thinking": true}
+}
+
+// readExtraBody 读额外字段。**格式错退回默认值并告警**，不阻断启动：
+// 一个笔误不该让服务起不来，但也不能悄悄少发一个字段（那会变成「模型行为变了」）。
+func readExtraBody() map[string]any {
+	raw := strings.TrimSpace(os.Getenv(ExtraBodyEnv))
+	if raw == "" {
+		return DefaultExtraBody()
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		config.Log().Warn(config.TypeLLM, ExtraBodyEnv+" 不是合法的 JSON 对象，已退回默认值",
+			config.Context{"raw": raw, "error": err.Error()})
+		return DefaultExtraBody()
+	}
+	// `{}` 是**合法且有意义**的：什么都不并
+	return parsed
+}
+
 // ReadConfig 从环境变量读配置。缺 LLM_API_KEY 或 LLM_MODEL 就返回 false。
 //
 // 纯函数（只读入参），便于测试与 doctor 复用。
@@ -100,6 +138,7 @@ func ReadConfig() (llm.Config, bool) {
 		TimeoutMs:       positiveInt(os.Getenv("LLM_TIMEOUT_MS"), DefaultTimeoutMs),
 		StreamTimeoutMs: positiveInt(os.Getenv("LLM_STREAM_TIMEOUT_MS"), DefaultStreamTimeoutMs),
 		ContextTokens:   nonNegativeInt(os.Getenv("LLM_CONTEXT_TOKENS"), DefaultContextTokens),
+		ExtraBody:       readExtraBody(),
 	}, true
 }
 
@@ -185,8 +224,9 @@ func newClient(cfg llm.Config) *goopenai.Client {
 	clientCfg := goopenai.DefaultConfig(cfg.APIKey)
 	clientCfg.BaseURL = cfg.BaseURL
 	clientCfg.HTTPClient = &bodyInjector{
-		next:   &http.Client{},
-		extras: map[string]any{"enable_thinking": true},
+		next: &http.Client{},
+		// **厂商扩展由配置带来**（见 DefaultExtraBody）：这里不再写死任何字段名
+		extras: cfg.ExtraBody,
 		apiKey: cfg.APIKey,
 	}
 	return goopenai.NewClientWithConfig(clientCfg)

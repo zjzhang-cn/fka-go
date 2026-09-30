@@ -45,10 +45,11 @@ type fakeChannel struct {
 	sendTextErr error
 }
 
+// 消息层只认「身份 + 出站 + 起停」——所以这个假渠道**只实现必填的三组**。
+// 可选能力（能不能自己推断收件人、能不能取媒体）不该逼它写桩，那正是拆接口的理由。
 func (c *fakeChannel) ID() string        { return "fake" }
 func (c *fakeChannel) Label() string     { return "假渠道" }
 func (c *fakeChannel) AccountID() string { return c.accountID }
-func (c *fakeChannel) StorageID() string { return c.accountID }
 
 func (c *fakeChannel) Capabilities() channels.Capabilities {
 	return channels.Capabilities{
@@ -70,6 +71,11 @@ func (c *fakeChannel) Senders() channels.Senders {
 			return channels.SendResult{MessageID: "sent-1"}, nil
 		},
 		File: func(ctx context.Context, p channels.SendMediaParams) (channels.SendResult, error) {
+			// **尊重调用方的 ctx**（真的发送器也这样）：否则「实现里偷偷换成
+			// context.Background()」这件事在用例里完全看不出来
+			if err := ctx.Err(); err != nil {
+				return channels.SendResult{}, err
+			}
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			c.medias = append(c.medias, sentMedia{
@@ -87,16 +93,6 @@ func (c *fakeChannel) Start(ctx context.Context, onMessage func(channels.Inbound
 	return nil
 }
 func (c *fakeChannel) Stop(ctx context.Context) error { c.onMessage = nil; return nil }
-func (c *fakeChannel) FetchMedia(ctx context.Context, ref channels.MediaRef) ([]byte, error) {
-	return nil, errors.New("假渠道没有媒体")
-}
-
-func (c *fakeChannel) ResolveAddress(p channels.ResolveAddressParams) (channels.OutboundAddress, bool, error) {
-	if p.To == "" {
-		return channels.OutboundAddress{}, false, nil
-	}
-	return channels.OutboundAddress{ConversationID: p.To, ReplyToken: "resolved-token"}, true, nil
-}
 
 func (c *fakeChannel) sentTexts() []sentText {
 	c.mu.Lock()
@@ -196,8 +192,9 @@ func hasToolResult(messagesIn []llm.ChatMessage) bool {
 // 与 Close**，为它们写空方法只会让夹具变长。
 type echoTool struct {
 	lastPrincipal string
-	// sendFile 是它被调时要做的事。nil = 什么都不做
-	sendFile func(reply tools.Reply) error
+	// sendFile 是它被调时要做的事。nil = 什么都不做。
+	// **带上调用方的 ctx**：这样用例能验「工具那一步的取消信号真的传到了 Reply」
+	sendFile func(ctx context.Context, reply tools.Reply) error
 }
 
 func (t *echoTool) source() tools.Source {
@@ -215,7 +212,7 @@ func (t *echoTool) source() tools.Source {
 		CallFunc: func(ctx context.Context, name string, args map[string]any, tc tools.Context) (tools.Result, error) {
 			t.lastPrincipal = tc.PrincipalID
 			if t.sendFile != nil {
-				if err := t.sendFile(tc.Reply); err != nil {
+				if err := t.sendFile(ctx, tc.Reply); err != nil {
 					return tools.FailResult("发文件失败：%s", err.Error()), nil
 				}
 			}
@@ -285,7 +282,7 @@ func newFixtureWithAccounts(t *testing.T, answer string, accounts ...string) *fi
 
 	return &fixture{
 		service:  service,
-		handler:  messages.NewHandler(runner, registry),
+		handler:  messages.NewHandler(runner),
 		channel:  channelsOut[0],
 		channels: channelsOut,
 		model:    model,
@@ -490,11 +487,12 @@ func Test发不出去只记日志(t *testing.T) {
 func Test工具能往当前会话发文件(t *testing.T) {
 	f := newFixture(t, "文件发你了")
 
-	f.tool.sendFile = func(reply tools.Reply) error {
+	f.tool.sendFile = func(ctx context.Context, reply tools.Reply) error {
 		if reply == nil {
 			return errors.New("这一轮没有回话能力")
 		}
-		return reply.File("/tmp/a.pdf", "a.pdf")
+		// **把工具的 ctx 传下去**：发文件是一次网络上传，停机时该能被打断
+		return reply.File(ctx, "/tmp/a.pdf", "a.pdf")
 	}
 
 	f.deliver(t, textMessage("把那份 PDF 发我"))
@@ -520,11 +518,11 @@ func Test工具能往当前会话发文件(t *testing.T) {
 func Test渠道发不了图片就退成文件(t *testing.T) {
 	f := newFixture(t, "当文件发了")
 
-	f.tool.sendFile = func(reply tools.Reply) error {
+	f.tool.sendFile = func(ctx context.Context, reply tools.Reply) error {
 		if reply == nil {
 			return errors.New("这一轮没有回话能力")
 		}
-		return reply.Image("/tmp/p.png", "p.png")
+		return reply.Image(ctx, "/tmp/p.png", "p.png")
 	}
 
 	f.deliver(t, textMessage("发张图"))
@@ -573,5 +571,37 @@ func Test常驻循环会一直处理(t *testing.T) {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
 		t.Error("停机后消费循环没退出")
+	}
+}
+
+// Test回话带的是工具那一步的ctx 发文件是一次网络上传（要上传到 CDN 再引用），
+// 所以**「谁在发」这一轮的取消信号必须传到发送器上**。实现里写死
+// `context.Background()` 的话，这里传入的 ctx 被取消也拦不住它——而这个用例
+// 就是那么红的（假发送器尊重 ctx，见夹具）。
+func Test回话带的是工具那一步的ctx(t *testing.T) {
+	f := newFixture(t, "文件发你了")
+
+	sendErr := make(chan error, 1)
+	f.tool.sendFile = func(toolCtx context.Context, reply tools.Reply) error {
+		// 从工具真正拿到的那个 ctx 派生一个并立刻取消——模拟「停机」，
+		// 然后照常试着发
+		ctx, cancel := context.WithCancel(toolCtx)
+		cancel()
+
+		err := reply.File(ctx, "/tmp/a.pdf", "a.pdf")
+		sendErr <- err
+		return err
+	}
+
+	f.deliver(t, textMessage("把那份 PDF 发我"))
+
+	select {
+	case err := <-sendErr:
+		if err == nil {
+			t.Error("ctx 已取消，发送却不该成功——成功说明实现用的是别的 ctx" +
+				"（`context.Background()` 就长这样）")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("工具没被调到")
 	}
 }

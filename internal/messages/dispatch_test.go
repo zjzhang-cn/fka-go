@@ -83,7 +83,7 @@ func gatedFixture(t *testing.T) (*gateModel, *channels.Service, *messages.Handle
 		fake := channel.(*fakeChannel)
 		byAccount[fake.accountID] = fake
 	}
-	return model, service, messages.NewHandler(runner, registry), byAccount
+	return model, service, messages.NewHandler(runner), byAccount
 }
 
 // messageOf 造一条指定账号的入站消息。

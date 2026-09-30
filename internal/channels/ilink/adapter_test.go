@@ -265,26 +265,6 @@ func Test能力声明与发送器一致(t *testing.T) {
 	}
 }
 
-// TestStorageID优先用UserId 槽位推出来的 `account_001` 不如 USER_ID 稳定可读，
-// 而按账号落盘的目录希望用它。
-func TestStorageID优先用UserId(t *testing.T) {
-	channel := newTestChannel(t, "account_001")
-	if got := channel.StorageID(); got != "o9cq80_zhang" {
-		t.Errorf("StorageID = %q，期望 USER_ID", got)
-	}
-
-	// 登录前拿不到 USER_ID 时退回账号 id
-	provider := NewProvider()
-	provider.Accounts = []bot.WeixinAccount{{ID: "account_001", BotToken: "t"}}
-	created, err := provider.Create(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := created[0].StorageID(); got != "account_001" {
-		t.Errorf("没有 USER_ID 时该退回账号 id，实际 %q", got)
-	}
-}
-
 // Test每次读当下而不是缓存 重新登录会整只替换账号表里的对象（凭证变了）。
 // 这里若缓存了创建时的副本，重登后就会一直用旧值——
 // 症状是「轮询正常、发送全报 -14」。
@@ -295,10 +275,16 @@ func Test每次读当下而不是缓存(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel := created[0]
+	// **取具体类型**：`Create` 交回来的是 `channels.Channel`，而「读当下的凭证」
+	// 是这一层自己的事（渠道接口上不再有 `StorageID` 之类为存储留的方法）。
+	channel, ok := created[0].(*Channel)
+	if !ok {
+		t.Fatalf("Create 该产出 *ilink.Channel，实际 %T", created[0])
+	}
 
-	if got := channel.StorageID(); got != "account_001" {
-		t.Errorf("初始 StorageID = %q", got)
+	// 发送路径拿的就是它（`Senders` 每次都重新读账号表）
+	if account, err := channel.account(); err != nil || account.BotToken != "old-token" {
+		t.Fatalf("初始凭证 = %+v err=%v", account, err)
 	}
 
 	// 整只替换——就像重新登录做的那样
@@ -307,8 +293,12 @@ func Test每次读当下而不是缓存(t *testing.T) {
 		Status: bot.AccountOnline,
 	})
 
-	if got := channel.StorageID(); got != "o9cq80_new" {
-		t.Errorf("替换后该读到新值，实际 %q —— 说明它缓存了创建时的副本", got)
+	account, err := channel.account()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.BotToken != "new-token" {
+		t.Errorf("替换后该读到新凭证，实际 %q —— 说明它缓存了创建时的副本", account.BotToken)
 	}
 	if got := channel.Status(); got != channels.StatusOnline {
 		t.Errorf("状态该跟着变，实际 %q", got)
@@ -342,16 +332,12 @@ func Test状态区分Expired与Offline(t *testing.T) {
 // ── 寻址 ────────────────────────────────────────────────
 
 // Test没收到过就不能解析地址 协议要求回传 context_token，而它只在收到消息时产生。
-// 解析不出就说解析不出，**不要编一个**。
+// 解析不出就返错，**不要编一个**。
 func Test没收到过就不能解析地址(t *testing.T) {
 	channel := newTestChannel(t, "account_001")
 
-	_, ok, err := channel.ResolveAddress(channels.ResolveAddressParams{})
-	if err != nil {
-		t.Fatalf("不该报错，该说「解析不出」：%v", err)
-	}
-	if ok {
-		t.Error("没收到过任何消息时不该解析成功")
+	if _, err := channel.ResolveAddress(channels.ResolveAddressParams{}); err == nil {
+		t.Fatal("没收到过任何消息时该报错（推不出来 = 返错，不是返回 ok=false）")
 	}
 }
 
@@ -362,26 +348,26 @@ func Test按最近一次入站解析(t *testing.T) {
 	channel.state.recordInbound("account_001", "o9cq80_li", "ctx-2", 2000)
 
 	// 不给 To：用最近一次
-	address, ok, err := channel.ResolveAddress(channels.ResolveAddressParams{})
-	if err != nil || !ok {
-		t.Fatalf("该解析成功：ok=%v err=%v", ok, err)
+	address, err := channel.ResolveAddress(channels.ResolveAddressParams{})
+	if err != nil {
+		t.Fatalf("该解析成功：%v", err)
 	}
 	if address.ConversationID != "o9cq80_li" || address.ReplyToken != "ctx-2" {
 		t.Errorf("该用最近一次（时间最大的那个）：%+v", address)
 	}
 
 	// 给了 To：按会话取
-	address, ok, err = channel.ResolveAddress(channels.ResolveAddressParams{To: "o9cq80_zhang"})
-	if err != nil || !ok {
-		t.Fatalf("该解析成功：ok=%v err=%v", ok, err)
+	address, err = channel.ResolveAddress(channels.ResolveAddressParams{To: "o9cq80_zhang"})
+	if err != nil {
+		t.Fatalf("该解析成功：%v", err)
 	}
 	if address.ReplyToken != "ctx-1" {
 		t.Errorf("ReplyToken = %q，期望 ctx-1", address.ReplyToken)
 	}
 
-	// 给了没见过的会话
-	if _, ok, _ := channel.ResolveAddress(channels.ResolveAddressParams{To: "陌生人"}); ok {
-		t.Error("没见过的人不该解析成功")
+	// 给了没见过的会话：推不出来，要返错
+	if _, err := channel.ResolveAddress(channels.ResolveAddressParams{To: "陌生人"}); err == nil {
+		t.Error("没见过的人该报错")
 	}
 }
 
@@ -392,9 +378,15 @@ func Test同时刻的会话要有确定顺序(t *testing.T) {
 	channel.state.recordInbound("account_001", "aaa", "ctx-a", 1000)
 	channel.state.recordInbound("account_001", "zzz", "ctx-z", 1000)
 
-	first, _, _ := channel.ResolveAddress(channels.ResolveAddressParams{})
+	first, err := channel.ResolveAddress(channels.ResolveAddressParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 20; i++ {
-		again, _, _ := channel.ResolveAddress(channels.ResolveAddressParams{})
+		again, err := channel.ResolveAddress(channels.ResolveAddressParams{})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if again != first {
 			t.Fatalf("同一时刻的结果在飘：%+v vs %+v", again, first)
 		}
@@ -553,16 +545,21 @@ func Test入站先记上下文再上抛(t *testing.T) {
 	}
 
 	created, _ := provider.Create(context.Background())
-	channel := created[0]
+	// 调 ResolveAddress 要拿具体类型：它是**可选能力**（channels.AddressResolver），
+	// 不在必填的渠道接口上——不实现它的渠道不该被迫写一个返回零值的桩。
+	channel, ok := created[0].(*Channel)
+	if !ok {
+		t.Fatalf("Create 该产出 *ilink.Channel，实际 %T", created[0])
+	}
 
 	var resolvedAtCallback channels.OutboundAddress
 	var resolved bool
 	_ = channel.Start(context.Background(), func(inbound channels.InboundMessage) {
 		// 回调里立刻试着「发给刚刚说话的那个人」——令牌必须已经在
-		address, ok, _ := channel.ResolveAddress(channels.ResolveAddressParams{
+		address, err := channel.ResolveAddress(channels.ResolveAddressParams{
 			To: inbound.ConversationID,
 		})
-		resolvedAtCallback, resolved = address, ok
+		resolvedAtCallback, resolved = address, err == nil
 	})
 
 	fake.emit(parseFixture(t, fixtureText))

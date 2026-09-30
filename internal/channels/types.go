@@ -137,7 +137,7 @@ func (c Capabilities) For(kind MediaKind) KindCapability {
 // MediaRef 入站媒体句柄。**不含字节**——如何取回是渠道的责任。
 //
 // 不带字节是有意的：消息可能在收到后很久才被处理（排队解析），若带着整份字节，
-// 内存会被大文件占满。系统决定何时取、是否取。
+// 内存会被大文件占满。系统决定何时取、是否取；取回的入口是 `MediaFetcher`。
 type MediaRef struct {
 	// ID 渠道内的媒体标识。对调用方不透明，只能交回 Channel.FetchMedia
 	ID string
@@ -330,39 +330,79 @@ type OutboundAddress struct {
 	ReplyToken     string
 }
 
-// Channel 渠道实例。一个渠道可有多个账号，每个账号一个实例。
-type Channel interface {
+// ── 渠道的角色接口 ──────────────────────────────────────
+//
+// ## 为什么拆开，而不是一个大接口
+//
+// 一条判据：**每个方法都要能回答「谁在调它」**。以前那个 11 方法的 `Channel` 把
+// 五件事揉在一起，于是有两类问题：
+//
+//   - 真实消费方各只用一个子集（消息层只要身份与发送器、接缝的起停只要
+//     Start/Stop），而接口宽度是**替换的成本**——测试假替身被迫为用不到的方法写桩，
+//     新渠道也是；
+//   - **可选能力混在必填里**时没有别的表达方式，只能让实现方返回一套「不支持」的
+//     零值语义。而「接口方法不存在『可以不实现』」——那个 `ok=false` 就是这条矛盾
+//     的产物。
+//
+// 所以：必填的三组用嵌入拼成 `Channel`；可选的两件事各自是一个接口，调用方用
+// **类型断言**问「你支不支持」。
+
+// Identity 渠道实例的身份：日志、错误提示、账号唯一性都靠它。
+type Identity interface {
 	// ID 渠道类型标识
 	ID() string
 	// Label 人类可读名称，用于日志
 	Label() string
 	// AccountID 本实例的账号标识
 	AccountID() string
-	// StorageID 本账号在**存储层**用的稳定标识（可选）。缺省时调用方用 AccountID。
-	//
-	// 为什么与 AccountID 分开：AccountID 是渠道内部的槽位标识（改配置就可能变），
-	// 而**按账号落盘**的目录希望用一个更稳定、更可读的身份。
-	//
-	// 渠道负责保证它**能安全地当一个路径段**（不含路径分隔符与 `..`）。
-	StorageID() string
+	// Status 渠道运行状态
+	Status() Status
+}
+
+// Outbound 出站能力：能力声明与发送器**必须成对**（ValidateChannel 核对）。
+type Outbound interface {
 	// Capabilities 能力声明
 	Capabilities() Capabilities
 	// Senders 出站处理器，与 Capabilities 一一对应
 	Senders() Senders
-	// Status 渠道运行状态
-	Status() Status
+}
 
-	// Start 开始接收消息。实现方负责自身的重连与游标管理
+// Lifecycle 收发的起停。实现方负责自身的重连与游标管理。
+type Lifecycle interface {
+	// Start 开始接收消息
 	Start(ctx context.Context, onMessage func(InboundMessage)) error
 	// Stop 停止接收，释放资源。调用后不得再触发 onMessage
 	Stop(ctx context.Context) error
-	// FetchMedia 取回媒体字节。这是入站媒体唯一的落地方式
+}
+
+// Channel 一个渠道实例**必须**做到的事。
+type Channel interface {
+	Identity
+	Outbound
+	Lifecycle
+}
+
+// AddressResolver **可选**能力：能自己推断「发给谁」。
+//
+// 有状态的渠道实现它（iLink：回复必须回传收到消息时的 `context_token`）；无状态的
+// 渠道不实现——调用方用类型断言区分两件事：
+//
+//   - 「这个渠道不支持推断」= 断言失败，调用方要求显式给收件人；
+//   - 「支持推断，但这次推不出来」= 返回 error（例如还没收到过任何消息）。
+//
+// 这两件事以前挤在同一个 `ok=false` 里。
+type AddressResolver interface {
+	ResolveAddress(params ResolveAddressParams) (OutboundAddress, error)
+}
+
+// MediaFetcher **可选**能力：能取回入站媒体的字节。
+//
+// ⚠️ **目前没有生产调用方**：消息层收到媒体消息会如实拒答（这个 agent 不拥有存储，
+// 收到文件也没地方归档，见 `internal/messages` 包头）。留着这个接口，是因为
+// 「入站媒体唯一的落地方式」必须有个明确的位置——要读图时接的就是这里，
+// 而不是让每个渠道都写一个返回错误的 `FetchMedia` 桩。
+type MediaFetcher interface {
 	FetchMedia(ctx context.Context, ref MediaRef) ([]byte, error)
-	// ResolveAddress 把「发给谁」解析成出站地址（可选）。
-	//
-	// 有状态的渠道（iLink：要拿最近一次入站的 context_token）实现它；
-	// 无状态的渠道可以不实现，那时调用方必须显式给 To。
-	ResolveAddress(params ResolveAddressParams) (OutboundAddress, bool, error)
 }
 
 // LoginParams 交互式登录的参数。
