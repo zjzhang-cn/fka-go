@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
 func TestClamp_按rune截不切半个字(t *testing.T) {
 	if got := Clamp("房产证在哪", 100); got != "房产证在哪" {
@@ -12,7 +15,9 @@ func TestClamp_按rune截不切半个字(t *testing.T) {
 		t.Errorf("Clamp = %q，期望 %q", got, "房产证…")
 	}
 	for _, r := range got {
-		if r == '�' {
+		// **用 utf8.RuneError，不写那个字面量**：它的字形与编码事故留下的替换字符
+		// 一模一样，下一次扫仓库时会被当成损坏的注释（这一段就是这么被误伤的）
+		if r == utf8.RuneError {
 			t.Errorf("截出了半个字符：%q", got)
 		}
 	}
@@ -134,67 +139,31 @@ func (m *memStore) Append(sessionID, accountID string, messages []ChatMessage) {
 	m.appends = append(m.appends, append([]ChatMessage(nil), messages...))
 }
 
-func TestLoadHistoryPrefix_quote模式优先用文件里那份(t *testing.T) {
+// TestLoadHistoryPrefix_读回文件里那份 这就是历史的**唯一**来源：会话文件。
+//
+// 这里曾经还有三条用例，验「调用方给一份数据库重建的历史」那条路（quote/time 模式、
+// 文件空时播种）。`internal/store` 搬走之后没有任何生产调用方能给那份历史
+// （`RunnerInput.History` 全仓无人赋值），于是那三条只在测试里活着——
+// 不能到达的代码不是功能，随那条路一起删掉了。
+func TestLoadHistoryPrefix_读回文件里那份(t *testing.T) {
 	store := &memStore{stored: []ChatMessage{
 		{Role: RoleUser, Content: "文件里的问题"},
 		{Role: RoleAssistant, Content: "文件里的答案"},
 	}}
-	dbHistory := &History{
-		Mode: "quote",
-		Messages: []HistoryMessage{
-			{Role: RoleUser, Text: "数据库里的问题"},
-		},
-	}
 
-	got := LoadHistoryPrefix(store, HistoryKey{SessionID: "s", History: dbHistory})
+	got := LoadHistoryPrefix(store, "s", "acct-1")
 	if len(got) != 2 || got[0].Content != "文件里的问题" {
-		t.Errorf("quote 模式应优先用会话文件里逐字那份：%+v", got)
-	}
-	if len(store.appends) != 0 {
-		t.Error("文件里有内容时不该播种")
+		t.Errorf("该原样读回会话文件里那份：%+v", got)
 	}
 }
 
-// TestLoadHistoryPrefix_文件空时播种数据库那份 不播种的话，这一轮读了旧历史，
-// 下一轮文件里就只有本回合，前面几轮凭空丢了。
-func TestLoadHistoryPrefix_文件空时播种数据库那份(t *testing.T) {
-	store := &memStore{}
-	dbHistory := &History{
-		Mode: "quote",
-		Messages: []HistoryMessage{
-			{Role: RoleUser, Text: "数据库里的问题"},
-			{Role: RoleAssistant, Text: "数据库里的答案"},
-		},
+// TestLoadHistoryPrefix_没存储就没有历史 SESSION_HISTORY=0 时这一轮从零开始，
+// **不返错**（历史是锦上添花，不是这一轮回答的前提）。
+func TestLoadHistoryPrefix_没存储就没有历史(t *testing.T) {
+	if got := LoadHistoryPrefix(nil, "s", "acct-1"); got != nil {
+		t.Errorf("没有存储时该是什么都没有：%+v", got)
 	}
-
-	got := LoadHistoryPrefix(store, HistoryKey{SessionID: "s", History: dbHistory})
-	if len(got) != 2 {
-		t.Fatalf("应退回数据库那份：%+v", got)
-	}
-	if len(store.appends) != 1 || len(store.appends[0]) != 2 {
-		t.Errorf("应顺手播种进文件：%+v", store.appends)
-	}
-}
-
-func TestLoadHistoryPrefix_time模式以数据库为准(t *testing.T) {
-	store := &memStore{stored: []ChatMessage{{Role: RoleUser, Content: "文件里的"}}}
-	dbHistory := &History{
-		Mode: "time",
-		Messages: []HistoryMessage{
-			{Role: RoleUser, Text: "数据库里的"},
-		},
-	}
-
-	got := LoadHistoryPrefix(store, HistoryKey{SessionID: "s", History: dbHistory})
-	if len(got) != 1 || got[0].Content != "数据库里的" {
-		t.Errorf("time 模式跨会话，数据库那份才是权威：%+v", got)
-	}
-}
-
-func TestLoadHistoryPrefix_没有存储时直接用数据库(t *testing.T) {
-	dbHistory := &History{Messages: []HistoryMessage{{Role: RoleUser, Text: "问题"}}}
-	got := LoadHistoryPrefix(nil, HistoryKey{SessionID: "s", History: dbHistory})
-	if len(got) != 1 || got[0].Content != "问题" {
-		t.Errorf("%+v", got)
+	if got := LoadHistoryPrefix(&memStore{}, "", "acct-1"); got != nil {
+		t.Errorf("没有会话 id 时也该是什么都没有：%+v", got)
 	}
 }

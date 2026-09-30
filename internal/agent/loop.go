@@ -127,12 +127,9 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	}
 	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), r.tools.PromptSections(tc))
 
-	// 历史前缀：优先会话文件里逐字原样那份（含工具调用），否则退回数据库重建的那份
-	prior := llm.LoadHistoryPrefix(r.sessionHistory, llm.HistoryKey{
-		SessionID: input.SessionID,
-		AccountID: input.AccountID,
-		History:   input.History,
-	})
+	// 历史前缀：会话文件里那份，逐字原样（含工具调用与工具结果）。
+	// 存储关掉时（SESSION_HISTORY=0）就没有历史，这一轮从零开始。
+	prior := llm.LoadHistoryPrefix(r.sessionHistory, input.SessionID, input.AccountID)
 
 	// 预算里先扣掉**固定开销**：system、本轮问题、给回答留的位置，以及工具声明本身
 	// （工具一多，声明也能占掉不少）。剩下的才是历史可用的部分
@@ -173,7 +170,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	config.Log().Debug(config.TypePRM, "提示词已拼接", config.Fields(ctx, config.Context{
 		"session": input.SessionID, "systemChars": len([]rune(system)),
 		"promptSections": len(r.tools.PromptSections(tc)),
-		"historyKept":    len(kept.Messages), "historyDropped": len(prior) - len(kept.Messages),
+		"historyKept":    len(kept.Messages), "historyDropped": kept.Dropped,
 		"toolDefs": len(toolDefs), "messages": len(messages),
 		"contextBudget": budget, "fixedTokens": fixed,
 		"question": input.Question,

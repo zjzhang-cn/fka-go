@@ -36,16 +36,13 @@ const (
 	LevelInfo  Level = 20
 	LevelWarn  Level = 30
 	LevelError Level = 40
-	// LevelCritical 会额外触发告警通道（微信告警在渠道层接上）
-	LevelCritical Level = 50
 )
 
 var levelNames = map[Level]string{
-	LevelDebug:    "debug",
-	LevelInfo:     "info",
-	LevelWarn:     "warn",
-	LevelError:    "error",
-	LevelCritical: "critical",
+	LevelDebug: "debug",
+	LevelInfo:  "info",
+	LevelWarn:  "warn",
+	LevelError: "error",
 }
 
 func (l Level) String() string { return levelNames[l] }
@@ -61,8 +58,6 @@ func parseLevel(value string) (Level, bool) {
 		return LevelWarn, true
 	case "error":
 		return LevelError, true
-	case "critical":
-		return LevelCritical, true
 	}
 	return 0, false
 }
@@ -74,12 +69,10 @@ type Context map[string]any
 // Logger 进程级日志：控制台按级别过滤，**文件始终全量**——日志文件是排查用的，
 // 不该因为控制台调静音而丢信息。
 type Logger struct {
-	mu         sync.Mutex
-	dir        string
-	file       *os.File
-	fileName   string
-	override   *Level
-	onCritical func(message string, ctx Context)
+	mu       sync.Mutex
+	dir      string
+	file     *os.File
+	fileName string
 }
 
 // Logger 进程单例。
@@ -151,32 +144,13 @@ func logFileName(now time.Time) string {
 	return now.UTC().Format(logDateLayout) + ".log"
 }
 
-// SetConsoleLevel 设置控制台的最低输出级别。
-//
-// CLI 用它把噪音降到最低——CLI 的 stdout 是给人和脚本消费的结果输出，不该混入
-// 内部日志（那些仍然完整写进日志文件）。
-func (l *Logger) SetConsoleLevel(level Level) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	v := level
-	l.override = &v
-}
-
-// SetCriticalHandler 挂上 critical 的额外通道（微信告警）。**渠道层接上**。
-func (l *Logger) SetCriticalHandler(fn func(message string, ctx Context)) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.onCritical = fn
-}
-
 // currentConsoleLevel 在**每次写入时**解析，因此环境变量能覆盖到最早的那条日志。
+//
+// 这里曾经还有 `SetConsoleLevel` + 一个 `override` 字段（注释写「CLI 用它把噪音降到
+// 最低」）与 `SetCriticalHandler`（「渠道层接上」）——**两个接线人都不存在**：这个
+// logger 只可能被 `mcp/memory/...` 引用（Go 的 internal 规则），而那棵树里既没有
+// CLI 参数解析，也没有告警通道。为不存在的消费方留能力，只会让下一个人以为它接上了。
 func (l *Logger) currentConsoleLevel() Level {
-	l.mu.Lock()
-	override := l.override
-	l.mu.Unlock()
-	if override != nil {
-		return *override
-	}
 	if level, ok := parseLevel(os.Getenv("LOG_LEVEL")); ok {
 		return level
 	}
@@ -192,7 +166,6 @@ func (l *Logger) write(level Level, message string, ctx Context) {
 	if l.file != nil {
 		_, _ = l.file.WriteString(renderEntry(now, level, message, ctx) + "\n")
 	}
-	handler := l.onCritical
 	l.mu.Unlock()
 
 	// 控制台输出：按级别过滤
@@ -215,9 +188,6 @@ func (l *Logger) write(level Level, message string, ctx Context) {
 	// 纯属侥幸**，不构成「可以往 stdout 写日志」的依据。
 	fmt.Fprintln(os.Stderr, renderLine(level, message, ctx))
 
-	if level == LevelCritical && handler != nil {
-		handler(message, ctx)
-	}
 }
 
 // timeLayout 日志行开头那个时间戳的写法。**保持 UTC**：文件按天轮转的名字
@@ -299,9 +269,6 @@ func (l *Logger) Debug(message string, ctx Context) { l.write(LevelDebug, messag
 func (l *Logger) Info(message string, ctx Context)  { l.write(LevelInfo, message, ctx) }
 func (l *Logger) Warn(message string, ctx Context)  { l.write(LevelWarn, message, ctx) }
 func (l *Logger) Error(message string, ctx Context) { l.write(LevelError, message, ctx) }
-
-// Critical 记一条并触发告警通道。
-func (l *Logger) Critical(message string, ctx Context) { l.write(LevelCritical, message, ctx) }
 
 // Close 关掉文件句柄。进程退出与测试清理用。
 func (l *Logger) Close() error {

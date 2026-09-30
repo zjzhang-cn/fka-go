@@ -55,8 +55,6 @@ type RunnerInput struct {
 	PrincipalID string
 	// TurnID 这一轮接的是哪条消息
 	TurnID string
-	// History 该会话的历史
-	History *llm.History
 	// Question 本轮问题
 	Question string
 	// QuotedText 被引用那条的正文

@@ -37,9 +37,10 @@ const defaultCDNBase = "https://novac2c.cdn.weixin.qq.com/c2c"
 // 混起来是这里最容易错的一处。
 const (
 	UploadMediaImage = 1
-	UploadMediaVideo = 2
 	UploadMediaFile  = 3
-	UploadMediaVoice = 4
+	// 协议里还有 video(2) 与 voice(4)。**这里刻意不定义**：`Capabilities` 声明了
+	// 语音/视频不能发（首期不做），定义常量会让人以为那条路已经实现——
+	// 与「只声明真的能跑的工具」同一条原则。要发的时候再补。
 )
 
 // GenerateAesKey 生成本次的 AES 密钥。返回 **32 个十六进制字符**——

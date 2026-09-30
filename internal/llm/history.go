@@ -50,10 +50,10 @@ func CompressHistory(messages []ChatMessage, budgetTokens int) CompressionResult
 
 	total := totalTokens(working)
 	if len(working) == 0 || budgetTokens <= 0 {
-		return CompressionResult{Messages: working, EstimatedTokens: total}
+		return CompressionResult{Messages: working}
 	}
 	if total <= budgetTokens {
-		return CompressionResult{Messages: working, EstimatedTokens: total}
+		return CompressionResult{Messages: working}
 	}
 
 	// 超预算：从最老整组丢，丢到装得下或丢空为止。留下的每一条都逐字不动
@@ -75,7 +75,7 @@ func CompressHistory(messages []ChatMessage, budgetTokens int) CompressionResult
 		kept = append(kept, group...)
 	}
 
-	return CompressionResult{Messages: kept, Dropped: dropped, EstimatedTokens: totalTokens(kept)}
+	return CompressionResult{Messages: kept, Dropped: dropped}
 }
 
 // groupMessages 把消息切成不可拆的组：带 ToolCalls 的 assistant 连同其后连续的
@@ -125,43 +125,21 @@ func cloneMessages(messages []ChatMessage) []ChatMessage {
 	return out
 }
 
-// HistoryKey 选历史前缀的定位键。
-type HistoryKey struct {
-	SessionID string
-	AccountID string
-	History   *History
-}
-
-// LoadHistoryPrefix 选出送进模型的**历史前缀**：优先原样读回会话文件，其次才用数据库
-// 重建的历史。
+// LoadHistoryPrefix 读回送进模型的**历史前缀**：会话文件里那份，逐字原样。
 //
-// 规则（两条路共用，所以只写这一份）：
-//   - quote（或无历史）：会话文件里有东西就用它——逐字原样，KV 缓存的前提；
-//   - time / all：这两种模式刻意跨会话取历史，数据库那份才是权威，文件只作写入。
+// ## 为什么只剩这一条路
 //
-// 文件空而数据库有历史时**顺手把数据库那份播种进文件**：否则这一轮读了旧历史，
-// 下一轮文件只从本回合开始，前面几轮就凭空丢了。播种后文件即成为后续的真相。
-func LoadHistoryPrefix(store SessionHistoryStore, key HistoryKey) []ChatMessage {
-	fromDB := make([]ChatMessage, 0)
-	mode := ""
-	if key.History != nil {
-		mode = key.History.Mode
-		for _, message := range key.History.Messages {
-			fromDB = append(fromDB, ChatMessage{Role: message.Role, Content: message.Text})
-		}
+// 这里曾经有第二条路：调用方可以给一份「数据库重建的历史」（`History` 结构 +
+// `Mode` / `GapMinutes` / `ChatMessages` 三个字段），文件空时把它播种进文件。
+// 那是**文档那半边还在本仓库时**的事——`internal/store` 在 `1fae643` 搬走之后，
+// 就没有任何生产调用方能给这份历史了（`RunnerInput.History` 全仓无人赋值），
+// 于是那条分支只剩测试在跑，而它的存在还让注释说谎
+// （「`ChatMessages` 有它时优先于 `Messages`」——代码从不读它）。
+//
+// 现在它就是「读文件」这一件事。**这不是功能删减**：不能到达的代码不是功能。
+func LoadHistoryPrefix(store SessionHistoryStore, sessionID, accountID string) []ChatMessage {
+	if store == nil || sessionID == "" {
+		return nil
 	}
-
-	if store == nil || key.SessionID == "" || (mode != "" && mode != "quote") {
-		return fromDB
-	}
-
-	persisted := store.Load(key.SessionID, key.AccountID)
-	if len(persisted) > 0 {
-		return persisted
-	}
-
-	if len(fromDB) > 0 {
-		store.Append(key.SessionID, key.AccountID, fromDB)
-	}
-	return fromDB
+	return store.Load(sessionID, accountID)
 }

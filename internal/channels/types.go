@@ -23,7 +23,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // ErrorKind 渠道错误的分类。
@@ -89,9 +88,6 @@ const (
 	KindVoice MediaKind = "voice"
 	KindVideo MediaKind = "video"
 )
-
-// AllMediaKinds 全部种类的固定顺序。日志、错误、能力表都按它展示。
-var AllMediaKinds = []MediaKind{KindText, KindFile, KindImage, KindVoice, KindVideo}
 
 // KindCapability 一种消息种类的收发能力。
 //
@@ -285,7 +281,7 @@ type Senders struct {
 }
 
 // For 取某一种类的发送器。第二个返回值 false 表示**不支持**——
-// 那��正常路径而不是错误：调用方换成「把图片当文件发」或回一句说明，
+// 那是正常路径而不是错误：调用方换成「把图片当文件发」或回一句说明，
 // 都比抛异常合适。
 func (s Senders) For(kind MediaKind) (func(context.Context, SendMediaParams) (SendResult, error), bool) {
 	switch kind {
@@ -484,6 +480,3 @@ func ValidateChannel(channel Channel) error {
 	}
 	return nil
 }
-
-// nowMillis 便捷函数。渠道实现自己用不到，但接缝的日志需要。
-func nowMillis() int64 { return time.Now().UnixMilli() }

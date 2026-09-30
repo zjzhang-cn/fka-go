@@ -173,5 +173,5 @@ func openAndMigrate(ctx context.Context, path string) (*store.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.New(connection, path), nil
+	return store.New(connection), nil
 }

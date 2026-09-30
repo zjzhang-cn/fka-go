@@ -34,7 +34,7 @@ func newStoreDB(t *testing.T) *DB {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	return New(conn, path)
+	return New(conn)
 }
 
 // remember 记一条记忆。createdAt 由调用方给，好在排序用例里造出确定的时间差。

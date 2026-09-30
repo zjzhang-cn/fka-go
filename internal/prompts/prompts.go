@@ -13,12 +13,18 @@
 //
 // 纯文本 + 纯函数：不碰 IO。测试因此完全离线。
 //
+// （这里曾经手写过 `join` / `trimSpace` / `isSpace` 三个字符串工具——理由是「这个包
+// 不碰 IO」，而 `strings` 不是 IO。三十行手写代码换来的只是把标准库重写一遍，
+// 其中 `trimSpace` 还只认 ASCII 空白。）
+//
 // ## 它是默认值，不是硬编码
 //
 // 这套话术描述的是**证据纪律**，不是产品身份。想要完全不同人格的部署给一份
 // 自己的提示词即可（`app.Options` → `RunnerOptions.SystemPrompt`）——所以
 // 「这段文字过时了」的担心不成立：它只是默认值，而默认值该讲清楚自己在守什么。
 package prompts
+
+import "strings"
 
 // noMarkdownRule 所有回话路径共用的措辞。
 //
@@ -110,14 +116,14 @@ var Agent = joinConcat(evidenceConstitution,
 func Compose(base string, sections []string) string {
 	extra := make([]string, 0, len(sections))
 	for _, section := range sections {
-		if trimmed := trimSpace(section); trimmed != "" {
+		if trimmed := strings.TrimSpace(section); trimmed != "" {
 			extra = append(extra, trimmed)
 		}
 	}
 	if len(extra) == 0 {
 		return base
 	}
-	return base + "\n\n" + join(extra)
+	return base + "\n\n" + strings.Join(extra, "\n")
 }
 
 // joinConcat 拼宪法与该路径的追加段。宪法是共用的，所以拼装只此一处。
@@ -125,40 +131,5 @@ func joinConcat(base []string, extra ...string) string {
 	lines := make([]string, 0, len(base)+len(extra))
 	lines = append(lines, base...)
 	lines = append(lines, extra...)
-	return join(lines)
-}
-
-func join(lines []string) string {
-	total := 0
-	for _, line := range lines {
-		total += len(line) + 1
-	}
-	out := make([]byte, 0, total)
-	for i, line := range lines {
-		if i > 0 {
-			out = append(out, '\n')
-		}
-		out = append(out, line...)
-	}
-	return string(out)
-}
-
-func trimSpace(s string) string {
-	start := 0
-	for start < len(s) && isSpace(s[start]) {
-		start++
-	}
-	end := len(s)
-	for end > start && isSpace(s[end-1]) {
-		end--
-	}
-	return s[start:end]
-}
-
-func isSpace(b byte) bool {
-	switch b {
-	case ' ', '\t', '\n', '\r', '\v', '\f':
-		return true
-	}
-	return false
+	return strings.Join(lines, "\n")
 }

@@ -3,16 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/domain"
 	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/searchterms"
 )
-
-// ErrNotFound 找不到。**调用方据此区分「没有」与「坏了」**。
-var ErrNotFound = errors.New("没有找到")
 
 // DB 是存储层对外的全部能力。
 //
@@ -22,15 +18,15 @@ var ErrNotFound = errors.New("没有找到")
 // 「显示多了」，是**别人的私有数据进了结果**。过滤必须发生在 SQL 的 WHERE 里，
 // 不是查完之后——后者要记得在每一处都加一遍，漏一处就泄漏。
 type DB struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
 }
 
 // New 拿一个已打开的连接造 DB。**不跑迁移**——见 Migrate。
-func New(db *sql.DB, path string) *DB { return &DB{db: db, path: path} }
-
-// Path 库路径。
-func (d *DB) Path() string { return d.path }
+//
+// 这里曾经还接一个 `path`（配一个 `Path()` 读取口），用来给调用方报「库在哪」——
+// 而零个调用方用它：路径在 `main.go` 里本来就有（`resolveDBPath` 的返回值），
+// 存储层再存一份只是让两处可能不一致。
+func New(db *sql.DB) *DB { return &DB{db: db} }
 
 // Close 关连接。
 func (d *DB) Close() error { return d.db.Close() }

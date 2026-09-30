@@ -20,8 +20,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"github.com/zjzhang-cn/fka-go/mcp/memory/internal/log"
 	"strings"
@@ -150,8 +148,9 @@ func (s *memoryServer) handleRemember(ctx context.Context, request mcp.CallToolR
 	if visibility == "" {
 		// 记忆默认 public：家庭记忆本就该被家人问到（与文档相反——文档默认 private）
 		visibility = string(domain.VisPublic)
-	}
-	if visibility != string(domain.VisPublic) && visibility != string(domain.VisPrivate) {
+	} // **规则只有一处出处**：`domain.ValidVisibility`。写在这里的那份内联判断曾经与
+	// domain 里的函数各说各话——加一级可见性时只会改到一处，另一处继续放行。
+	if !domain.ValidVisibility(visibility) {
 		return fail(fmt.Sprintf("visibility %q 不认识，只有 public 与 private。", visibility)), nil
 	}
 
@@ -201,9 +200,4 @@ func text(body string) *mcp.CallToolResult {
 // 它下一轮能改；而抛异常只会让它看到「工具坏了」。
 func fail(body string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{mcp.NewTextContent(body)}}
-}
-
-// IsUnavailable 判断一个连接错误是不是「没建库」。主程序据此提示。
-func IsUnavailable(err error) bool {
-	return errors.Is(err, sql.ErrConnDone) || strings.Contains(err.Error(), "no such table")
 }

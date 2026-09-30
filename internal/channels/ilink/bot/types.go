@@ -21,7 +21,6 @@ package bot
 import (
 	"bytes"
 	"encoding/json"
-	"strconv"
 )
 
 // ── 常量 ────────────────────────────────────────────────
@@ -108,30 +107,6 @@ func optionalStringID(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return stringID(raw), true
-}
-
-// stringOrInt64 读一个「协议里是字符串、但可能是数字」的字段（`file_item.len` 就是）。
-//
-// **空串一律当缺席**——协议里 `len: ""` 与「没给 len」对我们是同一件事：不知道多大。
-func stringOrInt64(raw json.RawMessage) (string, bool) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
-		return "", false
-	}
-	if trimmed[0] == '"' {
-		var text string
-		if err := json.Unmarshal(trimmed, &text); err != nil {
-			return "", false
-		}
-		if text == "" {
-			return "", false
-		}
-		return text, true
-	}
-	if _, err := strconv.ParseInt(string(trimmed), 10, 64); err != nil {
-		return "", false
-	}
-	return string(trimmed), true
 }
 
 // ── 线格式（snake_case，逐字照抄）──────────────────────

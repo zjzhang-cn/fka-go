@@ -134,8 +134,6 @@ type ReadState struct {
 	Latest int
 	// Pending 待迁移的说明。为空 = 已跟上
 	Pending string
-	// Error 库打不开时的原因
-	Error string
 	// Tables 实际有哪些业务表。**可能有本 server 不拥有的表**（共用库文件时）
 	Tables []string
 	// Adoptable 这份库能否被认领为 v1（`memories` 逐列对得上）
@@ -144,9 +142,6 @@ type ReadState struct {
 	Fresh bool
 }
 
-// Current 这份库是否已跟上代码。
-func (s ReadState) Current() bool { return s.Error == "" && s.Pending == "" && s.Exists }
-
 // Migrate 把库升到最新版本。**幂等**：已是最新时什么都不做。
 //
 // 三条路径：
@@ -154,24 +149,25 @@ func (s ReadState) Current() bool { return s.Error == "" && s.Pending == "" && s
 //   - user_version=0 但有表（Node 版建的）→ **认领**：逐列核对 `memories`，
 //     对得上就打 v1，对不上返 ErrShapeMismatch（不猜、不重建）；
 //   - 已有 version → 逐条跑高于它的迁移，每条一个事务。
+//
+// 失败时**只靠返回值说事**：`ReadState` 里曾经还有一个 `Error` 字段（连同读它的
+// `Current()`），而它是返回值的副本——两个地方说同一件事时，读的人很快会不知道该
+// 信哪个（`Current()` 全仓零调用方）。
 func Migrate(ctx context.Context, path string) (ReadState, error) {
 	state := ReadState{Path: path, Latest: LatestVersion()}
 
 	db, err := Open(path)
 	if err != nil {
-		state.Error = err.Error()
 		return state, err
 	}
 	defer func() { _ = db.Close() }()
 
 	version, err := readUserVersion(ctx, db)
 	if err != nil {
-		state.Error = err.Error()
 		return state, err
 	}
 	tables, err := businessTables(ctx, db)
 	if err != nil {
-		state.Error = err.Error()
 		return state, err
 	}
 
@@ -183,7 +179,6 @@ func Migrate(ctx context.Context, path string) (ReadState, error) {
 	// **库比代码新就拒绝服务**（回滚场景）。绝不能把 user_version 谎报成自己的
 	// 最新版往下跑——那会以一份不认识的结构读写。见 ErrTooNew。
 	if version > state.Latest {
-		state.Error = fmt.Sprintf("库版本 v%d 比代码 v%d 新", version, state.Latest)
 		return state, &ErrTooNew{Path: path, DB: version, Code: state.Latest}
 	}
 

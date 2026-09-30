@@ -80,7 +80,7 @@ const noAccount = "-"
 // 取值刻意短：三格前缀要占一行的开头，短才不挤。
 type Type string
 
-// 管道阶段。**代码即前缀里印出来的那几���**。
+// 管道阶段。**代码即前缀里印出来的那几个字**。
 const (
 	// TypeSYS 启动、配置、停机。没有账号。
 	TypeSYS Type = "SYS"

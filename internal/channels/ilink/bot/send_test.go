@@ -395,7 +395,7 @@ func Test上传往返(t *testing.T) {
 	}
 }
 
-// Test上传时AESKey是随机生成的 每��次上传都用新密钥——复用密钥等于所有文件
+// Test上传时AESKey是随机生成的 每一次上传都用新密钥——复用密钥等于所有文件
 // 共用一把锁，而 key 是会被记录在日志与请求体里的。
 func Test上传时AESKey是随机生成的(t *testing.T) {
 	seen := map[string]bool{}

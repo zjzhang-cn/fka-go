@@ -7,7 +7,7 @@
 //  3. 把渠道的入站回调转成订阅事件（业务层是订阅者）
 //  4. 按用户给的 --channel / --account 找到渠道，并请它解析「发给谁」
 //
-// ���一文件不 import 任何具体渠道——那条由 `boundary_test.go` 守着。
+// 这一文件不 import 任何具体渠道——那条由 `channels_test.go` 守着。
 //
 // ## 唯一性检查为什么不能省
 //
@@ -31,7 +31,6 @@ import (
 	"context"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
 )
@@ -76,7 +75,6 @@ type Service struct {
 
 	subscribers []*subscription
 	started     bool
-	startedAt   time.Time
 }
 
 type subscription struct {
@@ -126,12 +124,8 @@ func NewService() *Service {
 	return &Service{
 		instances: map[string]Channel{},
 		accounts:  map[string]string{},
-		startedAt: time.Now(),
 	}
 }
-
-// StartedAt 接缝创建时刻。控制面 `ping` 用。
-func (s *Service) StartedAt() time.Time { return s.startedAt }
 
 // key 渠道实例的**唯一**查找键。
 //
@@ -272,36 +266,6 @@ func (s *Service) Instances() []Channel {
 		out = append(out, s.instances[k])
 	}
 	return out
-}
-
-// Find 按 (渠道种类, 账号) 找——多渠道下的**唯一**查找键。
-func (s *Service) Find(channelID, accountID string) (Channel, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	channel, ok := s.instances[key(channelID, accountID)]
-	return channel, ok
-}
-
-// ByAccount 按账号找。
-//
-// **只有一个匹配时可用**；重名返回 false 而不是随便挑一个——那说明唯一性检查
-// 被绕过了，而调用方拿到的会是错的渠道。
-func (s *Service) ByAccount(accountID string) (Channel, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var found Channel
-	for _, k := range s.order {
-		channel := s.instances[k]
-		if channel.AccountID() != accountID {
-			continue
-		}
-		if found != nil {
-			return nil, false // 重名
-		}
-		found = channel
-	}
-	return found, found != nil
 }
 
 // ResolveTargetParams 用户在命令行给出的寻址选择器。

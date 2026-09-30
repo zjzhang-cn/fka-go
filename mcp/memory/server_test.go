@@ -35,7 +35,7 @@ func newTestDB(t *testing.T) *store.DB {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	return store.New(conn, path)
+	return store.New(conn)
 }
 
 // insertMemory 记一条 public 记忆。

@@ -287,7 +287,12 @@ func (p *Provider) pickSlot(selector string) (int, error) {
 	if selector != "" && selector != "next" {
 		index, err := strconv.Atoi(selector)
 		if err != nil || index < 1 || index > maxAccountSlots {
-			return 0, fmt.Errorf("账号槽位要填 1 到 %d 之间的数字，收到 %q", maxAccountSlots, selector)
+			// **用 channels.LoginError**：「槽位号填错了」是用户照着 Hint 就能改的事，
+			// 而分类（KindLogin）与怎么办（Hint）正是接缝为这类失败留的
+			// ——以前这里返的是裸 fmt.Errorf，CLI 只能把错误原文再念一遍
+			return 0, channels.LoginError(
+				fmt.Sprintf("用 --account 指定 1 到 %d 之间的槽位号", maxAccountSlots),
+				"账号槽位要填 1 到 %d 之间的数字，收到 %q", maxAccountSlots, selector)
 		}
 		return index, nil
 	}
@@ -300,7 +305,8 @@ func (p *Provider) pickSlot(selector string) (int, error) {
 		}
 		return index, nil
 	}
-	return 0, fmt.Errorf("%d 个槽位都用满了", maxAccountSlots)
+	return 0, channels.LoginError("先删掉 .env 里不再用的账号，或用 --account 指定一个空槽位",
+		"%d 个槽位都用满了", maxAccountSlots)
 }
 
 func (p *Provider) loginBaseURL() string {

@@ -74,18 +74,15 @@ func (s *source) ID() string    { return "mcp" }
 func (s *source) Label() string { return "MCP（外部工具）" }
 
 func (s *source) List(ctx context.Context, tc tools.Context) ([]tools.Spec, error) {
-	if err := s.ensure(ctx); err != nil {
-		return nil, err
-	}
+	s.ensure(ctx)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]tools.Spec(nil), s.specs...), nil
 }
 
 func (s *source) Call(ctx context.Context, name string, args map[string]any, tc tools.Context) (tools.Result, error) {
-	if err := s.ensure(ctx); err != nil {
-		return tools.Result{}, err
-	}
+	s.ensure(ctx)
 
 	s.mu.Lock()
 	locator, known := s.toolIndex[name]
@@ -136,18 +133,23 @@ func (s *source) Close() error {
 }
 
 // ensure 惰性连接：第一次列工具时才连，连一次后缓存。
-func (s *source) ensure(ctx context.Context) error {
+//
+// **不返错**：连不上某个服务器只该让它的工具缺席（每个连接失败都在 connectOne 里
+// 记过一条 Warn），而不该让整张工具表消失。以前这个函数签名上有一个 `error`，
+// 而它**永远是 nil**——一个从不使用的错误通道比没有更糟：读的人会以为「上面处理了」。
+func (s *source) ensure(ctx context.Context) {
 	s.mu.Lock()
 	if s.ready {
 		s.mu.Unlock()
-		return nil
+		return
 	}
 	s.mu.Unlock()
 
 	// 顺序固定：map 遍历是随机的，而**服务器连上的顺序会进日志**。
 	// 随机顺序让「同一个配置两次启动日志不一样」，多账号排查时很误导
-	names := make([]string, 0, len(s.connectServers()))
-	for name := range s.connectServers() {
+	servers := s.connectServers()
+	names := make([]string, 0, len(servers))
+	for name := range servers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -166,7 +168,6 @@ func (s *source) ensure(ctx context.Context) error {
 	s.mu.Lock()
 	s.ready = true
 	s.mu.Unlock()
-	return nil
 }
 
 // connectServers 拿配置快照。加这把锁是为了 ensure 的并行分支读到的 map

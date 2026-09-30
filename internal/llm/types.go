@@ -107,26 +107,6 @@ type ChatMessage struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
-// HistoryMessage 历史里的一条（只有文本与角色，没有工具）。
-type HistoryMessage struct {
-	Role Role
-	Text string
-}
-
-// History 这一段历史是怎么选出来的。落进 transcript，解释「为什么带了这些」。
-type History struct {
-	Messages []HistoryMessage
-	// Mode 轮次边界模式：quote / time / all。见 messages/history 的策略
-	Mode string
-	// GapMinutes 仅 time 模式有意义
-	GapMinutes *int
-	// ChatMessages 从会话文件读回的**完整消息**（含工具调用与工具结果），逐字原样。
-	//
-	// 有它时优先于 Messages：后者是从数据库重建的有损版本，而前者保留了模型当时
-	// 看到的一切。两条路共用 LoadHistoryPrefix，哪个优先由那里的规则决定。
-	ChatMessages []ChatMessage
-}
-
 // ChatResult 一次带工具的调用结果：要么说话，要么要工具，要么两者都有。
 type ChatResult struct {
 	Content   string
@@ -150,8 +130,6 @@ type CompressionResult struct {
 	Messages []ChatMessage
 	// Dropped 被整条丢掉的条数（只从最老的丢，留下的一条都不改写）
 	Dropped int
-	// EstimatedTokens 估算 token 数
-	EstimatedTokens int
 }
 
 // SessionHistoryStore 会话历史的持久化：**每个 session 一个文件，原样存模型看到的完整消息**。

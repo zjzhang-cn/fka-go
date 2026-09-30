@@ -292,7 +292,7 @@ func newFixtureWithAccounts(t *testing.T, answer string, accounts ...string) *fi
 
 // deliver 模拟渠道来了一条消息，并等答复落地。
 //
-// **顺序与生产一致**：先 Subscribe，再 StartAll。反过来会���一个丢消息的窗口——
+// **顺序与生产一致**：先 Subscribe，再 StartAll。反过来会有一个丢消息的窗口——
 // 渠道一开收就可能来消息，而那时还没有订阅者。
 //
 // 消费循环也在**另一个 goroutine**里跑，和 app.Serve 一样。这不是形式：接缝的投递

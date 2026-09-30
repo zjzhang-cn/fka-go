@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,6 +46,12 @@ func runLogin(ctx context.Context, parsed cliArgs) int {
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "登录失败："+err.Error())
+		// 渠道错误带着 Hint——**只报错不指路等于没帮上忙**。这一条对登录尤其要紧：
+		// 「槽位号写错了」与「二维码过期了」用户要做的事完全不同
+		var channelErr *channels.Error
+		if errors.As(err, &channelErr) && channelErr.Hint != "" {
+			fmt.Fprintln(os.Stderr, "  "+channelErr.Hint)
+		}
 		return exitFail
 	}
 
