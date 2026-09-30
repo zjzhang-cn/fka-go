@@ -118,8 +118,21 @@ type Logger struct {
 	onCritical func(message string, ctx Context)
 }
 
-// Logger 进程单例。
-var logger = newLogger(LogDir())
+// logger 进程单例。
+//
+// ## 为什么是**惰性**的，而不是在包级变量上直接构造
+//
+// 以前这里是 `var logger = newLogger(LogDir())`：副作用发生在 **import 的那一刻**
+// ——`MkdirAll` 建日志目录、`OpenFile` 打开当天的文件。于是 `fka version`、`fka help`
+// 这些只读子命令也会在自己的安装根下建一个 `logs/` 并开一个句柄，而它们一个字都不
+// 会写。**副作用该发生在「谁要用日志」上，不是「谁 import 了我」上。**
+//
+// 惰性还顺手把测试从「import 顺序决定日志目录」里解放出来：只有真的打日志才会去
+// 解析安装根。
+var (
+	loggerMu sync.Mutex
+	logger   *Logger
+)
 
 func newLogger(dir string) *Logger {
 	l := &Logger{dir: dir}
@@ -127,8 +140,16 @@ func newLogger(dir string) *Logger {
 	return l
 }
 
-// Log 返回进程级 logger。
-func Log() *Logger { return logger }
+// Log 返回进程级 logger。**第一次调用时才建**（见上面那段）。
+func Log() *Logger {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+
+	if logger == nil {
+		logger = newLogger(LogDir())
+	}
+	return logger
+}
 
 func (l *Logger) init() {
 	_ = os.MkdirAll(l.dir, 0o755)
@@ -207,7 +228,7 @@ func (l *Logger) ConsoleLevel() Level {
 	if level, ok := parseLevel(os.Getenv("LOG_LEVEL")); ok {
 		return level
 	}
-	return defaultConsoleLevel
+	return DefaultConsoleLevel
 }
 
 // SetCriticalHandler 挂上 critical 的额外通道（微信告警）。**渠道层接上**。
@@ -217,8 +238,20 @@ func (l *Logger) SetCriticalHandler(fn func(message string, ctx Context)) {
 	l.onCritical = fn
 }
 
-// defaultConsoleLevel 环境变量也没给时用的级别。
-const defaultConsoleLevel = LevelDebug
+// DefaultConsoleLevel 环境变量也没给、调用方也没覆盖时用的级别。
+//
+// ## 它是**全局唯一**的那一份默认值
+//
+// `cmd/fka` 直接引用它，不再自己写一个字面量。以前两处各写一份，症状是
+// 「改一处只影响一半路径」——而漏掉的那半条路正好是 `fka tools --json`：
+// 日志插进 JSON 前面，退出码仍是 0，调用方只看到「解析失败」。
+//
+// ## 为什么是 Warn 而不是 Debug
+//
+// **CLI 的 stdout 是给人和脚本消费的结果输出**，内部日志该走日志文件
+// （那边始终全量，一行不落）。要看控制台全量就显式 `--log-level debug`
+// 或设 LOG_LEVEL——那是显式选择，与「碰巧默认太吵」不是一回事。
+const DefaultConsoleLevel = LevelWarn
 
 // currentConsoleLevel 在**每次写入时**解析，因此环境变量能覆盖到最早的那条日志。
 func (l *Logger) currentConsoleLevel() Level {
@@ -231,7 +264,7 @@ func (l *Logger) currentConsoleLevel() Level {
 	if level, ok := parseLevel(os.Getenv("LOG_LEVEL")); ok {
 		return level
 	}
-	return defaultConsoleLevel
+	return DefaultConsoleLevel
 }
 
 // timeLayout 日志行开头那个时间戳的写法。

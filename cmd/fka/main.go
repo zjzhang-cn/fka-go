@@ -60,14 +60,6 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 控制台日志级别：**先于任何子命令**定下来。
-	//
-	// 定成「先设默认、再让 --log-level 覆盖」，而不是让 applyLogLevel 自己
-	// 设——这样不给参数时的行为**一字未变**，而 `--log-level` 只是压过它。
-	//
-	// 必须早于 switch：首个入站消息可能在任何子命令的代码跑起来之前就记日志。
-	config.Log().SetConsoleLevel(defaultConsoleLevel)
-
 	// **参数只在这里解析一次**，子命令拿到的都是拆好的结果。
 	//
 	// 之前每个子命令自己扫一遍原始 args，于是「参数会不会混进别的东西」没人管：
@@ -86,6 +78,28 @@ func run(args []string) int {
 		return exitUsage
 	}
 
+	// **纯输出子命令先走掉**：它们一个字都不该记日志，而下一步「定下控制台级别」
+	// 会顺手把日志目录建起来（`config.Log()` 是惰性构造，第一次调用才建目录开文件）。
+	// 在别人机器上跑 `fka version` 却多出一个 `logs/`，那是副作用不是功能。
+	//
+	// 位置在 applyLogLevel **之后**：`fka version --log-level verbose` 仍然该按
+	// 「用法错」以 2 退出，不能因为命令本身不记日志就跳过参数校验。
+	switch parsed.command {
+	case "version":
+		return runVersion()
+	case "help", "-h", "--help":
+		printUsage()
+		return exitOK
+	}
+
+	// 其余子命令都会记日志：先把控制台级别定下来。
+	//
+	// 定成「先设默认、再让 --log-level 覆盖」，而不是让 applyLogLevel 自己
+	// 设——这样不给参数时的行为**一字未变**，而 `--log-level` 只是压过它。
+	//
+	// 必须早于下面那个 switch：首个入站消息可能在任何子命令的代码跑起来之前就记日志。
+	config.Log().SetConsoleLevel(defaultConsoleLevel)
+
 	switch parsed.command {
 	case "ask":
 		return runAsk(ctx, parsed)
@@ -95,11 +109,6 @@ func run(args []string) int {
 		return runServe(ctx, parsed)
 	case "login":
 		return runLogin(ctx, parsed)
-	case "version":
-		return runVersion()
-	case "help", "-h", "--help":
-		printUsage()
-		return exitOK
 	default:
 		fmt.Fprintf(os.Stderr, "不认识的命令：%s\n\n", parsed.command)
 		printUsage()

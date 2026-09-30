@@ -28,11 +28,24 @@ var (
 	rootPath string
 )
 
-// Home 返回安装根。**在进程内只解析一次**——它是全局不变量，反复解析
-// 会在测试里给出不一致的结果（改了 cwd 或环境变量之后）。
+// Home 返回安装根。
+//
+// ## 缓存的是**兜底锚点**，不是显式覆盖
+//
+// `FKA_HOME` 每次都现读：它是显式指定，改了就该立刻生效——这与「环境变量一读就变」
+// 的直觉一致，也让测试不必再「既 SetHome 又 t.Setenv」两件事都做（`cmd/fka` 的
+// 登录用例曾经必须那么写，注释里记着「只设 FKA_HOME 的话，先跑过哪个用例就会留下
+// 哪个的值」——那个坑就来自这里）。
+//
+// 兜底那条路才缓存：`os.Executable()` + `EvalSymlinks` 是系统调用，而它给出的锚点
+// 在进程内确实是常量。
 func Home() string {
+	if h := strings.TrimSpace(os.Getenv("FKA_HOME")); h != "" {
+		return h
+	}
+
 	rootOnce.Do(func() {
-		rootPath = resolveHome()
+		rootPath = executableDir()
 	})
 	return rootPath
 }
@@ -43,10 +56,8 @@ func SetHome(path string) {
 	rootPath = path
 }
 
-func resolveHome() string {
-	if h := strings.TrimSpace(os.Getenv("FKA_HOME")); h != "" {
-		return h
-	}
+// executableDir 兜底锚点：可执行文件所在目录，拿不到才退回 cwd。
+func executableDir() string {
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved

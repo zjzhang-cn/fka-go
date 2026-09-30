@@ -24,6 +24,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -166,8 +167,13 @@ func Build(opts Options) *App {
 //
 // **这里新增一行就是新增一个可选模型实现**，而这是全仓唯一允许 import 具体 provider
 // 的地方之一（另一个是 cmd/fka 里打印 host 的那处）。
+//
+// `Reasoning: os.Stderr` 是**装配根该做的那个决定**：推理是过程信息，而 stdout 只该有
+// 结果（`fka ask` 的答案、`fka tools --json` 的 JSON）。以前 provider 直接 `fmt.Print`
+// 到 stdout，于是 `fka ask > 答案.txt` 里混着半截推理。想彻底关掉用
+// `LLM_SHOW_REASONING=0`。
 func defaultLLMProviders() []llm.Provider {
-	return []llm.Provider{llmopenai.Provider{}}
+	return []llm.Provider{llmopenai.Provider{Reasoning: os.Stderr}}
 }
 
 // registerLLM 从候选里挑第一个配好的。

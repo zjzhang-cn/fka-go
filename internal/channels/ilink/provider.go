@@ -12,6 +12,7 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/channels/ilink/bot"
+	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // maxAccountSlots 一个安装最多支持几个账号。
@@ -101,8 +102,16 @@ func (p *Provider) pollerFor() pollerFor {
 }
 
 // cursorPath 游标文件路径。
+//
+// **安装根只认 `internal/config` 一处**：以前这里自己实现了一遍 `FKA_HOME > 可执行
+// 文件目录 > cwd`，而那份实现比 config 少一层兜底（没有 `EvalSymlinks`、没有 cwd
+// 回退）。同一份安装里两处各解析一次，迟早会在某个启动方式下指到不同的盘上——
+// 而那正是 AGENTS.md 列在最前面的那个坑。
 func (p *Provider) cursorPath() string {
-	return filepath.Join(dataDir(p.DataDir), "cursors.json")
+	if p.DataDir != "" {
+		return filepath.Join(p.DataDir, "cursors.json")
+	}
+	return config.DataPath("cursors.json")
 }
 
 // ResolveAccount 把用户给的账号选择器（`2` / `account_002`）解析成账号 id。
@@ -229,7 +238,7 @@ func (p *Provider) Login(params channels.LoginParams) (any, error) {
 
 	// **先落盘再接进服务**：凭证写不进 .env 的话，重启后账号就消失了，
 	// 而用户会以为「登录成功了但消息收不到」
-	if err := bot.SaveCredentials(bot.DefaultEnvPath(), index, credentials); err != nil {
+	if err := bot.SaveCredentials(config.EnvPath(), index, credentials); err != nil {
 		return nil, err
 	}
 
@@ -326,18 +335,4 @@ func AccountsFromEnv(dataDir string) []bot.WeixinAccount {
 		out = append(out, account)
 	}
 	return out
-}
-
-// dataDir 运行时数据目录。
-func dataDir(override string) string {
-	if override != "" {
-		return override
-	}
-	if home := strings.TrimSpace(os.Getenv("FKA_HOME")); home != "" {
-		return filepath.Join(home, "data")
-	}
-	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "data")
-	}
-	return "data"
 }

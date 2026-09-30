@@ -230,6 +230,28 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@# 整条 smoke 于是挂在「打印工具列表」上，跟渠道接没接上毫无关系。
 	@$(FKA) tools > $(smoke_dir)/tools.txt
 	@head -3 $(smoke_dir)/tools.txt
+	@# **结构化输出不许被日志污染**：`--json` 的第一个字节必须是 `{`。
+	@# 默认控制台级别一旦退回 info/debug，日志就插到 JSON 前面，而**退出码仍是 0**
+	@# ——调用方只看到「JSON 解析失败」，看不出是日志干的。这一步是那条的闸门。
+	@$(FKA) tools --json > $(smoke_dir)/tools.json
+	@if [ "$$(head -c 1 $(smoke_dir)/tools.json)" = "{" ]; then \
+		echo "$(BOLD)✓$(RESET) tools --json 从 JSON 开头，没被日志污染"; \
+	else \
+		echo "$(BOLD)✗$(RESET) tools --json 被日志污染了，第一行是："; \
+		head -1 $(smoke_dir)/tools.json; exit 1; \
+	fi
+	@echo
+	@# **只读子命令零副作用**：`version` 连日志目录都不该建。`config.Log()` 是惰性
+	@# 构造（import 不产生 IO），而 CLI 里那句「定下控制台级别」会把它唤醒——纯输出
+	@# 命令必须在那之前走掉。这条只能在**独立进程**里验：同一个进程里 logger 一旦
+	@# 建过就不会再建，用例之间会互相掩盖。
+	@rm -rf $(smoke_dir)/version-home; mkdir -p $(smoke_dir)/version-home
+	@FKA_HOME=$(smoke_dir)/version-home $(FKA) version >/dev/null
+	@if [ -e $(smoke_dir)/version-home/logs ]; then \
+		echo "$(BOLD)✗$(RESET) fka version 建了 logs/ ——只读子命令不该有副作用"; exit 1; \
+	else \
+		echo "$(BOLD)✓$(RESET) fka version 零副作用（没建 logs/）"; \
+	fi
 	@echo
 	@echo "$(BOLD)── 2. 参数认错该以 2 退出，而不是混进问题 ──$(RESET)"
 	@# **不用模型就能验**，而它守的正是最容易静默失效的一件事：参数被当问题送进提示词
@@ -253,6 +275,71 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@echo
 	@echo "$(BOLD)── 4. 装上技能与 MCP server 后该看得到工具 ──$(RESET)"
 	@$(MAKE) --no-print-directory smoke-wiring
+	@echo
+	@echo "$(BOLD)── 5. 记忆 server 的端到端：记一条、跨进程查回来、越权查不到 ──$(RESET)"
+	@$(MAKE) --no-print-directory smoke-memory
+
+# JSON-RPC 报文。stdio 传输**按行分帧**，所以一行一条。
+#
+# `2025-11-25` 是 SDK 的 legacy 版本（仍走 initialize 握手），与 agent 侧
+# `internal/tools/mcp/client.go` 报的是同一个——不是随手写的字符串。
+mem_init   = {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}
+mem_inited = {"jsonrpc":"2.0","method":"notifications/initialized"}
+mem_remember = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"remember_memory","arguments":{"content":"冒烟记忆","viewer_wxid":"wx-smoke","visibility":"private"}}}
+mem_search_owner = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_memories","arguments":{"query":"冒烟","viewer_wxid":"wx-smoke"}}}
+mem_search_other = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_memories","arguments":{"query":"冒烟","viewer_wxid":"wx-other"}}}
+
+# smoke-memory 记忆 server 的**端到端**闸门：A 进程记、B 进程查回来、再验权限边界。
+#
+# ## 为什么必须是两个进程
+#
+# 那才验到「落库」——落盘、下次启动读得到。同一个进程内记得住是另一回事，
+# 而「重启后记忆还在吗」恰恰是这个 server 存在的全部意义。
+#
+# ## 为什么用协议而不是直接读 SQLite
+#
+# 那才验到 JSON-RPC 那条路：工具名、**参数名**、结果文本。而且不必依赖 `sqlite3`
+# 这个外部命令——闸门不该因为缺一个工具就整条不跑。
+#
+# ## ⚠️ stdin 不能喂完就关
+#
+# mcp-go 在输入流结束时**取消请求上下文**，边写边关会让 INSERT 以
+# `context canceled` 失败（实测）。所以最后 `sleep` 一下再关——这是这一条闸门里
+# 唯一不显然的地方。
+.PHONY: smoke-memory
+smoke-memory: build
+	@rm -rf $(smoke_dir)/memory; mkdir -p $(smoke_dir)/memory
+	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(mem_remember)'; sleep 2; } \
+		| $(FKA_MEMORY) --db $(smoke_dir)/memory/memory.sqlite \
+		> $(smoke_dir)/memory/remember.json 2> $(smoke_dir)/memory/remember.err
+	@if grep -q "已记住" $(smoke_dir)/memory/remember.json && \
+			grep -q "只有你自己能问到" $(smoke_dir)/memory/remember.json; then \
+		echo "$(BOLD)✓$(RESET) 写一条 private：$$(grep -o '已记住[^"]*' $(smoke_dir)/memory/remember.json)"; \
+	else \
+		echo "$(BOLD)✗$(RESET) 记忆没写进去（或 visibility 没照实落）："; \
+		cat $(smoke_dir)/memory/remember.json; \
+		tail -5 $(smoke_dir)/memory/remember.err; exit 1; \
+	fi
+	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(mem_search_owner)' '$(mem_search_other)'; sleep 2; } \
+		| $(FKA_MEMORY) --db $(smoke_dir)/memory/memory.sqlite \
+		> $(smoke_dir)/memory/search.json 2> $(smoke_dir)/memory/search.err
+	@if grep '"id":3' $(smoke_dir)/memory/search.json | grep -q "冒烟记忆"; then \
+		echo "$(BOLD)✓$(RESET) 另一个进程查回来了（真的落库了）"; \
+	else \
+		echo "$(BOLD)✗$(RESET) 另一个进程查不到："; cat $(smoke_dir)/memory/search.json; exit 1; \
+	fi
+	@if grep '"id":4' $(smoke_dir)/memory/search.json | grep -q "没有找到"; then \
+		echo "$(BOLD)✓$(RESET) 别人查不到（权限过滤在真实链路上生效）"; \
+	else \
+		echo "$(BOLD)✗$(RESET) 越权查到了别人的记忆——这是数据泄漏："; \
+		grep '"id":4' $(smoke_dir)/memory/search.json; exit 1; \
+	fi
+	@if [ "$$(head -c 1 $(smoke_dir)/memory/search.json)" = "{" ]; then \
+		echo "$(BOLD)✓$(RESET) stdout 只有 JSON-RPC 帧，日志没混进来"; \
+	else \
+		echo "$(BOLD)✗$(RESET) stdout 被日志污染了，协议流就此报废："; \
+		head -1 $(smoke_dir)/memory/search.json; exit 1; \
+	fi
 
 # smoke-wiring 单独跑第 4 步。**这是能力链路唯一的自动闸门**——
 # 「技能读到了吗」「MCP server 连上了吗」「mcp.json 里的 cwd 生效了吗」这三件事，

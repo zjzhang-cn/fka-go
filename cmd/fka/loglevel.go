@@ -21,10 +21,11 @@ const logLevelEnv = "LOG_LEVEL"
 
 // defaultConsoleLevel 不给 --log-level / LOG_LEVEL 时的控制台级别。
 //
-// **CLI 的 stdout 是给人和脚本消费的结果输出**，所以这个默认值要压住内部日志的
-// 噪音；而日志文件那边**始终全量**，一行不落。要看全部就在命令行显式要：
-// `fka serve --log-level debug`。
-const defaultConsoleLevel = config.LevelDebug
+// **值只有一处出处**：`config.DefaultConsoleLevel`（那边是 Warn）。
+// 这里刻意不再写字面量——两处各写一份时，改一处只会影响一半路径，
+// 而漏掉的那半条路正好是 `fka tools --json`：日志插进 JSON 前面，
+// 退出码却仍是 0，调用方只看到「解析失败」，看不出是日志干的。
+const defaultConsoleLevel = config.DefaultConsoleLevel
 
 // logLevels 合法取值。**印在用法错误里**——
 // 让人去翻文档确认「verbose 行不行」比直接列出来更烦。

@@ -146,13 +146,35 @@ func HostOf(rawURL string) string {
 	return parsed.Host
 }
 
-// Provider OpenAI 兼容 provider。**零字段**——以前那个 SystemPrompt 只服务于已删的
+// Provider OpenAI 兼容 provider。
+//
+// **零配置字段是刻意的**（除了下面这个 writer）：以前那个 SystemPrompt 只服务于已删的
 // 单发路径，而它一旦有字段，装配根就得知道每个 provider 怎么配。
-type Provider struct{}
+type Provider struct {
+	// Reasoning 推理片段写到哪。**nil = os.Stderr**。
+	//
+	// 放在这里而不是写死 `fmt.Print`，是因为「往哪写」是**部署事实**：
+	// CLI 的 stdout 只该有结果（`fka ask` 的答案、`fka tools --json` 的 JSON），
+	// 而推理是过程信息。装配根注入（`internal/app` 的 `defaultLLMProviders`），
+	// 这样 `fka ask > 答案.txt` 拿到的是干净的答案。
+	//
+	// 想彻底关掉推理输出用 `LLM_SHOW_REASONING=0`（见 `ReasoningVisible`）。
+	Reasoning io.Writer
+}
 
 func (Provider) ID() string { return "openai" }
 
-func (Provider) ReadConfig() (llm.Config, bool) { return ReadConfig() }
+func (p Provider) ReadConfig() (llm.Config, bool) { return ReadConfig() }
+
+// reasoningWriter 推理输出到哪：注入的 writer，没注入就 stderr。
+//
+// **绝不默认 stdout**——那正是这个字段存在的原因。
+func (p Provider) reasoningWriter() io.Writer {
+	if p.Reasoning != nil {
+		return p.Reasoning
+	}
+	return os.Stderr
+}
 
 // newClient 按配置造 SDK 客户端。
 //
@@ -246,7 +268,7 @@ func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 			request.ToolChoice = "auto"
 		}
 
-		result, err := postCompletion(ctx, client, cfg, request, host)
+		result, err := postCompletion(ctx, client, cfg, request, host, p.reasoningWriter())
 		if err != nil {
 			return llm.ChatResult{}, err
 		}
@@ -279,6 +301,7 @@ func postCompletion(
 	cfg llm.Config,
 	request goopenai.ChatCompletionRequest,
 	host string,
+	reasoningOut io.Writer,
 ) (llm.ChatResult, error) {
 	overallDur := time.Duration(cfg.TimeoutMs) * time.Millisecond
 	idleDur := time.Duration(cfg.StreamTimeoutMs) * time.Millisecond
@@ -317,7 +340,7 @@ func postCompletion(
 		"timeoutMs": cfg.TimeoutMs, "streamTimeoutMs": cfg.StreamTimeoutMs,
 	}))
 
-	sink := newReasoningSink()
+	sink := newReasoningSink(reasoningOut)
 	var (
 		content   strings.Builder
 		reasoning strings.Builder
@@ -444,13 +467,23 @@ func wrapRequestError(
 	return fmt.Errorf("模型请求失败（%s）：%s", host, SanitizeError(err, cfg))
 }
 
-// reasoningSink 把推理片段写到**前台控制台**：首块打一次 `[推理] ` 前缀，之后逐块
-// 原样输出；流结束时再喂一个换行收尾。
+// reasoningSink 把推理片段写到**注入的那个 writer**：首块打一次 `[推理] ` 前缀，
+// 之后逐块原样输出；流结束时再喂一个换行收尾。
+//
+// ## 为什么是注入的，而不是直接 fmt.Print
+//
+// 这里以前直接往**进程 stdout** 写。而 stdout 是 CLI 的结果输出通道
+// （`fka ask` 把答案打在那儿，`fka tools --json` 把 JSON 打在那儿）——
+// 推理混进去之后，`fka ask > 答案.txt` 里就有半截推理，而重定向到文件的部署会
+// 得到一份「既不是日志也不是结果」的东西。
+//
+// 库代码不该往 stdout 写字：这件事由**装配根**决定（见 `internal/app` 里
+// `Provider.Reasoning` 的赋值）。
 //
 // LLM_SHOW_REASONING=0 时是空操作——重定向日志、CLI 或不想看的部署可以关掉。
 type reasoningSink func(text string)
 
-func newReasoningSink() reasoningSink {
+func newReasoningSink(out io.Writer) reasoningSink {
 	if !ReasoningVisible() {
 		return func(string) {}
 	}
@@ -460,10 +493,10 @@ func newReasoningSink() reasoningSink {
 			return
 		}
 		if !started {
-			fmt.Print("[推理] ")
+			fmt.Fprint(out, "[推理] ")
 			started = true
 		}
-		fmt.Print(text)
+		fmt.Fprint(out, text)
 	}
 }
 

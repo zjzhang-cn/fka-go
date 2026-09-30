@@ -254,19 +254,12 @@ func checkQRCodeStatus(ctx context.Context, c *client, token string) (Credential
 
 // ── 凭证落盘 ────────────────────────────────────────────
 
-// DefaultEnvPath 默认写哪个 `.env`——**安装根下的那个**，与 config.LoadEnv 读的是同一份。
+// 写哪个 `.env` 由调用方给：**安装根下的那一份**（`config.EnvPath()`），与
+// `config.LoadEnv` 读的是同一个。
 //
-// 不能用相对路径：服务可能在任意 cwd 下被启动，落到别处的话，**本次登录看着成功，
-// 重启后账号却消失**——而凭证可能还写进了一个没人管理的文件。
-func DefaultEnvPath() string {
-	if home := strings.TrimSpace(os.Getenv("FKA_HOME")); home != "" {
-		return filepath.Join(home, ".env")
-	}
-	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), ".env")
-	}
-	return ".env"
-}
+// 这里以前自己实现了一遍安装根解析（`FKA_HOME > 可执行文件目录 > "."`）。同一份
+// 安装里两处各解析一次，迟早在某个启动方式下指到不同的盘上——而「登录看着成功、
+// 重启后账号消失」正是那个坑的表现。所以路径**没有默认值**，调用方必须显式传。
 
 // SaveCredentials 把登录凭证写进 `.env` 的对应账号块。
 func SaveCredentials(envPath string, accountIndex int, credentials Credentials) error {

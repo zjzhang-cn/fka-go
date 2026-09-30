@@ -12,7 +12,6 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/channels/ilink"
-	"github.com/zjzhang-cn/fka-go/internal/channels/ilink/bot"
 	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
@@ -50,7 +49,7 @@ func runLogin(ctx context.Context, parsed cliArgs) int {
 	}
 
 	fmt.Println()
-	fmt.Println("登录成功。凭证已写进 " + bot.DefaultEnvPath())
+	fmt.Println("登录成功。凭证已写进 " + config.EnvPath())
 	if report, ok := result.(map[string]any); ok {
 		fmt.Printf("账号 %v（%v）\n", report["accountId"], report["status"])
 	}
