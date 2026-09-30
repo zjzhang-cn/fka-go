@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,13 +69,37 @@ func Test级别错误的类型就是用法错(t *testing.T) {
 	}
 }
 
+// useTempConsoleLevel 让用例独占控制台级别，结束时**恢复成默认值**。
+//
+// 恢复成默认值而不是「进入时的值」：`ConsoleLevel()` 会把环境变量也算进去，
+// 于是「进入时的值」可能来自上一个用例的临时环境——把它写回 override 等于把污染
+// 传给下一个用例（这里真发生过：一条用例把 error 留在了 override 上）。
+func useTempConsoleLevel(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { config.Log().SetConsoleLevel(config.DefaultConsoleLevel) })
+}
+
+// runLogLevelWiring 走一遍 main 里那段顺序：解析 → （纯输出子命令早退）→ 落地。
+//
+// **用例必须验「真正生效的结果」**：只测 `resolveLogLevel` 的话，上一版那个 bug
+// （落地被主流程的默认值压回去）永远测不出来——解析全对，级别却没用上。
+func runLogLevelWiring(t *testing.T, parsed cliArgs) error {
+	t.Helper()
+
+	level, given, err := resolveLogLevel(parsed)
+	if err != nil {
+		return err
+	}
+	useConsoleLevel(level, given)
+	return nil
+}
+
 // Test参数压过环境变量 显式选择压倒一切——和 .env 里显式设置优先于默认同一条道理
 func Test参数压过环境变量(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "error")
-	original := config.Log().ConsoleLevel()
-	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
+	useTempConsoleLevel(t)
 
-	if err := applyLogLevel(mustParse(t, "serve", "--log-level", "debug")); err != nil {
+	if err := runLogLevelWiring(t, mustParse(t, "serve", "--log-level", "debug")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != config.LevelDebug {
@@ -82,28 +107,32 @@ func Test参数压过环境变量(t *testing.T) {
 	}
 }
 
-// Test没给参数时不动默认值 **不给就该一字未变**——
-// 上一条说「先设默认再让参数覆盖」，这条钉的就是「覆盖不了时别动」
-func Test没给参数时不动默认值(t *testing.T) {
+// Test没给参数时落在默认值 **不给参数、环境变量也没有 = 默认值**（Warn）。
+//
+// 这条以前写的是「不该动级别」——那是按函数级视角写的，而 `main` 的契约从来是
+// 「落地一个默认值，再让参数覆盖它」。按旧写法，用例会依赖「上一个用例把 override
+// 留成什么」，读起来像在验契约，其实在验残留状态。
+func Test没给参数时落在默认值(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "")
-	original := config.Log().ConsoleLevel()
-	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
+	useTempConsoleLevel(t)
 
-	if err := applyLogLevel(mustParse(t, "serve")); err != nil {
+	// 先故意设成别的值：不这样的话「落地默认值」这一步看不出来
+	config.Log().SetConsoleLevel(config.LevelCritical)
+
+	if err := runLogLevelWiring(t, mustParse(t, "serve")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
-	if got := config.Log().ConsoleLevel(); got != original {
-		t.Errorf("没给参数不该动级别：%v → %v", original, got)
+	if got := config.Log().ConsoleLevel(); got != config.DefaultConsoleLevel {
+		t.Errorf("控制台级别 = %v，期望默认值 %v", got, config.DefaultConsoleLevel)
 	}
 }
 
 // Test只给环境变量也行 部署里常常不控制命令行（systemd / 容器编排）
 func Test只给环境变量也行(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "info")
-	original := config.Log().ConsoleLevel()
-	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
+	useTempConsoleLevel(t)
 
-	if err := applyLogLevel(mustParse(t, "serve")); err != nil {
+	if err := runLogLevelWiring(t, mustParse(t, "serve")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != config.LevelInfo {
@@ -115,11 +144,10 @@ func Test只给环境变量也行(t *testing.T) {
 // 都该被认到——后者虽然分派不了（args[0] 不是子命令名），但级别是**全局**的，
 // 分派失败也要先按它调好控制台
 func Test参数写在哪都认(t *testing.T) {
-	original := config.Log().ConsoleLevel()
-	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
+	useTempConsoleLevel(t)
 	t.Setenv("LOG_LEVEL", "")
 
-	if err := applyLogLevel(mustParse(t, "--log-level=debug", "serve")); err != nil {
+	if err := runLogLevelWiring(t, mustParse(t, "--log-level=debug", "serve")); err != nil {
 		t.Fatalf("等号写法该认：%v", err)
 	}
 	if got := config.Log().ConsoleLevel(); got != config.LevelDebug {
@@ -182,4 +210,63 @@ func mustParse(t *testing.T, args ...string) cliArgs {
 // 看起来只关心参数解析那一件事
 func contains(haystack string, needle string) bool {
 	return strings.Contains(haystack, needle)
+}
+
+// Test落地顺序_默认在前覆盖在后 这条钉的是**顺序**，不是解析。
+//
+// 上一版把「解析」提前到了 version/help 早退之前，落地跟着一起提前，而主流程里那句
+// 「设默认值」仍在原地——于是先落地成 debug、紧接着被默认值压回 Warn。所有函数级
+// 用例全绿，而 `fka serve --log-level debug` 与 `LOG_LEVEL=debug` 双双失效：
+// **控制台 0 行 INFO，日志文件里 19 行**（文件始终全量），看起来像「本来就没什么可看的」。
+func Test落地顺序_默认在前覆盖在后(t *testing.T) {
+	original := config.Log().ConsoleLevel()
+	t.Cleanup(func() { config.Log().SetConsoleLevel(original) })
+
+	cases := []struct {
+		name string
+		env  string
+		args []string
+		want config.Level
+	}{
+		{"参数给 debug", "error", []string{"serve", "--log-level", "debug"}, config.LevelDebug},
+		{"环境变量给 info", "info", []string{"serve"}, config.LevelInfo},
+		{"两者都没给 → 默认", "", []string{"serve"}, config.DefaultConsoleLevel},
+		{"参数压过环境变量", "error", []string{"--log-level=debug", "serve"}, config.LevelDebug},
+		{"参数写在子命令后面", "", []string{"serve", "--log-level", "debug"}, config.LevelDebug},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("LOG_LEVEL", c.env)
+			// 先故意设成别的值：不这样的话「默认在前」那一步看不出来
+			config.Log().SetConsoleLevel(config.LevelCritical)
+
+			if err := runLogLevelWiring(t, mustParse(t, c.args...)); err != nil {
+				t.Fatalf("不该报错：%v", err)
+			}
+			if got := config.Log().ConsoleLevel(); got != c.want {
+				t.Errorf("控制台级别 = %v，期望 %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Test纯输出子命令不为日志建目录 校验在前、落地在后，所以 `version` 那条路
+// 一次都不该碰 `config.Log()`（惰性构造会建 logs/）。
+func Test纯输出子命令不为日志建目录(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FKA_HOME", home)
+	t.Setenv("LOG_LEVEL", "")
+
+	// 走 main 里 version 那条路：解析 → 早退（不落地）
+	level, given, err := resolveLogLevel(mustParse(t, "version", "--log-level", "debug"))
+	if err != nil {
+		t.Fatalf("合法级别不该报错：%v", err)
+	}
+	if !given || level != config.LevelDebug {
+		t.Fatalf("该认下 debug：given=%v level=%v", given, level)
+	}
+	if _, err := os.Stat(filepath.Join(home, "logs")); !os.IsNotExist(err) {
+		t.Errorf("version 不该建 logs/（err=%v）", err)
+	}
 }

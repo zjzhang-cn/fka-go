@@ -57,36 +57,48 @@ func parseLogLevel(value string) (config.Level, error) {
 	return 0, &errLogLevel{value: value}
 }
 
-// applyLogLevel 定下**控制台**的日志级别。
+// resolveLogLevel 认下这次要用的控制台级别。**只判、不落地**。
 //
-// ## 为什么只在控制台，不动文件
+// ## 为什么「判」与「落地」必须分开
 //
-// 文件那边**始终全量**（`Logger.write` 的既有约定），是排查的底。
-// 控制台才是「这次想看多少」——`fka tools` 那种把 stdout 留给人的命令，
-// 把内部日志混进去就是污染；而 `fka serve --log-level debug` 恰恰相反，
-// 用户明确要看见全部。
+// 这两件事必须发生在**不同的时间点**：
 //
-// ## 为什么必须在分派子命令**之前**调
+//   - 参数校验要早于纯输出子命令（version/help）返回——`fka version --log-level verbose`
+//     该按用法错以 2 退出，不能因为那个命令自己不记日志就跳过校验；
+//   - 而级别落地要**晚于**它们返回——`config.Log()` 是惰性构造，第一次调用就会
+//     建 `logs/` 目录。在别人机器上跑 `fka version` 却多一个目录，那是副作用不是功能。
 //
-// `main` 一进来就 `SetConsoleLevel(LevelWarn)`，而首个被处理的入站消息可能
-// 在任何子命令的代码跑起来之前就记日志。所以这一调用必须比 switch 更早。
-//
-// 返回 errLogLevel 时**别自己打印也别退出**——调用方在 `run` 里统一处理退出码，
-// 这里只管判。
-func applyLogLevel(parsed cliArgs) error {
+// 以前它俩挤在一个 `applyLogLevel` 里，于是校验被提到了前面、落地跟着一起提前，
+// 而主流程里那句「设默认值」仍在原地——**先落地成 debug、紧接着被默认值压回去**。
+// 症状是 `--log-level debug` 与 `LOG_LEVEL=debug` 双双失效，而解析、校验、退出码
+// 全是对的：用例只测那个函数，覆盖它的却是 main 里的下一句，于是全绿。
+func resolveLogLevel(parsed cliArgs) (config.Level, bool, error) {
 	// 参数优先于环境变量：显式选择压倒一切，与 `.env` 里的显式设置优先于
 	// 默认值是同一条道理
 	value := flagOrEnv(parsed, logLevelFlag, logLevelEnv, "")
 	if value == "" {
-		return nil
+		return 0, false, nil
 	}
 
 	level, err := parseLogLevel(value)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
-	config.Log().SetConsoleLevel(level)
-	return nil
+	return level, true, nil
+}
+
+// useConsoleLevel 落地控制台级别：**先默认，再让参数/环境变量覆盖**。
+//
+// ## 顺序就是这条链路的全部内容
+//
+// 写反的后果不是报错，而是「参数静默失效」：控制台一行不多，而日志文件里什么都有
+// （文件那边**始终全量**，见 `Logger.write` 的既有约定），于是看起来像「这条链路
+// 没问题，只是没日志可看」。凡是要定级别的地方，都该照这个顺序写。
+func useConsoleLevel(level config.Level, given bool) {
+	config.Log().SetConsoleLevel(defaultConsoleLevel)
+	if given {
+		config.Log().SetConsoleLevel(level)
+	}
 }
 
 // printLogLevelUsage 在用法里说明这个参数。

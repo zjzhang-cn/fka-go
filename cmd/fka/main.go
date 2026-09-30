@@ -27,7 +27,6 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/app"
 	"github.com/zjzhang-cn/fka-go/internal/channels"
-	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // 由 `make build` 通过 -ldflags -X 注入。默认值给 `go build` 直编的人用。
@@ -72,7 +71,10 @@ func run(args []string) int {
 		printUsage()
 		return exitUsage
 	}
-	if err := applyLogLevel(parsed); err != nil {
+	// **只判不落地**：校验要早于 version/help 早退（`fka version --log-level verbose`
+	// 该以 2 退出），而落地要晚于它们（`config.Log()` 会顺手建 `logs/`）。
+	level, levelGiven, err := resolveLogLevel(parsed)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		printUsage()
 		return exitUsage
@@ -92,13 +94,13 @@ func run(args []string) int {
 		return exitOK
 	}
 
-	// 其余子命令都会记日志：先把控制台级别定下来。
+	// 其余子命令都会记日志：现在把控制台级别定下来（默认，或参数/环境变量给的）。
 	//
-	// 定成「先设默认、再让 --log-level 覆盖」，而不是让 applyLogLevel 自己
-	// 设——这样不给参数时的行为**一字未变**，而 `--log-level` 只是压过它。
+	// **顺序是「先默认、再覆盖」**，见 `useConsoleLevel`：写反过一次，
+	// 症状是 `--log-level debug` 与 `LOG_LEVEL=debug` 双双静默失效。
 	//
 	// 必须早于下面那个 switch：首个入站消息可能在任何子命令的代码跑起来之前就记日志。
-	config.Log().SetConsoleLevel(defaultConsoleLevel)
+	useConsoleLevel(level, levelGiven)
 
 	switch parsed.command {
 	case "ask":
