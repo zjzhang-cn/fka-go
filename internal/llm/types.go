@@ -1,29 +1,38 @@
 // Package llm 是语言模型的**契约**：业务层与「怎么跟模型服务说话」之间的那条线。
 //
 // 这里只有类型与 provider 形状，没有实现。OpenAI 兼容的实现（请求体、响应解析、
-// /chat/completions）在 llm/openai；拼提示词与压缩历史这些与供应商无关的纯函数在
-// history.go。
+// /chat/completions）在 llm/openai；拼提示词与压缩历史这些纯函数在 history.go。
 //
-// ## 为什么 composer 与 chat 都要由 provider 产出
+// ## 「中立」这个词只对一半成立，务必读这一段
 //
-// 对外同时给两样东西：单发的 Compose（问题 + 片段 → 答案）与带工具的 Chat
-// （消息列表进、消息列表出）。它们的**请求与响应形状是供应商相关的**（单发允许空
-// 答案、带工具要求 content 或 tool_calls 二选一），所以两者都由 provider 造，
-// 而不是共用一个「通用补全」再在上层拆。
+// ChatMessage / ToolCall 的 json tag **逐字就是 OpenAI /chat/completions 的消息
+// 形状**，而且 `internal/llm/session.go` 直接把这个结构体序列化进
+// `data/history/*.jsonl`。也就是说：**磁盘上的历史就是某一家协议的线格式**，
+// 而它必须逐字重放（AGENTS.md：会话历史逐字重放，provider 的前缀缓存认「从第一条
+// 起逐字不变的前缀」）。
+//
+// 所以本包的形状**不是**「所有 provider 的交集」，而是「OpenAI 兼容协议」。
+// 加一个形状不同的 provider（内容块式的 /v1/messages 之类）时，正确做法是**在那个
+// provider 包内翻译**，不要动这里的类型——动它就是改线格式，而线格式已经落盘。
+//
+// `internal/llm/boundary_test.go` 用 AST 扫 import 守住同一条：接缝不许伸手到实现。
 package llm
 
 import "context"
 
-// Passage 片段的最小形状。**刻意不依赖 qa 包的类型**——这一层在它下面。
-type Passage struct {
-	Filename string
-	// Text 正文片段。可能为空（关键词只命中了文件名）
-	Text string
-}
+// MaxAnswerTokens 回答的字数上限，给模型生成时留的位置。
+//
+// **它是一条产品决定，不是某家的限制**：微信里一段话不必更长。放在这里而不是
+// llm/openai，是因为 `internal/agent` 算上下文预算时要用它——那一层不认识任何
+// provider（见 boundary_test.go）。
+const MaxAnswerTokens = 800
 
 // Config 一条能用得上的配置。缺任何必填项时对应 provider 的 ReadConfig 返回 false。
 type Config struct {
-	// BaseURL 含版本段，如 https://api.openai.com/v1。调用时拼 /chat/completions
+	// BaseURL 含版本段，如 https://api.openai.com/v1。
+	//
+	// 调用时在它后面拼端点。**端点名字属于实现**（本仓库的实现拼 /chat/completions），
+	// 所以这里不要写死路径。
 	BaseURL string
 	APIKey  string
 	Model   string
@@ -69,9 +78,13 @@ type ToolCall struct {
 // ChatMessage 一次请求里的一条消息。比 HistoryMessage（历史）宽：assistant 可以
 // 请求工具，还要能把工具结果回填成 RoleTool。
 //
-// **字段顺序即序列化顺序**，且刻意只用结构体、不用 map：Go 的 encoding/json 对 map
-// 会按 key 排序、对结构体按声明序输出。用 map 会让同一段逻辑两次运行产生不同字节，
-// 前缀缓存随之失效。
+// ## 字段顺序即序列化顺序，且它就是落盘格式
+//
+// 刻意只用结构体、不用 map：Go 的 encoding/json 对 map 会按 key 排序、对结构体按
+// declaration 序输出。用 map 会让同一段逻辑两次运行产生不同字节，前缀缓存随之失效。
+//
+// 这些 json tag 同时是**磁盘上 `data/history/*.jsonl` 的格式**（见 session.go），而
+// 那个文件要逐字重放。**改 tag = 改产品。**
 type ChatMessage struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
@@ -119,34 +132,6 @@ type ToolDef struct {
 // ChatClient 一次带工具的调用。tools 为空时就是普通的聊天补全。
 type ChatClient func(ctx context.Context, messages []ChatMessage, tools []ToolDef) (ChatResult, error)
 
-// Composer 一个单发函数：问题 + 片段 → 一段答案。
-type Composer func(ctx context.Context, question string, passages []Passage, callCtx *CallContext) (string, error)
-
-// CallContext 一次调用属于哪段会话/哪一轮。
-//
-// 由**调用方**（消息层）提供——会话与轮次是消息层的知识，这一层不认识 messages 表。
-// 缺席时按「一次调用一段新会话」记，日志仍写得出来。
-type CallContext struct {
-	// SessionID 会话标识：**对端**（私聊即对方在渠道里的 id）。
-	//
-	// 刻意**不用** messages.conversation_id——那个是引用推出来的「这一串接在哪句
-	// 后面」，每开一段新引用就换一个。用它命名会让同一个人的日志散成许多文件。
-	SessionID string
-	// AccountID 渠道内的账号 id。**只用于会话日志的文件名**
-	AccountID string
-	// TurnID 这一轮接的是哪条消息
-	TurnID string
-	// History 该会话的历史。nil = 单发
-	History *History
-	// QuotedText 被引用那条的正文；**只在历史里找不到它时才传**
-	QuotedText string
-	// HistoryStore 会话历史存储。由**组装根**注入——
-	//
-	// 刻意不在 provider 里自己造：存储的目录与开关是部署事实（config 组装根知道），
-	// 造在 provider 里会让「测试里不落盘」这种最常见的需求无法表达。nil = 不持久化。
-	HistoryStore SessionHistoryStore
-}
-
 // CompressionResult 收拢历史到预算内的结果。
 type CompressionResult struct {
 	Messages []ChatMessage
@@ -167,33 +152,22 @@ type SessionHistoryStore interface {
 	Append(sessionID string, accountID string, messages []ChatMessage)
 }
 
-// Probe 启动期探测结果。
-type Probe struct {
-	Available bool
-	// Hint 不可用时的原因与下一步
-	Hint string
-	// LoadMs 加载/探测耗时，成功时才有
-	LoadMs int64
-}
-
-// Provider 一种模型服务实现。Factory 形状：ReadConfig 说配没配，CreateChat/
-// CreateComposer 造出两样对外能力。
+// Provider 一种模型服务实现。
 //
-// ReadConfig 返回 false 表示**本实现未配置**（缺 key/model，或没被 LLM_PROVIDER
-// 选中），组装根据此不启用。
+// ## 三个方法，每一个都有活着的调用方
+//
+// 这条契约以前是七个：`IsDefault` / `Probe` / `Label` / `CreateComposer` 全部零调用，
+// 而 `CreateComposer` 造出的值连存放处都没人读。留着它们的意思是「每个新 provider 都得
+// 实现一遍没人调的方法」——那不是可替换，是可妨碍。
+//
+// 想加一个 provider：在 llm/<名字>/ 写一份实现，**在 `internal/app` 的默认列表里加一行**。
+// 别的包一个字都不用动（`internal/llm/boundary_test.go` 会守住这条）。
 type Provider interface {
-	// ID 种类标识，如 openai。LLM_PROVIDER 的取值
+	// ID 种类标识，如 openai。装配根用它写「接上的是哪一个」那条日志
 	ID() string
-	// Label 人类可读名称，用于日志与错误提示
-	Label() string
-	// IsDefault 没显式选用时是否作为默认
-	IsDefault() bool
-	// ReadConfig 读本实现的配置。纯函数，便于测试与 doctor 复用
+	// ReadConfig 读本实现的配置。纯函数，便于测试与 doctor 复用。
+	// 返回 false 表示**本实现未配置**（缺 key 或 model），装配根据此换一个或整块缺席
 	ReadConfig() (Config, bool)
 	// CreateChat 造一个带工具能力的调用函数
 	CreateChat(cfg Config) ChatClient
-	// CreateComposer 造单发 composer
-	CreateComposer(cfg Config) Composer
-	// Probe 启动探测（可选）。**永不返错**
-	Probe(ctx context.Context, cfg Config) Probe
 }

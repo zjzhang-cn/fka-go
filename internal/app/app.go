@@ -46,16 +46,12 @@ type App struct {
 	Tools tools.Service
 	// Policy 放行策略（`fka tools` 要展示）
 	Policy tools.Policy
-	// LLM 模型服务。**没配时 LLMReady 为 false**
-	LLM llm.Provider
-	// LLMConfig 模型配置。没配时是零值
-	LLMConfig llm.Config
+	// LLMProvider 接上的模型实现（**没配模型时是空串**）。给 `fka tools` 与错误提示用
+	LLMProvider string
 	// LLMReady 有没有配好模型服务
 	LLMReady bool
 	// Chat 带工具的调用函数。LLMReady 时非 nil
 	Chat llm.ChatClient
-	// Composer 单发 composer。LLMReady 时非 nil
-	Composer llm.Composer
 	// Agent 工具循环。LLM_TOOLS=off 时为 nil
 	Agent *agent.Runner
 	// History 会话历史存储。SESSION_HISTORY=0 时为 nil
@@ -68,6 +64,10 @@ type App struct {
 	McpConfigured bool
 	// SkillsDir 技能目录（按配置顺序，后一个覆盖前一个的同名技能）
 	SkillsDir []string
+
+	// llmConfig 装配时读到的模型配置。**只在 Build 内部用**——以前它是导出的
+	// `LLMConfig`，而除了 Build 自己没有一处读过它。
+	llmConfig llm.Config
 
 	// Channels 渠道接缝。**永远非 nil**——没有配任何渠道时它是个空接缝，
 	// 不是缺席。接缝是「渠道从哪来」的唯一出口，业务层只认它。
@@ -83,6 +83,13 @@ type App struct {
 type Options struct {
 	// SkipEnv 不读 .env。测试与嵌入式用法
 	SkipEnv bool
+	// LLMProviders 模型实现的候选。**空 = 用 defaultLLMProviders()**。
+	//
+	// 这就是「换一个模型实现」的唯一改动点：加一个实现，在这里多一行（或整个列表
+	// 换掉）。别的包不认识任何 provider——`internal/llm/boundary_test.go` 用 AST 扫
+	// import 守住这条。
+	LLMProviders []llm.Provider
+
 	// ChannelProviders 要接的渠道种类。**由装配调用方给**——
 	//
 	// 刻意不写配置文件：加一个渠道 = 在这里多传一个 provider，而 `cordis.yml`
@@ -114,18 +121,7 @@ func Build(opts Options) *App {
 	app.registerMcp()
 
 	// ── 模型 ──────────────────────────────────────────────
-	provider := llmopenai.Provider{}
-	app.LLM = provider
-
-	if cfg, ok := provider.ReadConfig(); ok {
-		app.LLMReady = true
-		app.LLMConfig = cfg
-		app.Chat = provider.CreateChat(cfg)
-		app.Composer = provider.CreateComposer(cfg)
-	} else {
-		// 缺 key 或 model 就整块缺席，问答退回「回原文片段」
-		config.Log().Info(config.TypeSYS, "没配 LLM_API_KEY / LLM_MODEL，问答将不走模型", config.Context{})
-	}
+	app.registerLLM(opts.LLMProviders)
 
 	// ── 渠道 ──────────────────────────────────────────────
 	app.Channels = channels.NewService()
@@ -138,18 +134,21 @@ func Build(opts Options) *App {
 	}
 
 	// ── 工具循环 ──────────────────────────────────────────
+	//
+	// **Agent 永远非 nil**（见 agent 包头）。所以这里不能再判指针，只能问它自己。
+	// 没配模型时连 NewRunner 都不调——那会让它拿一个空 chat 去构造。
 	if app.LLMReady {
 		app.Agent = agent.NewRunner(app.Chat, app.Tools, agent.RunnerOptions{
-			ContextTokens:   app.LLMConfig.ContextTokens,
+			ContextTokens:   app.llmConfig.ContextTokens,
 			SessionHistory:  app.History,
 			SystemPrompt:    prompts.Agent,
-			Model:           app.LLMConfig.Model,
-			Host:            llmopenai.HostOf(app.LLMConfig.BaseURL),
-			TimeoutMs:       app.LLMConfig.TimeoutMs,
-			StreamTimeoutMs: app.LLMConfig.StreamTimeoutMs,
+			Model:           app.llmConfig.Model,
+			Host:            llmopenai.HostOf(app.llmConfig.BaseURL),
+			TimeoutMs:       app.llmConfig.TimeoutMs,
+			StreamTimeoutMs: app.llmConfig.StreamTimeoutMs,
 		})
-		if app.Agent == nil {
-			config.Log().Info(config.TypeSYS, "LLM_TOOLS 已关闭，问答走单次路径", config.Context{})
+		if !app.Agent.Enabled() {
+			config.Log().Info(config.TypeSYS, "LLM_TOOLS 已关闭，问答不走工具循环", config.Context{})
 		}
 	}
 
@@ -161,6 +160,52 @@ func Build(opts Options) *App {
 	app.Messages = messages.NewHandler(app.Agent, app.Tools)
 
 	return app
+}
+
+// defaultLLMProviders 默认可用的模型实现。
+//
+// **这里新增一行就是新增一个可选模型实现**，而这是全仓唯一允许 import 具体 provider
+// 的地方之一（另一个是 cmd/fka 里打印 host 的那处）。
+func defaultLLMProviders() []llm.Provider {
+	return []llm.Provider{llmopenai.Provider{}}
+}
+
+// registerLLM 从候选里挑第一个配好的。
+//
+// ## 为什么是「挑第一个」而不是按名字选
+//
+// 候选只有一个，所以「选谁」与「有没有」是同一件事。想要按环境变量选实现时，
+// `llm.Provider.ID()` 就是为此留的（它是这条契约上唯一为了**辨识**而存在的方法）。
+// 现在不实现那条：没有第二个实现时它无法被验证，只会是一段没人跑过的分支。
+func (a *App) registerLLM(candidates []llm.Provider) {
+	if len(candidates) == 0 {
+		candidates = defaultLLMProviders()
+	}
+
+	for _, provider := range candidates {
+		cfg, ok := provider.ReadConfig()
+		if !ok {
+			// **不是错**：这个实现没配好，试下一个。全试完才算缺席
+			continue
+		}
+		a.LLMReady = true
+		a.LLMProvider = provider.ID()
+		a.Chat = provider.CreateChat(cfg)
+		a.llmConfig = cfg
+		return
+	}
+
+	config.Log().Info(config.TypeSYS, "没配 LLM_API_KEY / LLM_MODEL，问答将不走模型", config.Context{
+		"candidates": providerIDs(candidates),
+	})
+}
+
+func providerIDs(providers []llm.Provider) []string {
+	ids := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		ids = append(ids, provider.ID())
+	}
+	return ids
 }
 
 // registerMcp 把 MCP 源接进注册表。

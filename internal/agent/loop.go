@@ -19,7 +19,15 @@
 // 参数不合法）则不然——那是「这一轮没查到」，转成给模型的一句话，它下一轮能换个
 // 方式再试。
 //
+// ## 这个文件只有一个入口
+//
+// `(*Runner).Run`（见下）是跑一轮的全部。**问什么、谁问**是 `RunnerInput`；
+// **依赖与部署事实**（工具表、模型、会话历史、上下文预算）都在 `Runner` 上。
+// 两者不重叠，也不再有第二份把它们各抄一遍的输入结构。
+//
 // 与 llm/openai 的分工：那边管「怎么跟接口说话」，这边管「说几轮、每轮做什么」。
+// **这个文件不 import llm/openai**——那条边曾只为 MaxAnswerTokens 一个常量存在，现已搬进
+// llm；`internal/llm/boundary_test.go` 用 AST 扫 import 守住它不会再长回来。
 package agent
 
 import (
@@ -31,7 +39,6 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
-	"github.com/zjzhang-cn/fka-go/internal/llm/openai"
 	"github.com/zjzhang-cn/fka-go/internal/prompts"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
@@ -44,13 +51,6 @@ const (
 	// 问题。
 	MaxMaxSteps = 999
 )
-
-// MaxToolResultChars 单条工具结果进模型的字符上限。
-//
-// ⚠️ **当前不生效**：2026-09-28 那次「移除工具结果字符限制」把截断去掉了，因为
-// 截断会把 `get_document` 取回的正文砍掉一半，模型据此答错。改成靠工具自己返回
-// 摘要。保留这个常量是为了让「要不要重新加截断」有据可查，而不是靠记忆。
-const MaxToolResultChars = 1200
 
 // MaxStepsAnswer 工具用完仍没收拢时的兜底话术。**如实说**，不假装是答案。
 const MaxStepsAnswer = "（查到的资料有点多，我没能收拢成一个答案。你可以把问题问得再具体一点，或者补一个限定词。）"
@@ -85,26 +85,6 @@ func ReadConfig() Config {
 	return Config{Enabled: enabled, MaxSteps: maxSteps}
 }
 
-// RunInput 跑一轮的输入。
-type RunInput struct {
-	// SessionID 会话标识
-	SessionID string
-	// AccountID 渠道内的账号 id。**只用于会话日志的文件名**
-	AccountID string
-	// TurnID 这一轮接的是哪条消息
-	TurnID string
-	// History 该会话的历史。与单发路径共用同一份选法
-	History *llm.History
-	// Question 本轮问题
-	Question string
-	// QuotedText 被引用那条的正文；**只在历史里找不到它时才传**
-	QuotedText string
-	// ContextTokens 上下文预算。0 = 不压缩
-	ContextTokens int
-	// ToolContext 这次调用能看到的全部外界
-	ToolContext tools.Context
-}
-
 // RunResult 跑一轮的结果。
 type RunResult struct {
 	Text string
@@ -122,39 +102,33 @@ const (
 	StoppedByMaxSteps = "max-steps"
 )
 
-// Deps 跑一轮要绑给循环的东西。
-type Deps struct {
-	Chat  llm.ChatClient
-	Tools tools.Service
-	// MaxSteps 覆盖配置。0 = 用 DefaultMaxSteps
-	MaxSteps int
-	// SystemPrompt 由组装根注入；空 = 取 AGENT 那条
-	SystemPrompt string
-	// Model 与 Host **仅用于日志与 transcript**。错误信息里只出现 Host，永不含 key
-	Model string
-	Host  string
-	// TimeoutMs / StreamTimeoutMs 同样仅记录进 transcript
-	TimeoutMs       int
-	StreamTimeoutMs int
-	// SessionHistory 会话历史持久化。nil = 不持久化，历史只来自 input.History
-	SessionHistory llm.SessionHistoryStore
-}
-
 // Run 跑一轮。**返错留给调用方决定降级**（见包头）。
-func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
-	maxSteps := deps.MaxSteps
+//
+// 缺席时返 ErrNoRunner——**不返 nil 结果**，所以调用点永远不会拿到一个空 RunResult
+// 然后把它当成「模型没说话」。
+func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) {
+	if !r.Enabled() {
+		return RunResult{}, ErrNoRunner
+	}
+
+	maxSteps := r.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = DefaultMaxSteps
 	}
 
-	toolDefs, err := deps.Tools.ToToolDefs(ctx, input.ToolContext)
+	// 工具看到的那份外界。**由输入里的身份与回话能力拼出来**，而不是让消息层
+	// 自己拼一个 tools.Context 递进来——那样同一个「外界」就有两个入口，
+	// 而漏掉一处身份的后果是权限过滤失效（见 tools.Context.PrincipalID）。
+	tc := tools.Context{PrincipalID: input.PrincipalID, Reply: input.Reply}
+
+	toolDefs, err := r.tools.ToToolDefs(ctx, tc)
 	if err != nil {
 		return RunResult{}, err
 	}
-	system := prompts.Compose(pickSystemPrompt(deps.SystemPrompt), deps.Tools.PromptSections(input.ToolContext))
+	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), r.tools.PromptSections(tc))
 
 	// 历史前缀：优先会话文件里逐字原样那份（含工具调用），否则退回数据库重建的那份
-	prior := llm.LoadHistoryPrefix(deps.SessionHistory, llm.HistoryKey{
+	prior := llm.LoadHistoryPrefix(r.sessionHistory, llm.HistoryKey{
 		SessionID: input.SessionID,
 		AccountID: input.AccountID,
 		History:   input.History,
@@ -164,10 +138,10 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 	// （工具一多，声明也能占掉不少）。剩下的才是历史可用的部分
 	encodedTools, _ := json.Marshal(toolDefs)
 	fixed := llm.EstimateTokens(system) + llm.EstimateTokens(input.Question) +
-		openai.MaxAnswerTokens + llm.EstimateTokens(string(encodedTools))
+		llm.MaxAnswerTokens + llm.EstimateTokens(string(encodedTools))
 	budget := 0
-	if input.ContextTokens > 0 {
-		budget = max(0, input.ContextTokens-fixed)
+	if r.ContextTokens > 0 {
+		budget = max(0, r.ContextTokens-fixed)
 	}
 	kept := llm.CompressHistory(prior, budget)
 
@@ -181,8 +155,8 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 	// toolCalls 与工具结果**，下一轮才能逐字重放这一整段前缀
 	turnStart := len(messages) - 1
 	persistTurn := func() {
-		if deps.SessionHistory != nil {
-			deps.SessionHistory.Append(input.SessionID, input.AccountID, messages[turnStart:])
+		if r.sessionHistory != nil {
+			r.sessionHistory.Append(input.SessionID, input.AccountID, messages[turnStart:])
 		}
 	}
 
@@ -198,7 +172,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 	// 看到两条意思相近的记录反而不知道该信哪条。
 	config.Log().Debug(config.TypePRM, "提示词已拼接", config.Fields(ctx, config.Context{
 		"session": input.SessionID, "systemChars": len([]rune(system)),
-		"promptSections": len(deps.Tools.PromptSections(input.ToolContext)),
+		"promptSections": len(r.tools.PromptSections(tc)),
 		"historyKept":    len(kept.Messages), "historyDropped": len(prior) - len(kept.Messages),
 		"toolDefs": len(toolDefs), "messages": len(messages),
 		"contextBudget": budget, "fixedTokens": fixed,
@@ -211,7 +185,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 	for index := 1; index <= maxSteps; index++ {
 		steps = index
 
-		result, err := deps.Chat(ctx, messages, toolDefs)
+		result, err := r.chat(ctx, messages, toolDefs)
 		if err != nil {
 			// 模型/接口的错**往上抛**：降级的措辞是调用方的知识
 			return RunResult{}, err
@@ -220,7 +194,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 		// 没有工具调用 = 它觉得可以答了。这就是最终答案
 		if len(result.ToolCalls) == 0 {
 			config.Log().Debug(config.TypeLLM, "工具循环结束：模型给出回答", config.Fields(ctx, config.Context{
-				"model": deps.Model, "steps": index,
+				"model": r.Model, "steps": index,
 				"tools": len(usedTools), "chars": len([]rune(result.Content)),
 			}))
 
@@ -247,7 +221,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 			usedTools = append(usedTools, call.Name)
 
 			// 失败也照样喂回去：模型看到「参数不合法」会自己改，这正是循环的意义
-			outcome := runToolCall(ctx, call, deps, input.ToolContext)
+			outcome := r.runToolCall(ctx, call, tc)
 			messages = append(messages, llm.ChatMessage{
 				Role:       llm.RoleTool,
 				ToolCallID: call.ID,
@@ -257,7 +231,7 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 	}
 
 	// 步数用尽：**不再给工具**，只让它基于已有结果写答案
-	return forcedAnswer(ctx, messages, deps, input, usedTools, steps, persistTurn), nil
+	return r.forcedAnswer(ctx, messages, input, usedTools, steps, persistTurn), nil
 }
 
 // forcedAnswer 步数用尽后的收尾。
@@ -265,19 +239,18 @@ func Run(ctx context.Context, input RunInput, deps Deps) (RunResult, error) {
 // 不带工具再问一次，而不是直接回一句「查不动了」——此时手上已经有若干工具结果，
 // 让模型把它们收拢成一段话，用户至少能拿到答案的一部分。这一路**故意兜错**：
 // 收尾失败也不该把整轮问答带走，回一句实话即可。
-func forcedAnswer(
+func (r *Runner) forcedAnswer(
 	ctx context.Context,
 	messages []llm.ChatMessage,
-	deps Deps,
-	input RunInput,
+	input RunnerInput,
 	usedTools []string,
 	steps int,
 	persistTurn func(),
 ) RunResult {
-	result, err := deps.Chat(ctx, messages, nil)
+	result, err := r.chat(ctx, messages, nil)
 	if err != nil {
 		config.Log().Warn(config.TypeLLM, "工具循环到达步数上限，收尾也失败了", config.Fields(ctx, config.Context{
-			"model": deps.Model, "steps": steps, "error": err.Error(),
+			"model": r.Model, "steps": steps, "error": err.Error(),
 		}))
 		return RunResult{
 			Text: MaxStepsAnswer, UsedTools: usedTools,
@@ -286,7 +259,7 @@ func forcedAnswer(
 	}
 
 	config.Log().Warn(config.TypeLLM, "工具循环到达步数上限，已用无工具收尾", config.Fields(ctx, config.Context{
-		"model": deps.Model, "steps": steps, "tools": len(usedTools),
+		"model": r.Model, "steps": steps, "tools": len(usedTools),
 	}))
 
 	messages = append(messages, llm.ChatMessage{Role: llm.RoleAssistant, Content: result.Content})
@@ -300,14 +273,23 @@ func forcedAnswer(
 }
 
 // runToolCall 执行一次工具调用，返回**要给模型看的那句话**。
-func runToolCall(ctx context.Context, call llm.ToolCall, deps Deps, tc tools.Context) string {
+//
+// ## 为什么这里只取 Content，丢掉 Result.OK
+//
+// `Result.OK` 是**如实搬过 MCP 边界**的（mcp/source.go 把 SDK 的 IsError 映射上来），
+// 但对模型来说工具只有一条通道：这段文字。所以成败都照原样喂回去，**不因为
+// OK=false 就换一句话、不重试、不短路**——那样等于把注册表已经编好的中文判语
+// 再翻译一遍，而模型能改的只有「下一轮换个工具名」。
+//
+// 这个丢弃是**刻意的**，钉它的用例是 `TestRun_工具失败也喂回去让模型改`。
+func (r *Runner) runToolCall(ctx context.Context, call llm.ToolCall, tc tools.Context) string {
 	args, ok := ParseToolArguments(call.Arguments)
 	if !ok {
 		// 模型把 JSON 写坏了。**不返错**——把这件事告诉它，下一轮它会写对
 		return "参数不是合法的 JSON 对象：" + llm.Clamp(call.Arguments, 200)
 	}
 
-	result := deps.Tools.Call(ctx, call.Name, args, tc)
+	result := r.tools.Call(ctx, call.Name, args, tc)
 	return result.Content
 }
 
@@ -332,7 +314,7 @@ func ParseToolArguments(raw string) (map[string]any, bool) {
 
 // userContent 本轮 user 消息。引用的正文**只在历史里找不到它时才贴**——与单发
 // 路径同一条规则，否则同一条消息会说两遍。
-func userContent(input RunInput) string {
+func userContent(input RunnerInput) string {
 	quoted := strings.TrimSpace(input.QuotedText)
 	if quoted == "" {
 		return input.Question

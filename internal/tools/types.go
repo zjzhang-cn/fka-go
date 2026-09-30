@@ -57,22 +57,6 @@ const (
 	EffectExternal Effect = "external"
 )
 
-// ToolError 工具失败。Hint 说明下一步能做什么。
-// 工具的常规失败用 Result.OK=false，不是异常。
-type ToolError struct {
-	Message string
-	Hint    string
-}
-
-func (e *ToolError) Error() string { return e.Message }
-
-func (e *ToolError) WithHint(hint string) *ToolError { e.Hint = hint; return e }
-
-// NewToolError 造一个带下一步提示的工具错误。
-func NewToolError(message, hint string) *ToolError {
-	return &ToolError{Message: message, Hint: hint}
-}
-
 // Spec 给模型看的工具声明。Parameters 是 JSON Schema 对象。
 type Spec struct {
 	// Name **源内的**名字，如 search_documents。注册表会加上源前缀
@@ -88,6 +72,11 @@ type Spec struct {
 //
 // OK == false **不是异常**，是要给模型看的一句话（「参数不合法」「没找到」）。
 // 异常留给「源自己坏了」——那种情况返错，由循环决定是否降级。
+//
+// ⚠️ `OK` 在**生产路径上只被 mcp/source.go 写、被一条日志读**，循环不读它
+// （`internal/agent` 的 `runToolCall` 只取 Content）。它**如实搬过 MCP 边界**，
+// 因为 SDK 的 `IsError` 得有个落点，但「成不成功」对模型没有意义——模型只有一段文字
+// 可读。刻意丢弃这件事由 `internal/agent` 的 `TestRun_成不成功都只有一条通道` 钉住。
 type Result struct {
 	OK      bool
 	Content string

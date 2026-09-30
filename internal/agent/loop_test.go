@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -13,8 +14,13 @@ import (
 // fakeSource 一个可控的工具源：按预设脚本回答。
 type fakeSource struct {
 	specs []tools.Spec
-	// replies 工具名 → 返回内容
+	// replies 工具名 → 返回内容（成功）
 	replies map[string]string
+	// complaints 工具名 → 返回内容（**ok=false**，但工具名是登记过的）
+	//
+	// 分开是因为「注册表说没有这个工具」与「工具有话说」走的是两条不同的路，
+	// 而只有后者能验证 Result.OK 被搬上来了又被循环丢掉。
+	complaints map[string]string
 	// calls 记录被调过的（工具名, 参数）
 	calls  []recorded
 	closed bool
@@ -37,11 +43,27 @@ func (f *fakeSource) Call(ctx context.Context, name string, args map[string]any,
 	if reply, ok := f.replies[name]; ok {
 		return tools.OKResult(reply), nil
 	}
+	if complaint, ok := f.complaints[name]; ok {
+		return tools.FailResult("%s", complaint), nil
+	}
 	return tools.FailResult("没有叫 %s 的东西", name), nil
 }
 
 func (f *fakeSource) PromptSection(tc tools.Context) (string, error) { return "", nil }
 func (f *fakeSource) Close() error                                   { f.closed = true; return nil }
+
+// newTestRunner 只装配依赖的 runner。maxSteps 省略时是 0，也就是「用 DefaultMaxSteps」。
+//
+// 这些用例以前调的是自由函数 `Run(ctx, RunInput, Deps{})`，那份 `Deps` 是 `Runner`
+// 私有字段的镜像。现在只有 `(*Runner).Run` 一个入口，所以测试直接装配 `Runner`——
+// **要钉的是行为，装配只是手段**。
+func newTestRunner(chat llm.ChatClient, registry tools.Service, maxSteps ...int) *Runner {
+	steps := 0
+	if len(maxSteps) > 0 {
+		steps = maxSteps[0]
+	}
+	return &Runner{chat: chat, tools: registry, MaxSteps: steps, enabled: true}
+}
 
 func searchSpec() tools.Spec {
 	return tools.Spec{
@@ -83,11 +105,11 @@ func TestRun_一轮工具调用后给出答案(t *testing.T) {
 
 	chat, seen := scriptedChat(t, "fake__search", `{"q":"房产证"}`, "在抽屉里")
 
-	result, err := Run(context.Background(), RunInput{
+	result, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
 		SessionID:   "s1",
 		Question:    "房产证在哪",
-		ToolContext: tools.Context{PrincipalID: "wx1"},
-	}, Deps{Chat: chat, Tools: registry})
+		PrincipalID: "wx1",
+	})
 	if err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}
@@ -146,14 +168,57 @@ func TestRun_工具失败也喂回去让模型改(t *testing.T) {
 		return llm.ChatResult{Content: "换个词再试"}, nil
 	}
 
-	result, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "查不到", ToolContext: tools.Context{PrincipalID: "wx1"},
-	}, Deps{Chat: chat, Tools: registry})
+	result, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
+		SessionID: "s1", Question: "查不到", PrincipalID: "wx1",
+	})
 	if err != nil {
 		t.Fatalf("工具失败不该让整轮返错：%v", err)
 	}
 	if result.Text != "换个词再试" {
 		t.Errorf("Text = %q", result.Text)
+	}
+}
+
+// TestRun_成不成功都只有一条通道 钉住「循环不读 Result.OK」。
+//
+// `Result.OK` 是**如实搬过 MCP 边界**的（`mcp/source.go` 把 SDK 的 IsError 映射上来），
+// 但工具对模型只有一条通道：那段文字。所以 ok=false 的结果**照样原样**变成
+// role=tool 的正文——不换一句话、不短路、不重试。
+//
+// 与上面那条的区别：那条的失败来自**注册表**（名字不在表里），这条来自**工具本身**
+// 有话说（名字在表里，OK=false）。后者才真的经过 Result.OK 这一路。
+func TestRun_成不成功都只有一条通道(t *testing.T) {
+	source := &fakeSource{
+		specs:      []tools.Spec{searchSpec()},
+		complaints: map[string]string{"search": "没找到「房产证」这一项"},
+	}
+	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
+
+	chat, seen := scriptedChat(t, "fake__search", `{"q":"房产证"}`, "我这边也没有")
+
+	result, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
+		SessionID: "s1", Question: "房产证在哪", PrincipalID: "wx1",
+	})
+	if err != nil {
+		t.Fatalf("工具失败不该让整轮返错：%v", err)
+	}
+	if result.StoppedBy != StoppedByAnswered {
+		t.Errorf("StoppedBy = %q，期望 %q——失败不该变成收尾那一路", result.StoppedBy, StoppedByAnswered)
+	}
+
+	second := (*seen)[1]
+	var toolMsg *llm.ChatMessage
+	for i := range second {
+		if second[i].Role == llm.RoleTool {
+			toolMsg = &second[i]
+			break
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("第二轮请求里没有 role=tool 消息")
+	}
+	if toolMsg.Content != "没找到「房产证」这一项" {
+		t.Errorf("ok=false 的那句必须原文喂回去，实际 %q", toolMsg.Content)
 	}
 }
 
@@ -178,9 +243,9 @@ func TestRun_到步数上限用无工具收尾(t *testing.T) {
 		return llm.ChatResult{Content: "收拢后的答案"}, nil
 	}
 
-	result, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "整理所有资料", ToolContext: tools.Context{PrincipalID: "wx1"},
-	}, Deps{Chat: chat, Tools: registry, MaxSteps: 2})
+	result, err := newTestRunner(chat, registry, 2).Run(context.Background(), RunnerInput{
+		SessionID: "s1", Question: "整理所有资料", PrincipalID: "wx1",
+	})
 	if err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}
@@ -220,9 +285,9 @@ func TestRun_收尾失败也返回实话(t *testing.T) {
 		return llm.ChatResult{}, errFake
 	}
 
-	result, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "q", ToolContext: tools.Context{PrincipalID: "wx1"},
-	}, Deps{Chat: chat, Tools: registry, MaxSteps: 1})
+	result, err := newTestRunner(chat, registry, 1).Run(context.Background(), RunnerInput{
+		SessionID: "s1", Question: "q", PrincipalID: "wx1",
+	})
 	if err != nil {
 		t.Fatalf("收尾失败不该往上抛：%v", err)
 	}
@@ -240,9 +305,9 @@ func TestRun_模型的错往上抛(t *testing.T) {
 		return llm.ChatResult{}, errFake
 	}
 
-	if _, err := Run(context.Background(), RunInput{
-		SessionID: "s1", Question: "q", ToolContext: tools.Context{PrincipalID: "wx1"},
-	}, Deps{Chat: chat, Tools: registry}); err == nil {
+	if _, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
+		SessionID: "s1", Question: "q", PrincipalID: "wx1",
+	}); err == nil {
 		t.Fatal("模型失败应当往上抛，让调用方决定降级")
 	}
 }
@@ -282,10 +347,10 @@ func TestParseToolArguments(t *testing.T) {
 }
 
 func TestUserContent_引用只在传了的时候才贴(t *testing.T) {
-	if got := userContent(RunInput{Question: "在哪"}); got != "在哪" {
+	if got := userContent(RunnerInput{Question: "在哪"}); got != "在哪" {
 		t.Errorf("没传引用时不该加东西：%q", got)
 	}
-	got := userContent(RunInput{Question: "在哪", QuotedText: "我昨天说过了"})
+	got := userContent(RunnerInput{Question: "在哪", QuotedText: "我昨天说过了"})
 	if !strings.Contains(got, "我昨天说过了") {
 		t.Errorf("引用没贴进去：%q", got)
 	}
@@ -322,32 +387,67 @@ func TestReadConfig(t *testing.T) {
 	}
 }
 
-// TestNewRunner_关掉时返回nil 「没有 agent」用 nil 表达，不另设一个布尔。
-func TestNewRunner_关掉时返回nil(t *testing.T) {
-	t.Setenv("LLM_TOOLS", "off")
+// TestNewRunner_关掉时给出的是一个能自答的实现 「没有 agent」是**一个对象**，不是 nil。
+//
+// 以前这里是 `!= nil` 的断言。那条断言钉的是一个用指针缺省表达「缺席」的约定——而指针
+// 说不出原因，于是 `cmd/fka` 不得不自己再判一次才知道该印「LLM_TOOLS=off」。
+// 现在缺席由这个对象自己回答：Enabled() 回 false、Run 回 ErrNoRunner。
+func TestNewRunner_关掉时给出的是一个能自答的实现(t *testing.T) {
 	registry := tools.NewRegistry(nil, tools.DefaultPolicy())
 
-	if NewRunner(nil, registry, RunnerOptions{}) != nil {
-		t.Error("LLM_TOOLS=off 时 NewRunner 应返回 nil")
+	for _, off := range []string{"off", "0", "false", "no"} {
+		t.Setenv("LLM_TOOLS", off)
+		runner := NewRunner(nil, registry, RunnerOptions{})
+		if runner == nil {
+			t.Fatalf("LLM_TOOLS=%s 时不该返回 nil——缺席是一个实现", off)
+		}
+		if runner.Enabled() {
+			t.Errorf("LLM_TOOLS=%s 时 Enabled() 应为假", off)
+		}
+		// **不返错**：缺席是已知状态，不是故障
+		if ok, err := runner.HasTools(context.Background()); ok || err != nil {
+			t.Errorf("缺席的 runner 的 HasTools = %v, %v；期望 false, nil", ok, err)
+		}
+		if _, err := runner.Run(context.Background(), RunnerInput{Question: "q"}); !errors.Is(err, ErrNoRunner) {
+			t.Errorf("缺席的 runner 的 Run 返 %v；期望 ErrNoRunner", err)
+		}
 	}
+}
 
+// TestNewRunner_没接上模型时同样给出实现 chat 为 nil 与 LLM_TOOLS=off 是同一个结果：
+// 调用方不该为这两种「没有」写两遍判据。
+func TestNewRunner_没接上模型时同样给出实现(t *testing.T) {
 	t.Setenv("LLM_TOOLS", "")
-	if NewRunner(nil, registry, RunnerOptions{}) != nil {
-		t.Error("chat 为 nil 时 NewRunner 应返回 nil")
+	registry := tools.NewRegistry(nil, tools.DefaultPolicy())
+
+	runner := NewRunner(nil, registry, RunnerOptions{})
+	if runner == nil || runner.Enabled() {
+		t.Fatalf("chat 为 nil 时应给出一个缺席的实现，得到 %#v", runner)
+	}
+	if _, err := runner.Run(context.Background(), RunnerInput{}); !errors.Is(err, ErrNoRunner) {
+		t.Errorf("Run 返 %v；期望 ErrNoRunner", err)
 	}
 }
 
-// TestRunner_无方法时HasTools为假 nil 接收者必须安全——调用方会先问它再决定走哪条路。
-func TestRunner_无方法时HasTools为假(t *testing.T) {
-	var runner *Runner
-	ok, err := runner.HasTools(context.Background())
-	if err != nil || ok {
-		t.Errorf("nil runner 的 HasTools = %v, %v；期望 false, nil", ok, err)
+// TestRunner_零值Runner不会炸 零值 `Runner`（也就是缺席的实现）任何方法都要能安全调用。
+func TestRunner_零值Runner不会炸(t *testing.T) {
+	var runner Runner
+	if runner.Enabled() {
+		t.Error("零值 Runner 的 Enabled() 应为假")
+	}
+	if ok, err := runner.HasTools(context.Background()); ok || err != nil {
+		t.Errorf("零值 Runner 的 HasTools = %v, %v", ok, err)
+	}
+	if _, err := runner.Run(context.Background(), RunnerInput{}); !errors.Is(err, ErrNoRunner) {
+		t.Errorf("零值 Runner 的 Run 返 %v；期望 ErrNoRunner", err)
 	}
 }
 
-// TestDeps_工具声明进了预算 计算 token 时要算上工具声明——工具一多它也能占不少。
-func TestDeps_工具声明不参与消息历史(t *testing.T) {
+// TestRun_工具声明原样进模型 模型看到的是**带源前缀的全名**与**原样透传的参数 schema**。
+//
+// （这条用例以前叫 TestDeps_、注释写着「工具声明进了预算」，但它断言的其实是模型
+// 看到什么。名字里那个类型已经不存在了，所以一并改掉。）
+func TestRun_工具声明原样进模型(t *testing.T) {
 	source := &fakeSource{specs: []tools.Spec{searchSpec()}, replies: map[string]string{"fake__search": "x"}}
 	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
 
@@ -364,9 +464,9 @@ func TestDeps_工具声明不参与消息历史(t *testing.T) {
 		return llm.ChatResult{Content: "答"}, nil
 	}
 
-	if _, err := Run(context.Background(), RunInput{
-		SessionID: "s", Question: "q", ToolContext: tools.Context{PrincipalID: "wx"},
-	}, Deps{Chat: chat, Tools: registry}); err != nil {
+	if _, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
+		SessionID: "s", Question: "q", PrincipalID: "wx",
+	}); err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}
 

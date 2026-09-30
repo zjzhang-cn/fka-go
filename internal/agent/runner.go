@@ -1,3 +1,30 @@
+// 本文件是**工具循环这一块的类型与构造**：跑一轮需要什么（`Runner`）、怎么装
+// （`NewRunner` / `RunnerOptions`）、现在有没有工具可问（`HasTools`）。
+//
+// ## 为什么「跑一轮」在 loop.go 而不在这里
+//
+// 循环的输入是 `RunnerInput`（**谁问、问什么**——那是消息层的事实），依赖与部署事实
+// （工具表、模型、会话历史、上下文预算）都在 `Runner` 上。**两个来源各管一半，
+// 互不重叠**，所以 `Run` 是 `(*Runner).Run`，而不是一个把 `Runner` 的字段再抄一遍
+// 的自由函数。
+//
+// ## 「没有 agent」是一个实现，不再是 nil
+//
+// LLM_TOOLS=off 或没配模型时 `NewRunner` 返回的是一个**真的** `*Runner`：它的
+// `enabled` 为 false，于是 `HasTools` 回 false、`Run` 回 `ErrNoRunner`。
+//
+// 以前这里返回 nil。改成实现之后「缺席」从**指针的缺省**变成**一个带答案的值**：
+// 「没有 agent」与「为什么没有」两件事都由这个对象说。nil 说不出原因，所以
+// `cmd/fka` 那时只能自己再判一次，才知道该印「LLM_TOOLS=off」——那第二个布尔正是
+// 上一版注释里说「不另设」的东西，只是它没能真的不要。
+//
+// 代价是两个方法里各留一行 `r == nil` 判。**那不是哨兵**（构造函数永不返回 nil），
+// 而是防 `(*Runner)(nil)` 被装进 `messages.Runner` 接口后调用炸掉——接口引入的
+// 这个陷阱得有人接。钉它的是 `TestNewRunner_关掉时给出的是一个能自答的实现`。
+//
+// （包头在 loop.go：那是唯一一份 `Package agent` 文档。这里刻意空一行，
+// 免得 godoc 把两段都当成包文档。）
+
 package agent
 
 import (
@@ -14,7 +41,7 @@ import (
 // 的知识）。消息层因此不认识 LLM_*，组装根也不认识 messages 表——与单发路径的
 // compose 是同一种分工。
 //
-// 身份之外的东西（存储根、管理员）也由工厂注入 ToolContext：**它们是部署事实，
+// 身份之外的东西（存储根、管理员）也由工厂注入 tools.Context：**它们是部署事实，
 // 不是每条消息的事实**。
 type RunnerInput struct {
 	// SessionID 会话标识
@@ -35,12 +62,14 @@ type RunnerInput struct {
 	// QuotedText 被引用那条的正文
 	QuotedText string
 	// Reply 以 Bot 的身份回话（发文件）。**逐条消息给**——「能发给谁」取决这条
-	// 消息的会话与回复令牌，那是消息层的事实。nil = 这个渠道/这条消息发不了文件。
+	// 消息的会话与回复令牌，那是消息层的事实。工具层不该知道。
 	Reply tools.Reply
 }
 
 // Runner 跑一轮问答。**现在有没有任何工具由 HasTools 回答**：消息层据此决定走
 // 单次问答还是工具循环。
+//
+// 导出字段是**启动期的部署事实**（模型名、超时、上下文预算），私有的三个是依赖。
 type Runner struct {
 	// MaxSteps 覆盖配置。0 = 用 DefaultMaxSteps
 	MaxSteps int
@@ -62,8 +91,8 @@ type Runner struct {
 	enabled bool
 }
 
-// NewRunner 造 runner。**chat 为 nil 或工具循环被关时返回 nil**——调用方据此走
-// 单次路径，不必再判一个布尔。
+// NewRunner 造 runner。**永远返回非 nil**：工具循环被关或 chat 为 nil 时返回一个
+// 「能自答缺席」的零值 runner（见包头）。
 func NewRunner(
 	chat llm.ChatClient,
 	registry tools.Service,
@@ -71,7 +100,7 @@ func NewRunner(
 ) *Runner {
 	config := ReadConfig()
 	if !config.Enabled || chat == nil {
-		return nil
+		return &Runner{}
 	}
 
 	maxSteps := config.MaxSteps
@@ -109,15 +138,22 @@ type RunnerOptions struct {
 	SessionHistory llm.SessionHistoryStore
 }
 
-// ErrNoRunner runner 为 nil 时 Run 返它。调用方应该先判 HasTools。
+// ErrNoRunner 工具循环缺席（LLM_TOOLS=off，或压根没接上模型）时 Run 返它。
+//
+// 它**同时是原因**：缺席的 runner 仍然是一个实现了这个错误的对象，所以调用点能用
+// `errors.Is` 判它，而不必自己再去读一遍配置。
 var ErrNoRunner = errors.New("工具循环未启用")
+
+// Enabled 这个 runner 是不是真的接上了。**它现在是「缺席」的唯一编码**——
+// 以前那个 nil 只能表示「没有」，说不出「为什么没有」。
+func (r *Runner) Enabled() bool { return r != nil && r.enabled }
 
 // HasTools 现在有没有任何工具。**空表 = 没有工具**。
 //
 // 同步、只读注册表快照，**不触发模型调用**。但要注意它会走一次源的 List——
 // MCP 源在那里惰性连进程，所以这个调用可能有网络/进程开销。
 func (r *Runner) HasTools(ctx context.Context) (bool, error) {
-	if r == nil {
+	if !r.Enabled() {
 		return false, nil
 	}
 	listed, err := r.tools.Tools(ctx, tools.Context{})
@@ -125,34 +161,4 @@ func (r *Runner) HasTools(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return len(listed) > 0, nil
-}
-
-// Run 跑一轮问答。runner 为 nil 时返错——调用方应该先判 HasTools。
-func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) {
-	if r == nil {
-		return RunResult{}, ErrNoRunner
-	}
-	return Run(ctx, RunInput{
-		SessionID:     input.SessionID,
-		AccountID:     input.AccountID,
-		TurnID:        input.TurnID,
-		History:       input.History,
-		Question:      input.Question,
-		QuotedText:    input.QuotedText,
-		ContextTokens: r.ContextTokens,
-		ToolContext: tools.Context{
-			PrincipalID: input.PrincipalID,
-			Reply:       input.Reply,
-		},
-	}, Deps{
-		Chat:            r.chat,
-		Tools:           r.tools,
-		MaxSteps:        r.MaxSteps,
-		SystemPrompt:    r.SystemPrompt,
-		SessionHistory:  r.sessionHistory,
-		Model:           r.Model,
-		Host:            r.Host,
-		TimeoutMs:       r.TimeoutMs,
-		StreamTimeoutMs: r.StreamTimeoutMs,
-	})
 }

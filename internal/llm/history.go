@@ -1,42 +1,8 @@
 package llm
 
-import (
-	"fmt"
-	"strings"
-	"unicode/utf8"
-)
+import "unicode/utf8"
 
-// MaxPassageChars 单条片段送进 prompt 的字符上限。片段本来就是短摘录，超了只会白烧 token。
-const MaxPassageChars = 400
-
-// BuildPrompt 片段 → prompt 正文。纯函数，便于钉住「哪些东西进了 prompt」。
-func BuildPrompt(question string, passages []Passage, quotedText string) string {
-	blocks := make([]string, 0, len(passages))
-	for i, passage := range passages {
-		text := strings.TrimSpace(passage.Text)
-		body := text
-		if len(text) == 0 {
-			body = "（正文里没有对应句子，只是文件名匹配）"
-		} else {
-			body = Clamp(text, MaxPassageChars)
-		}
-		blocks = append(blocks, fmt.Sprintf("[资料 %d] 文件名：%s\n内容：%s", i+1, passage.Filename, body))
-	}
-
-	lines := []string{"基于以下资料片段回答问题。", ""}
-	lines = append(lines, blocks...)
-
-	// 引用的正文有时在历史里找不到（引用的是很久以前、或没存过的那条），
-	// 那种情况下必须内联，否则模型不知道「这个」指什么。已在历史里时调用方不传
-	if trimmed := strings.TrimSpace(quotedText); trimmed != "" {
-		lines = append(lines, "用户引用了这条消息："+Clamp(trimmed, MaxPassageChars), "")
-	}
-
-	lines = append(lines, "问题："+question)
-	return strings.Join(lines, "\n")
-}
-
-// Clamp 截断到 max 字符，超出补省略号。BuildPrompt 与 openai 的错误体摘要共用。
+// Clamp 截断到 max 字符，超出补省略号。**工具循环报非法 JSON 与 openai 摘错误体共用。**
 //
 // **按 rune 截，不按字节**——按字节会把一个中文字切成半个 UTF-8 序列，产出非法字符串。
 func Clamp(text string, max int) string {

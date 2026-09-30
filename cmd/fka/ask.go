@@ -47,14 +47,16 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		return exitFail
 	}
 
-	hasTools, err := application.Agent.HasTools(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "列工具失败：%s\n", err.Error())
+	// **先问有没有接上**。以前这里是判指针为 nil，而 nil 说不出原因，于是「LLM_TOOLS=off」
+	// 与「没配模型」都落到同一句「没接上模型」里。现在缺席的 runner 自己会答。
+	if !application.Agent.Enabled() {
+		fmt.Fprintln(os.Stderr, "工具循环未启用（LLM_TOOLS=off）。")
 		return exitFail
 	}
 
-	if application.Agent == nil {
-		fmt.Fprintln(os.Stderr, "工具循环未启用（LLM_TOOLS=off）。")
+	hasTools, err := application.Agent.HasTools(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "列工具失败：%s\n", err.Error())
 		return exitFail
 	}
 
@@ -381,13 +383,6 @@ func hasFlag(parsed cliArgs, flag string) bool {
 	return given
 }
 
-func cutPrefix(value, prefix string) (string, bool) {
-	if strings.HasPrefix(value, prefix) {
-		return value[len(prefix):], true
-	}
-	return "", false
-}
-
 func debugEnabled() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("FKA_DEBUG")))
 	return value == "1" || value == "true" || value == "on"
@@ -401,5 +396,3 @@ func firstLine(text string) string {
 	}
 	return text
 }
-
-// 保留 llm 包的引用：单次路径的类型在工具链补齐前用不到，但装配根已经产出它。

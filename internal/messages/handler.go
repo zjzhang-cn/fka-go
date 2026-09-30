@@ -32,23 +32,37 @@ import (
 
 // 没能答出来时回给用户的话。**逐条都不一样**，因为回同一句话会让人以为机器卡住了。
 const (
-	replyNoLLM     = "我还没接上模型（缺 LLM_API_KEY / LLM_MODEL），现在没法回答。"
-	replyNoAgent   = "我的工具循环被关掉了（LLM_TOOLS=off），现在没法回答。"
+	replyNoLLM     = "我还没接上模型（缺 LLM_API_KEY / LLM_MODEL，或 LLM_TOOLS=off），现在没法回答。"
 	replyAgentFail = "这一轮没能答出来：%s"
 	replyNotText   = "我只处理文字问题。图片、文件这些我现在接不住——发文字给我就行。"
 	replyEmpty     = "我没想出该怎么回。要不换个说法？"
 )
 
+// Runner 工具循环在消息层需要的那一部分。
+//
+// ## 为什么声明在这里，而不是在 agent 包里
+//
+// 消费者侧声明，宽度也按消费者裁：消息层**只调 Run**，从不调 HasTools 或 Enabled
+// （那两个是 `cmd/fka` 用的）。`agent.Runner` 有五个方法、这里只要一个——
+// 接口的宽度就是替换的成本。
+//
+// 有了它，「工具循环缺席」不再需要消息层判指针：缺席的 runner 本身实现了 Run，
+// 返 `agent.ErrNoRunner`，由下面 `errors.Is` 认出并回一句实话。
+type Runner interface {
+	// Run 跑一轮问答
+	Run(ctx context.Context, input agent.RunnerInput) (agent.RunResult, error)
+}
+
 // Handler 处理入站消息。
 type Handler struct {
-	// Runner 工具循环。为 nil 时每条消息都会得到一句「没接上模型」
-	Runner *agent.Runner
+	// Runner 工具循环。缺席时也是一个实现了 Runner 的对象，见上
+	Runner Runner
 	// Tools 工具注册表。给工具提供身份与回话能力
 	Tools tools.Service
 }
 
 // NewHandler 造消息处理器。
-func NewHandler(runner *agent.Runner, registry tools.Service) *Handler {
+func NewHandler(runner Runner, registry tools.Service) *Handler {
 	return &Handler{Runner: runner, Tools: registry}
 }
 
@@ -102,12 +116,6 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 		return
 	}
 
-	if h.Runner == nil {
-		config.Log().Warn(config.TypeMSG, "工具循环缺席，已回一句说明", fields)
-		h.reply(ctx, channel, message, replyNoLLM, fields)
-		return
-	}
-
 	// ── 跑一轮 ─────────────────────────────────────────────
 	result, err := h.Runner.Run(ctx, agent.RunnerInput{
 		SessionID:   channels.SessionKeyOf(&message),
@@ -119,6 +127,13 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 		Reply:       newChannelReply(channel, message),
 	})
 	if err != nil {
+		// **工具循环缺席要说清是缺席**，不能混进「这一轮没答出来」——用户看到
+		// 「稍后再试」只会再问一次，而真因是没配模型或 LLM_TOOLS=off。
+		if errors.Is(err, agent.ErrNoRunner) {
+			config.Log().Warn(config.TypeMSG, "工具循环缺席，已回一句说明", fields)
+			h.reply(ctx, channel, message, replyNoLLM, fields)
+			return
+		}
 		// 模型的错如实报，**不静默降级**：「稍后再试」会把「接口没配好」
 		// 伪装成「模型偶尔不回」
 		config.Log().Error(config.TypeMSG, "问答失败", mergeFields(fields, config.Context{"error": err.Error()}))
@@ -236,6 +251,3 @@ func (r *channelReply) send(kind channels.MediaKind, path, fileName, mimeType st
 	})
 	return err
 }
-
-// ErrNotReady 装配没齐就跑消息循环。**启动期就该发现**，而不是等第一条消息来暴露。
-var ErrNotReady = errors.New("装配没齐：没有可跑的工具循环")

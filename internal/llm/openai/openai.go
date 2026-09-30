@@ -56,7 +56,6 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
-	"github.com/zjzhang-cn/fka-go/internal/prompts"
 )
 
 // DefaultBaseURL 默认供应商。LLM_BASE_URL 不填时用它——但 key 与 model 仍必须自己给。
@@ -71,9 +70,6 @@ const DefaultStreamTimeoutMs = 10_000
 
 // DefaultContextTokens 默认上下文预算。0 表示不压缩历史。
 const DefaultContextTokens = 0
-
-// MaxAnswerTokens 回答的字数上限。微信里一段话，不必更长。
-const MaxAnswerTokens = 800
 
 // Temperature 采样温度。问答要的是**贴着资料**，不是发挥，所以调得很低。
 const Temperature = 0.2
@@ -150,17 +146,13 @@ func HostOf(rawURL string) string {
 	return parsed.Host
 }
 
-// Provider OpenAI 兼容 provider。
-type Provider struct {
-	// SystemPrompt 单发路径的系统提示。零值取 QA 那条。
-	SystemPrompt string
-}
+// Provider OpenAI 兼容 provider。**零字段**——以前那个 SystemPrompt 只服务于已删的
+// 单发路径，而它一旦有字段，装配根就得知道每个 provider 怎么配。
+type Provider struct{}
 
-func (Provider) ID() string      { return "openai" }
-func (Provider) Label() string   { return "OpenAI 兼容" }
-func (Provider) IsDefault() bool { return true }
+func (Provider) ID() string { return "openai" }
 
-func (p Provider) ReadConfig() (llm.Config, bool) { return ReadConfig() }
+func (Provider) ReadConfig() (llm.Config, bool) { return ReadConfig() }
 
 // newClient 按配置造 SDK 客户端。
 //
@@ -237,27 +229,8 @@ func (b *bodyInjector) Do(req *http.Request) (*http.Response, error) {
 	return b.next.Do(req)
 }
 
-// Probe 启动探测。**永不返错**：发一个 1 token 的请求，成功即算可用。
-func (p Provider) Probe(ctx context.Context, cfg llm.Config) llm.Probe {
-	started := time.Now()
-	client := newClient(cfg)
-
-	_, err := client.CreateChatCompletion(ctx, goopenai.ChatCompletionRequest{
-		Model:       cfg.Model,
-		Messages:    []goopenai.ChatCompletionMessage{{Role: goopenai.ChatMessageRoleUser, Content: "ping"}},
-		MaxTokens:   1,
-		Temperature: 0.001, // 见 TempZeroOmitted 的说明
-	})
-	if err != nil {
-		return llm.Probe{Available: false, Hint: SanitizeError(err, cfg)}
-	}
-	return llm.Probe{Available: true, LoadMs: time.Since(started).Milliseconds()}
-}
-
-// CreateChat 造一个带工具能力的调用函数。
-//
-// 与 Composer 分开而不是给它加参数：composer 的契约是「问题 + 片段 → 一段答案」，
-// 工具循环要的是「消息列表进、消息列表出」，两者的调用方与错误处理都不同。
+// CreateChat 造一个带工具能力的调用函数。**tools 为空时就是普通聊天补全**，
+// 所以「工具循环」与「单发」不再需要两条路。
 func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 	client := newClient(cfg)
 	host := HostOf(cfg.BaseURL)
@@ -287,95 +260,12 @@ func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 	}
 }
 
-// CreateComposer 造单发 composer（问题 + 片段 → 一段答案）。
-func (p Provider) CreateComposer(cfg llm.Config) llm.Composer {
-	client := newClient(cfg)
-	host := HostOf(cfg.BaseURL)
-	systemPrompt := p.SystemPrompt
-	if systemPrompt == "" {
-		systemPrompt = prompts.QA
-	}
-
-	return func(ctx context.Context, question string, passages []llm.Passage, callCtx *llm.CallContext) (string, error) {
-		startedAt := time.Now()
-		userText := llm.BuildPrompt(question, passages, quotedOf(callCtx))
-
-		// 历史前缀：优先会话文件里逐字原样那份，否则退回数据库重建的那份
-		prior := llm.LoadHistoryPrefix(historyStore(callCtx), historyKey(callCtx))
-
-		// 历史预算 = 总预算 − 固定开销（system + 本轮 user + 给回答留的位置）。
-		// contextTokens = 0 表示不压缩
-		fixed := llm.EstimateTokens(systemPrompt) + llm.EstimateTokens(userText) + MaxAnswerTokens
-		budget := 0
-		if cfg.ContextTokens > 0 {
-			budget = max(0, cfg.ContextTokens-fixed)
-		}
-		kept := llm.CompressHistory(prior, budget)
-
-		messages := append([]llm.ChatMessage{{Role: llm.RoleSystem, Content: systemPrompt}}, kept.Messages...)
-		messages = append(messages, llm.ChatMessage{Role: llm.RoleUser, Content: userText})
-
-		result, err := postCompletion(ctx, client, cfg, baseRequest(cfg, messages), host)
-		if err != nil {
-			return "", err
-		}
-		if result.Content == "" {
-			return "", errors.New("模型返回里没有 choices[0].message.content")
-		}
-
-		config.Log().Debug(config.TypeLLM, "语言模型已生成答案", config.Fields(ctx, config.Context{
-			"model": cfg.Model, "host": host,
-			"passages": len(passages), "chars": len(result.Content),
-			"ms": time.Since(startedAt).Milliseconds(),
-		}))
-
-		// 本轮读进去的 user 正文与模型答复原样落进会话文件，供下一轮逐字重放
-		if store := historyStore(callCtx); store != nil && callCtx != nil && callCtx.SessionID != "" {
-			store.Append(callCtx.SessionID, callCtx.AccountID, []llm.ChatMessage{
-				{Role: llm.RoleUser, Content: userText},
-				{Role: llm.RoleAssistant, Content: result.Content},
-			})
-		}
-
-		return result.Content, nil
-	}
-}
-
-// historyStore 从 CallContext 拿会话历史存储。
-//
-// **刻意不在 provider 里自己造**：存储的目录与开关是部署事实（config 组装根知道），
-// 造在这里会让「测试里不用落盘」这种最常见的需求无法表达。
-func historyStore(callCtx *llm.CallContext) llm.SessionHistoryStore {
-	if callCtx == nil {
-		return nil
-	}
-	return callCtx.HistoryStore
-}
-
-func historyKey(callCtx *llm.CallContext) llm.HistoryKey {
-	if callCtx == nil {
-		return llm.HistoryKey{}
-	}
-	return llm.HistoryKey{
-		SessionID: callCtx.SessionID,
-		AccountID: callCtx.AccountID,
-		History:   callCtx.History,
-	}
-}
-
-func quotedOf(callCtx *llm.CallContext) string {
-	if callCtx == nil {
-		return ""
-	}
-	return callCtx.QuotedText
-}
-
 func baseRequest(cfg llm.Config, messages []llm.ChatMessage) goopenai.ChatCompletionRequest {
 	return goopenai.ChatCompletionRequest{
 		Model:       cfg.Model,
 		Messages:    toAPIMessages(messages),
 		Temperature: Temperature,
-		MaxTokens:   MaxAnswerTokens,
+		MaxTokens:   llm.MaxAnswerTokens,
 		// 只要工具就发流式：没有它拿不到增量，也就没有「每收一块重置断流预算」
 		Stream: true,
 	}
