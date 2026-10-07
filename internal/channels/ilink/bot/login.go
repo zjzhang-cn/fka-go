@@ -304,6 +304,21 @@ func checkQRCodeStatus(ctx context.Context, c *client, token string,
 // 重启后账号消失」正是那个坑的表现。所以路径**没有默认值**，调用方必须显式传。
 
 // SaveCredentials 把登录凭证写进 `.env` 的对应账号块。
+//
+// ## 为什么必须是「临时文件 + rename」，不能 `os.WriteFile`
+//
+// `os.WriteFile` = `O_TRUNC` + `write`——**先截断，再写**。所以任何一次写失败
+// 或写到一半被杀，留在原地的都是**空文件或半截文件**，而这份文件里是全部账号
+// 的 bot token、`LLM_API_KEY`、`LOG_LEVEL`……一整份配置，没有备份，事后也看
+// 不出来发生过（登录界面只报「写失败」）。
+//
+// 磁盘满（`ENOSPC`）时最坏：`write` 报错，函数如实返错，**但文件已经被截断了**。
+// 与同一个包里 `cursor.go` 的 `persistLocked` 是同一条顾虑——那边为更不值钱的
+// 游标专门做了 temp+rename，这条路上却一直是直接覆盖。
+//
+// 顺带解决权限：`os.WriteFile` 的 perm 参数**只在 `O_CREATE` 时生效**，于是按
+// `.env.example`（0644）拷出来的那份 `.env` 登录成功后仍然是 0644。改名替换
+// 之后，文件的权限来自那个 0600 的临时文件，**每次写完都回到 0600**。
 func SaveCredentials(envPath string, accountIndex int, credentials Credentials) error {
 	original, err := os.ReadFile(envPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -317,8 +332,56 @@ func SaveCredentials(envPath string, accountIndex int, credentials Credentials) 
 		return fmt.Errorf("建 .env 目录失败：%w", err)
 	}
 	// **0600**：里面有 bot token
-	if err := os.WriteFile(envPath, []byte(updated), 0o600); err != nil {
+	if err := atomicWriteFile(envPath, []byte(updated), 0o600); err != nil {
 		return fmt.Errorf("写 %s 失败：%w", envPath, err)
+	}
+	return nil
+}
+
+// atomicWriteFile 用「临时文件 + fsync + rename」替换 path 的内容。
+//
+// **临时文件名带随机后缀**（`os.CreateTemp`）而不是固定 `.tmp`：两个 `fka login`
+// 并发时固定名会互相 `O_TRUNC`，又是一次截断。rename 在同一目录内是原子的，
+// 所以读者要么看到旧内容、要么看到新内容，永远看不到中间态。
+//
+// 失败路径**一律删掉临时文件并原样返回**：目标文件一个字节都不动。
+// 「写失败但原文件已经没了」比「写失败」坏得多——前者是数据没了，后者只是这次
+// 登录没成。
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return fmt.Errorf("建临时文件失败：%w", err)
+	}
+	temp := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(temp)
+	}
+
+	// `CreateTemp` 已经是 0600，这里显式再设一次：perm 是调用方声明的意图，
+	// 不该依赖某个 stdlib 的默认值
+	if err := f.Chmod(perm); err != nil {
+		cleanup()
+		return fmt.Errorf("设置临时文件权限失败：%w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("写临时文件失败：%w", err)
+	}
+	// **先落盘再改名**：不 Sync 的话 rename 可能先于数据到达磁盘，断电后拿到
+	// 一个空的目标文件——那正是这次改动要消灭的东西
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("落盘失败：%w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(temp)
+		return fmt.Errorf("关闭临时文件失败：%w", err)
+	}
+	if err := os.Rename(temp, path); err != nil {
+		_ = os.Remove(temp)
+		return fmt.Errorf("替换目标文件失败：%w", err)
 	}
 	return nil
 }

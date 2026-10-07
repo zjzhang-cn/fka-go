@@ -832,6 +832,77 @@ func Test保存凭证到不存在的文件(t *testing.T) {
 	}
 }
 
+// Test保存凭证失败时原文件一字节不动 `.env` 里是**全部账号的 token 与
+// LLM_API_KEY，没有备份**。旧实现用 `os.WriteFile`（= `O_TRUNC` + write）——
+// 先截断再写，所以磁盘满或写到一半被杀时，报出来的是一句「写失败」，而文件
+// 已经空了：失败的是这次登录，丢的却是整份配置。
+//
+// 这里用「目录只读」制造一次真实的写失败（`CreateTemp` 拿不到文件），
+// 断言目标文件**逐字节保持原样**，并且没有留下临时文件。
+func Test保存凭证失败时原文件一字节不动(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	const original = "ILINK_ACCOUNT_1_ID=account_001\nILINK_ACCOUNT_1_BOT_TOKEN=keep-me\nLOG_LEVEL=info\n"
+	if err := os.WriteFile(envPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 目录改成只读 → 临时文件建不出来。**必须在 TempDir 清理之前改回来**，
+	// 否则清理阶段删不掉内容，用例会以一条无关的错误收场
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	err := SaveCredentials(envPath, 2, Credentials{BotToken: "fresh"})
+	if err == nil {
+		t.Fatal("目录只读时该返回错误，不能假装写成功")
+	}
+
+	_ = os.Chmod(dir, 0o755)
+	data, readErr := os.ReadFile(envPath)
+	if readErr != nil {
+		t.Fatalf("原文件必须还在：%v", readErr)
+	}
+	if string(data) != original {
+		t.Errorf("原文件被改动了——写失败时它一个字节都不许动：\n%q", data)
+	}
+
+	// 失败路径不许留下 `.env.xxxx` 这种临时文件：攒多了没人知道哪个是活的
+	leftovers, _ := os.ReadDir(dir)
+	for _, entry := range leftovers {
+		if entry.Name() != ".env" {
+			t.Errorf("失败后留了个 %s 在目录里", entry.Name())
+		}
+	}
+}
+
+// Test保存凭证把0644的env收紧到0600 走真实那条路：按文档
+// `cp .env.example .env` 拿到的是 **0644**（`.env.example` 就是 0644），
+// 而 `os.WriteFile` 的 perm 参数**只在 `O_CREATE` 时生效**——文件已存在时它
+// 什么都不做，于是登录成功之后 token 仍然是同机任何用户可读。
+//
+// 以前的用例先自己把文件建成 0600 再断言 0600，断言的是自己刚设的值，
+// 没覆盖到这条真实路径。
+func Test保存凭证把0644的env收紧到0600(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("# 账号 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveCredentials(envPath, 1, Credentials{BotToken: "t"}); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("权限 = %o，期望 600（里面有 bot token，且文件是拷来时就是 0644 的那种）", mode)
+	}
+}
+
 func Test槽位标识补零到三位(t *testing.T) {
 	// 账号号会进日志、进会话历史文件名；`account_2` 与 `account_002` 混用
 	// 会让排查时以为有两个账号
