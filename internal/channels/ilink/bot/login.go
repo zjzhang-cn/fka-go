@@ -44,8 +44,21 @@ const (
 // 二维码轮询参数。
 const (
 	qrPollTimeout = 40 * time.Second
-	qrPollGap     = 2 * time.Second
+	// qrPollMaxFailures 连续失败多少次就放弃这一个二维码。
+	//
+	// **上限和重试缺一不可**：重试是「网络抖一下」的解法，可服务端真挂了的时候，
+	// 没有上限的重试会让人对着一个**早就失效的二维码**一直转圈——界面上什么都不说，
+	// 而正确的做法是告诉他「查不了，重新扫一个」。反过来也不能只试一次：抖动是常态，
+	// 一次就放弃等于把登录做成了碰运气。
+	qrPollMaxFailures = 5
 )
+
+// qrPollGap 两轮之间睡多久。
+//
+// **是 var 不是 const**：用例要把它调短——「失败几次才放弃」这类用例得真的
+// 走完整个轮询循环，按 2 秒算一条用例就要十几秒。改它只影响轮询节奏，
+// 不影响任何协议语义。
+var qrPollGap = 2 * time.Second
 
 // QRCode 一个二维码。**令牌与码面内容是两样东西。**
 type QRCode struct {
@@ -149,6 +162,12 @@ func qrcodeParamOf(content string) string {
 // 直到确认成功。
 //
 // 现在由 `checkQRCodeStatus` 报它**这一轮看到的状态**，这里只做去重。
+//
+// ## 查状态失败怎么办：**重试，但有上限**
+//
+// 网络/协议问题（连不上、HTTP 5xx、应答不是 JSON、等太久）一律重试，连续
+// `qrPollMaxFailures` 次才放弃——见 `qrPollAfterFailure`。这里以前的判据是
+// 反的：只有**超时**才继续轮询，快速失败反而立刻终止整次登录。
 func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Client, token string,
 	onStatus func(string)) (Credentials, error) {
 
@@ -162,6 +181,7 @@ func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Clie
 	reporter := newStatusReporter(onStatus)
 
 	c := NewClient(WeixinAccount{BaseURL: baseURL}, httpClient)
+	consecutive := 0
 	for {
 		if ctx.Err() != nil {
 			return Credentials{}, fmt.Errorf("登录已取消")
@@ -172,19 +192,57 @@ func PollQRCodeStatus(ctx context.Context, baseURL string, httpClient *http.Clie
 			return credentials, err
 		}
 		if err != nil {
-			// 中断导致的失败不是错误；其它错误是网络/协议问题，**重试**
-			if ctx.Err() != nil {
-				return Credentials{}, fmt.Errorf("登录已取消")
+			consecutive++
+			retry, failure := qrPollAfterFailure(ctx, err, consecutive)
+			if !retry {
+				return Credentials{}, failure
 			}
-			if !isTimeout(err) {
-				return Credentials{}, fmt.Errorf("查询扫码状态失败：%w", err)
-			}
+		} else {
+			// 查成功了就把连续失败的计数清零：中途抖两下不该攒成一次放弃
+			consecutive = 0
 		}
 
 		if !sleepCtxOK(ctx, qrPollGap) {
 			return Credentials{}, fmt.Errorf("登录已取消")
 		}
 	}
+}
+
+// qrPollAfterFailure 一次「查扫码状态」失败之后该怎么办。
+//
+// 返回 **(要不要重试, 放弃时交给用户的错误)**。纯逻辑，不碰网络也不睡觉——
+// 真实的 2 秒轮询间隔没法在用例里等，所以判据必须能单独拎出来测。
+//
+// ## 为什么判据与以前正好相反
+//
+// 旧实现是：
+//
+//	// 中断导致的失败不是错误；其它错误是网络/协议问题，**重试**
+//	if !isTimeout(err) {
+//		return Credentials{}, fmt.Errorf("查询扫码状态失败：%w", err)
+//	}
+//
+// 注释说「其它错误要重试」，代码却在**不是超时**的时候直接放弃——于是：
+//
+//   - 服务端**挂起**（40s 超时）→ 重试；
+//   - 连接被拒 / 连接被重置 / HTTP 5xx / 应答不是 JSON（**快速失败**）→
+//     立刻终止整次登录，而用户扫的那个码已经作废。
+//
+// 挂起会重试、连不上反而不重试，这个方向对网络抖动来说是最糟的组合——
+// 而扫码窗口只有十分钟，任何一次抖动都可能让已扫的码白扫。
+//
+// 取消单独一条：**Ctrl-C 之后不该继续替一个没人看的二维码轮询**，
+// 那时候报一句「登录已取消」比报原始错误有用。
+func qrPollAfterFailure(ctx context.Context, err error, consecutive int) (bool, error) {
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("登录已取消")
+	}
+	if consecutive >= qrPollMaxFailures {
+		return false, fmt.Errorf("连续 %d 次查询扫码状态都失败了：%w。"+
+			"多半是网络或服务端的问题，二维码可能也已经过期，请重新获取一个",
+			consecutive, err)
+	}
+	return true, nil
 }
 
 // statusReporter 只上报**变化**的状态。
@@ -256,6 +314,18 @@ func checkQRCodeStatus(ctx context.Context, c *client, token string,
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return Credentials{}, false, err
+	}
+
+	// **看状态码，别只管反序列化**。这条路径以前直接 `json.Unmarshal` 应答体，
+	// 于是网关回的 500 HTML 会变成一句「解析扫码状态失败」——真正的故障
+	// （服务端挂了）被说成了「格式不对」，排查方向整个带偏。
+	//
+	// 同一次登录里 `GetQRCode` 走的是 `postJSON` → `do()`，那边 `>= 400` 早就拦了：
+	// 同一条链上不该有两套 HTTP 语义。这里的错误归「可重试」，由
+	// `qrPollAfterFailure` 决定试几次。
+	if response.StatusCode >= 400 {
+		return Credentials{}, false, fmt.Errorf("查询扫码状态失败：HTTP %d %s",
+			response.StatusCode, snippet(body))
 	}
 
 	var payload struct {

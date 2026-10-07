@@ -637,6 +637,154 @@ func Test空令牌直接拒(t *testing.T) {
 	}
 }
 
+// shortQRPollGap 把轮询间隔调到几乎为 0，用完恢复。
+//
+// **必须恢复**：`qrPollGap` 是包级变量，不还回去的话后面那些用例会以 1ms 狂刷，
+// 一旦哪条真的走到轮询循环就分不清是逻辑错还是节奏错。
+func shortQRPollGap(t *testing.T) {
+	t.Helper()
+	previous := qrPollGap
+	qrPollGap = time.Millisecond
+	t.Cleanup(func() { qrPollGap = previous })
+}
+
+// Test扫码状态查询失败会重试 以前的判据是**反的**：`if !isTimeout(err) { 放弃 }`
+// ——只有超时才继续轮询，连接被拒、HTTP 5xx、应答不是 JSON 这些**快速失败**
+// 反而立刻终止整次登录，而用户扫的那个码已经作废。挂起会重试、连不上反而
+// 不重试，对网络抖动来说是最糟的组合。
+//
+// 这里让服务端先坏三次再好，钉住「坏过之后还能登录成功」。
+func Test扫码状态查询失败会重试(t *testing.T) {
+	shortQRPollGap(t)
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) <= 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("<html>bad gateway</html>"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"confirmed","bot_token":"bt-1",` +
+			`"ilink_bot_id":"ib","ilink_user_id":"iu","baseurl":"https://x"}`))
+	}))
+	defer server.Close()
+
+	got, err := PollQRCodeStatus(context.Background(), server.URL, server.Client(), "token-1", nil)
+	if err != nil {
+		t.Fatalf("前几次 502 该重试到成功，实际：%v", err)
+	}
+	if got.BotToken != "bt-1" {
+		t.Errorf("bot token = %q，期望 bt-1", got.BotToken)
+	}
+	if calls.Load() < 4 {
+		t.Errorf("至少该试了 4 次（3 次坏 + 1 次好），实际 %d 次", calls.Load())
+	}
+}
+
+// Test连续查状态失败到上限就放弃 **重试和上限缺一不可**：没有上限的话，服务端
+// 真挂了时用户会对着一个早就失效的二维码一直转圈，界面上什么都不说。
+//
+// 同时钉住新加的 HTTP 状态码检查——错误里要能看到 `HTTP 500`，
+// 不然「服务端挂了」会被说成「应答解析不了」，排查方向整个带偏。
+func Test连续查状态失败到上限就放弃(t *testing.T) {
+	shortQRPollGap(t)
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("<html>boom</html>"))
+	}))
+	defer server.Close()
+
+	_, err := PollQRCodeStatus(context.Background(), server.URL, server.Client(), "token-1", nil)
+	if err == nil {
+		t.Fatal("一直失败时该放弃并报错，不能无限重试")
+	}
+	if want := int64(qrPollMaxFailures); calls.Load() != want {
+		t.Errorf("该只试 %d 次，实际 %d 次", want, calls.Load())
+	}
+	for _, want := range []string{"连续 5 次", "HTTP 500"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误里该说清 %q（放弃次数 + 根因），实际：%v", want, err)
+		}
+	}
+}
+
+// Test查扫码状态失败的判据 判据单独拎出来测：真实的 2 秒轮询间隔没法在用例里等。
+//
+// 第二条是这组用例的重点——**旧代码在这里直接放弃整次登录**。
+func Test查扫码状态失败的判据(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cases := []struct {
+		name        string
+		ctx         context.Context
+		err         error
+		consecutive int
+		wantRetry   bool
+		wantMsg     string
+	}{
+		{"取消优先：即使还没到上限也别再试", canceled, errors.New("连接被拒"), 1, false, "取消"},
+		{"连接被拒要重试——旧代码在这里直接放弃", context.Background(), errors.New("连接被拒"), 1, true, ""},
+		{"超时同样要重试", context.Background(), &net_TimeoutError{}, 1, true, ""},
+		{"HTTP 5xx 同样要重试", context.Background(), errors.New("HTTP 500"), 1, true, ""},
+		{"差一次到上限就还试", context.Background(), errors.New("HTTP 500"), qrPollMaxFailures - 1, true, ""},
+		{"到上限才放弃", context.Background(), errors.New("HTTP 500"), qrPollMaxFailures, false, "连续 5 次"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retry, err := qrPollAfterFailure(tc.ctx, tc.err, tc.consecutive)
+			if retry != tc.wantRetry {
+				t.Errorf("重试 = %v，期望 %v", retry, tc.wantRetry)
+			}
+			if !retry && err == nil {
+				t.Fatal("放弃时必须给出一句话")
+			}
+			if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("错误里该有 %q，实际：%v", tc.wantMsg, err)
+			}
+			if retry && err != nil {
+				t.Errorf("还在重试时不该带着错误，实际：%v", err)
+			}
+		})
+	}
+
+	// 放弃要把**原始错误**原样带出来（`%w`），否则日志里只剩「连续 5 次」，
+	// 看不出是被什么挡住的
+	sentinel := errors.New("连接被拒")
+	_, err := qrPollAfterFailure(context.Background(), sentinel, qrPollMaxFailures)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("放弃时该把原始错误包住，实际：%v", err)
+	}
+}
+
+// Test查扫码状态的HTTP错误要带状态码 `checkQRCodeStatus` 以前直接反序列化应答体，
+// 于是网关回的 500 HTML 变成「解析扫码状态失败」——**服务端挂了被说成格式不对**。
+// 同一次登录里 `GetQRCode` 走的 `postJSON → do()` 早就在 `>= 400` 拦了，
+// 同一条链上不该有两套 HTTP 语义。
+func Test查扫码状态的HTTP错误要带状态码(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("<html>维护中</html>"))
+	}))
+	defer server.Close()
+
+	c := NewClient(WeixinAccount{BaseURL: server.URL}, server.Client())
+	_, done, err := checkQRCodeStatus(context.Background(), c, "token-1", nil)
+	if done {
+		t.Error("HTTP 错误不是终态，不该结束轮询")
+	}
+	if err == nil {
+		t.Fatal("HTTP 503 该报错")
+	}
+	if !strings.Contains(err.Error(), "HTTP 503") {
+		t.Errorf("错误里该有状态码，实际：%v", err)
+	}
+}
+
 // ── .env 块替换 ─────────────────────────────────────────
 
 // realEnv 一个贴近真实的 .env：账号 2 的标签**后面还有别的字**。
