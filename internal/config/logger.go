@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -273,6 +274,33 @@ func (l *Logger) currentConsoleLevel() Level {
 // 里的两行如果一个本地时区一个 UTC，排查跨零点的链路时排序就乱了。
 const timeLayout = "2006-01-02T15:04:05.000Z"
 
+// consoleStream 控制台日志写哪条流。**无条件 stderr，不看级别。**
+//
+// ## 为什么曾经是「Error 走 stderr、其余走 stdout」，而那是错的
+//
+// 那条规则看着合理（「只有错误才算异常」），但它把**日志**和**结果**混在了
+// 同一条流上，而 CLI 的 stdout 是结果：
+//
+//	fka tools --json > out.json     # out.json 的第一个字节必须是 `{`
+//	fka ask > answer.txt            # answer.txt 第一行必须是答案
+//
+// `LLM_TOOL_EFFECTS` 里一个笔误、或某个 MCP server 连不上，都会在**打印结果
+// 之前**记一条 WARN——于是 stdout 变成 `[WARN]…\n{…}`，而**退出码仍是 0**。
+// 调用方只看到「JSON 解析失败」，完全看不出是日志干的。这正是
+// `DefaultConsoleLevel` 那段注释想避免的同一件事，只是它防的是「级别太低」，
+// 防不住「级别本来就放行的 WARN」。
+//
+// ## 为什么是 stderr 而不是「CLI 自己决定」
+//
+// 「哪条流能被日志占用」是个**全局不变量**，散到每个子命令去各判一次，迟早有
+// 一个子命令忘了——而忘掉的那次照样编译、照样退出 0。判据只此一处，由
+// `Test控制台日志只写stderr` 钉住；真正的端到端闸门在 `make smoke` 的
+// 「tools --json 首字节」那步（现在还会故意配一个笔误的 LLM_TOOL_EFFECTS 跑一遍）。
+//
+// 终端上没有任何变化：stdout 与 stderr 都通向同一个终端，人看到的还是一样多。
+// 区别只在**重定向之后**——那正是脚本消费的场合。
+func consoleStream() io.Writer { return os.Stderr }
+
 func (l *Logger) write(level Level, typ Type, message string, ctx Context) {
 	now := time.Now().UTC()
 
@@ -290,11 +318,7 @@ func (l *Logger) write(level Level, typ Type, message string, ctx Context) {
 		return
 	}
 	line := renderLine(level, typ, message, ctx)
-	if level >= LevelError {
-		fmt.Fprintln(os.Stderr, line)
-	} else {
-		fmt.Fprintln(os.Stdout, line)
-	}
+	fmt.Fprintln(consoleStream(), line)
 
 	if level == LevelCritical && handler != nil {
 		handler(message, ctx)

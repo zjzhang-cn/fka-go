@@ -240,6 +240,17 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 		echo "$(BOLD)✗$(RESET) tools --json 被日志污染了，第一行是："; \
 		head -1 $(smoke_dir)/tools.json; exit 1; \
 	fi
+	@# **再补一刀：默认级别本来就放行的 WARN 也不许顶在结果前面**。
+	@# 上一步在「什么都没出错」的配置下跑，而真实故障（笔误的 LLM_TOOL_EFFECTS、
+	@# MCP server 连不上）记的正是 WARN——旧实现把非 Error 级别写进 stdout，
+	@# 于是那条 WARN 会出现在 `{` 之前。这里故意造一条 WARN，独立进程验。
+	@LLM_TOOL_EFFECTS=read,typo $(FKA) tools --json > $(smoke_dir)/tools-warn.json
+	@if [ "$$(head -c 1 $(smoke_dir)/tools-warn.json)" = "{" ]; then \
+		echo "$(BOLD)✓$(RESET) 即使先记了一条 WARN，tools --json 仍从 JSON 开头"; \
+	else \
+		echo "$(BOLD)✗$(RESET) WARN 顶到了 JSON 前面，第一行是："; \
+		head -1 $(smoke_dir)/tools-warn.json; exit 1; \
+	fi
 	@echo
 	@# **只读子命令零副作用**：`version` 连日志目录都不该建。`config.Log()` 是惰性
 	@# 构造（import 不产生 IO），而 CLI 里那句「定下控制台级别」会把它唤醒——纯输出
