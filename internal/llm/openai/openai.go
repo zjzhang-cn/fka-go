@@ -545,6 +545,13 @@ func newReasoningSink(out io.Writer) reasoningSink {
 // assistant 带 tool_calls 时 Content **不能是空串**——OpenAI 明确要求这一项在带
 // tool_calls 时可以是 null，但不能是空串。SDK 的 `omitempty` 会把空串直接删掉，
 // 正好得到「没有这个字段」的效果，而各家实现都接受这个形状。
+//
+// **四种 role 必须各有各的分支，不能让 `default` 兜底成 user**：`default` 兜底
+// 那次只判了「带不带 tool_calls」，于是**不带 tool_calls 的 assistant（也就是
+// 每一轮的最终答案）被发成 `role=user`**——上一轮的答案在下一轮请求里冒充用户
+// 说话。多轮历史是常驻链路每轮都在走的路径，而它不报错：provider 照单全收，
+// 模型看到的是「用户连着说了两句」，只有回答质量会悄悄变差。这条分支曾经
+// **零测试**，所以它能活到今天。
 func toAPIMessages(messages []llm.ChatMessage) []goopenai.ChatCompletionMessage {
 	out := make([]goopenai.ChatCompletionMessage, 0, len(messages))
 
@@ -568,6 +575,15 @@ func toAPIMessages(messages []llm.ChatMessage) []goopenai.ChatCompletionMessage 
 				ToolCalls: calls,
 			})
 
+		case message.Role == llm.RoleAssistant:
+			// 普通回答（没有 tool_calls）就是上一轮的答案。**它必须还是
+			// assistant**——历史里紧跟在 tool 结果后面，发成 user 会让
+			// 「哪句是模型说的、哪句是用户说的」整个错位
+			out = append(out, goopenai.ChatCompletionMessage{
+				Role:    goopenai.ChatMessageRoleAssistant,
+				Content: message.Content,
+			})
+
 		case message.Role == llm.RoleTool:
 			out = append(out, goopenai.ChatCompletionMessage{
 				Role:       goopenai.ChatMessageRoleTool,
@@ -581,7 +597,16 @@ func toAPIMessages(messages []llm.ChatMessage) []goopenai.ChatCompletionMessage 
 				Content: message.Content,
 			})
 
+		case message.Role == llm.RoleUser:
+			out = append(out, goopenai.ChatCompletionMessage{
+				Role:    goopenai.ChatMessageRoleUser,
+				Content: message.Content,
+			})
+
 		default:
+			// 四种 role 已经各归各位，走到这里说明是**我们自己没建模的 role**。
+			// 当 user 发出去（与旧行为一致），而不是静默丢——丢一条消息会让
+			// 后面的 tool 结果失去配对，provider 直接 400
 			out = append(out, goopenai.ChatCompletionMessage{
 				Role:    goopenai.ChatMessageRoleUser,
 				Content: message.Content,
