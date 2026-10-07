@@ -155,6 +155,41 @@ func TestValidateArgs(t *testing.T) {
 	}
 }
 
+// TestValidateArgs_认两种required形状 上面那张表的 `required` 是 `[]any`，那是
+// **技能源**的形状（schema 来自 JSON 反序列化）。MCP 源走的是另一条：
+// `toolSchema` 直接放 SDK 的 `Tool.InputSchema.Required`，那是 **`[]string`**。
+//
+// 只认 `[]any` 时 MCP 那条路的断言恒 false，整段必填校验被静默跳过，而
+// type 校验照常生效、用例照常全绿——见 `internal/tools/mcp/toolschema_test.go`
+// 里那条走真实链路的用例。
+func TestValidateArgs_认两种required形状(t *testing.T) {
+	properties := map[string]any{"q": map[string]any{"type": "string"}}
+
+	cases := []struct {
+		name     string
+		required any
+		want     string
+	}{
+		{"技能源的 []any", []any{"q"}, "缺少必填参数 q"},
+		{"MCP 源的 []string", []string{"q"}, "缺少必填参数 q"},
+		{"[]any 里混了非字符串就跳过那一项", []any{1}, ""},
+		// 认不出的形状**不拦必填**：schema 写得不合法是它自己的问题，
+		// 不该让工具整个用不了（与 matchesType 对未知类型不拦同一个取舍）
+		{"认不出的形状不拦必填", "q", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := map[string]any{
+				"type": "object", "properties": properties, "required": tc.required,
+			}
+			if got := ValidateArgs(schema, map[string]any{}); got != tc.want {
+				t.Errorf("ValidateArgs = %q，期望 %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeSourceID(t *testing.T) {
 	cases := map[string]string{
 		"mcp":          "mcp",

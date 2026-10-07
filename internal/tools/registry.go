@@ -291,6 +291,42 @@ func SanitizeSourceID(raw string) string {
 	return cleaned
 }
 
+// requiredNames 把 JSON Schema 的 `required` 归一成参数名列表。
+//
+// ## 为什么两种切片都得认
+//
+// `required` 从两条路进来，**Go 类型不一样**：
+//
+//   - 技能源：schema 是从 JSON 反序列化出来的 → `[]any`（元素是 any 包着的 string）
+//   - MCP 源：`toolSchema` 直接放 SDK 的 `Tool.InputSchema.Required`，那是 `[]string`
+//
+// 只认 `[]any` 的话，MCP 那条路的断言**恒 false**，整个必填校验被静默跳过；而
+// `properties` 是 `map[string]any`，逐属性的 type 校验照常生效、用例照常全绿——
+// 于是「MCP 工具的必填参数从来没被校验过」在完全没有红灯的情况下一直存在。
+//
+// **校验代码里的默默认定比没有校验更坏**：没有校验至少能看出来没写，写错了的
+// 校验让人以为已经拦住了。模型省掉一个必填参数，请求会直达外部 MCP server，
+// 由那边回一句模型看不懂的错。
+//
+// 认不出的形状一律返回空（等同不校验必填）——`required` 写得不合法是 schema
+// 自己的问题，不该让工具整个用不了（与 `matchesType` 对未知类型不拦同一个取舍）。
+func requiredNames(raw any) []string {
+	switch typed := raw.(type) {
+	case []string:
+		return typed
+	case []any:
+		names := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if name, ok := item.(string); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	default:
+		return nil
+	}
+}
+
 // ValidateArgs 按声明里的一小撮 JSON Schema 校验参数。**返回空串表示通过**。
 //
 // **只支持够用的那部分**：type: object、required、以及每个属性的 type。
@@ -298,15 +334,9 @@ func SanitizeSourceID(raw string) string {
 // 对象」「必填没填」这类会直接让工具出错的输入。
 func ValidateArgs(parameters map[string]any, args map[string]any) string {
 	if raw, ok := parameters["required"]; ok {
-		if required, ok := raw.([]any); ok {
-			for _, key := range required {
-				name, ok := key.(string)
-				if !ok {
-					continue
-				}
-				if value, present := args[name]; !present || value == nil {
-					return "缺少必填参数 " + name
-				}
+		for _, name := range requiredNames(raw) {
+			if value, present := args[name]; !present || value == nil {
+				return "缺少必填参数 " + name
 			}
 		}
 	}
