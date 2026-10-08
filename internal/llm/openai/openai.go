@@ -420,10 +420,15 @@ func postCompletion(
 		content.WriteString(delta.Content)
 
 		for _, call := range delta.ToolCalls {
-			// 分片按 index 归并。index 缺省时按到达顺序串行接在最后一条上
+			// 分片按 index 归并。**缺 index 时接在最后一条上**——部分兼容实现会
+			// 省略它，而续片没有 ID/Name：起新条目的话，收尾时会在下面
+			// `call.ID != "" && call.Name != ""` 处被整体丢掉，第一段（通常不完整的）
+			// 参数成了全部——参数就此静默截断（见 toolcalls_test.go 的两条用例）
 			index := len(order)
 			if call.Index != nil {
 				index = *call.Index
+			} else if len(order) > 0 {
+				index = order[len(order)-1]
 			}
 			merged, ok := toolCalls[index]
 			if !ok {

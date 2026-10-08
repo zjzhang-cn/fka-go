@@ -33,6 +33,23 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
+// TestEstimateMessageTokens_算上工具调用 tool_calls 的 arguments 是**逐字重放的
+// 原始 JSON**，会整个进请求；只算正文的预算会把「装不下」看成「装得下」。
+func TestEstimateMessageTokens_算上工具调用(t *testing.T) {
+	plain := ChatMessage{Role: RoleAssistant, Content: "查到了"}
+	if got := EstimateMessageTokens(plain); got != EstimateTokens("查到了") {
+		t.Errorf("没有工具调用时该与正文口径一致：%d", got)
+	}
+
+	withCall := ChatMessage{Role: RoleAssistant, Content: "查到了", ToolCalls: []ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"q":"三亚"}`},
+	}}
+	want := EstimateTokens("查到了") + EstimateTokens("search") + EstimateTokens(`{"q":"三亚"}`)
+	if got := EstimateMessageTokens(withCall); got != want {
+		t.Errorf("EstimateMessageTokens = %d，期望 %d（正文 + 名字 + 参数）", got, want)
+	}
+}
+
 func TestCompressHistory_预算内原样返回(t *testing.T) {
 	messages := []ChatMessage{
 		{Role: RoleUser, Content: "问题一"},

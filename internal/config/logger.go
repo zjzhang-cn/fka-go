@@ -313,7 +313,12 @@ func (l *Logger) write(level Level, typ Type, message string, ctx Context) {
 	handler := l.onCritical
 	l.mu.Unlock()
 
-	// 控制台输出：按级别过滤
+	// 控制台输出：按级别过滤、**一律走 stderr**——stdout 只属于结果输出
+	//（`fka ask` 的答案、`fka tools --json` 的 JSON）。
+	//
+	// 以前只有 Error 及以上走 stderr、其余走 stdout，而 CLI 的默认控制台级别
+	// 恰是 Warn——任何一条告警（MCP 连不上、effect 拼错、技能目录读不了）都会
+	// 插到 JSON 前面，**退出码仍是 0**，调用方只看到「解析失败」。make smoke 钉着这条。
 	if level < l.currentConsoleLevel() {
 		return
 	}

@@ -25,6 +25,18 @@ func EstimateTokens(text string) int {
 	return (len([]byte(text)) + 2) / 3
 }
 
+// EstimateMessageTokens 一条消息的完整口径：正文 + 工具调用的名字与原始参数。
+//
+// **压缩与预算共用它**：丢组的「总数」与「扣减」若口径不同，就会把装不下的组
+// 当成装得下。而 ToolCalls.Arguments 是**逐字重放的原始 JSON**——它也占上下文。
+func EstimateMessageTokens(m ChatMessage) int {
+	sum := EstimateTokens(m.Content)
+	for _, call := range m.ToolCalls {
+		sum += EstimateTokens(call.Name) + EstimateTokens(call.Arguments)
+	}
+	return sum
+}
+
 // CompressHistory 收拢历史到预算内：**从最老整「组」丢掉，绝不改写留下的任何一条**。
 //
 // ## 为什么不截断中间的文字
@@ -64,7 +76,7 @@ func CompressHistory(messages []ChatMessage, budgetTokens int) CompressionResult
 
 	for index < len(groups) && remaining > budgetTokens {
 		for _, message := range groups[index] {
-			remaining -= EstimateTokens(message.Content)
+			remaining -= EstimateMessageTokens(message)
 		}
 		dropped += len(groups[index])
 		index++
@@ -107,7 +119,7 @@ func groupMessages(messages []ChatMessage) [][]ChatMessage {
 func totalTokens(messages []ChatMessage) int {
 	sum := 0
 	for _, message := range messages {
-		sum += EstimateTokens(message.Content)
+		sum += EstimateMessageTokens(message)
 	}
 	return sum
 }

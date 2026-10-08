@@ -9,6 +9,7 @@
 // ## 子命令
 //
 //	ask    无头跑一轮工具循环问答（不经过渠道）
+//	chat   交互式多轮问答（不经过渠道，回答写 stdout、提示写 stderr）
 //	tools  列出模型现在能看到的工具与五类放行情况
 //	serve  常驻：接渠道、收消息、跑问答
 //	login  扫码登录渠道账号
@@ -27,6 +28,7 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/app"
 	"github.com/zjzhang-cn/fka-go/internal/channels"
+	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // 由 `make build` 通过 -ldflags -X 注入。默认值给 `go build` 直编的人用。
@@ -105,6 +107,8 @@ func run(args []string) int {
 	switch parsed.command {
 	case "ask":
 		return runAsk(ctx, parsed)
+	case "chat":
+		return runChat(ctx, parsed)
 	case "tools":
 		return runTools(ctx, parsed)
 	case "serve":
@@ -128,6 +132,7 @@ func printUsage() {
 
 用法：
   fka ask [参数] <问题>  无头跑一轮工具循环问答
+  fka chat [参数]       交互式多轮问答（回答写 stdout，提示与颜色写 stderr）
   fka tools [--json]    列出模型现在能看到的工具与五类放行情况
   fka serve             常驻：接渠道、收消息、跑问答
   fka login [--account N]  扫码登录（不给就用第一个空槽位）
@@ -139,6 +144,8 @@ fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安�
 LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要用得显式加上。
 
 参数**写在子命令前后都认**（fka --log-level debug serve 也行），认不出的以 2 退出。
+颜色只在真终端上开；管道、重定向、NO_COLOR、TERM=dumb 都自动关，也可用 --no-color 强制关
+（FKA_COLOR=always/never 强制开/关）。
 `)
 
 	// 日志那行印在正文之外：**它是每个子命令都认的**，不属于任何一个
@@ -149,12 +156,18 @@ LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要�
 //
 // **第一行是纯版本号、后面才是提交与日期**——那是为了让人能直接
 // `fka version | head -1` 拿去比对，或在 CI 里 grep。
+//
+// **安装根也印出来**：技能不生效、配置读不到这类问题的第一嫌疑人就是它
+// （三级回退 FKA_HOME → 可执行文件目录 → cwd，见 internal/config）。
+// Home() 只读环境变量与 os.Executable，不碰文件系统——smoke 那条
+// 「零副作用」断言不受影响。
 func runVersion() int {
 	fmt.Println(version)
 	fmt.Println("commit:    " + commit)
 	fmt.Println("built:     " + buildDate)
 	fmt.Println("channel:   " + runtime.GOOS + "/" + runtime.GOARCH)
 	fmt.Println("cgo:       " + cgoFlag())
+	fmt.Println("home:      " + config.Home())
 	return exitOK
 }
 

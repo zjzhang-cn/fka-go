@@ -311,7 +311,13 @@ func (a *App) Serve(ctx context.Context) error {
 	if len(a.Channels.Instances()) == 0 {
 		return fmt.Errorf("没有接上任何渠道，无事可做")
 	}
-	config.Log().Info(config.TypeSYS, "服务就绪，等待消息", config.Context{"kinds": strings.Join(a.ChannelKinds, "、")})
+	config.Log().Info(config.TypeSYS, "服务就绪，等待消息", config.Context{
+		"kinds": strings.Join(a.ChannelKinds, "、"),
+		// **安装根也报出来**：技能不生效、配置读不到这类问题的第一句话就是
+		// 「它在读哪一份配置」——而安装根是三级回退（FKA_HOME → 可执行文件
+		// 目录 → cwd），不报就只剩猜。见 AGENTS.md 的「安装根」一节
+		"home": config.Home(),
+	})
 
 	<-ctx.Done()
 	a.Channels.StopAll(context.WithoutCancel(ctx))
