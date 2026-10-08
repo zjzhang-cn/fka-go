@@ -27,6 +27,7 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/app"
 	"github.com/zjzhang-cn/fka-go/internal/channels"
+	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // 由 `make build` 通过 -ldflags -X 注入。默认值给 `go build` 直编的人用。
@@ -149,12 +150,18 @@ LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要�
 //
 // **第一行是纯版本号、后面才是提交与日期**——那是为了让人能直接
 // `fka version | head -1` 拿去比对，或在 CI 里 grep。
+//
+// **安装根也印出来**：技能不生效、配置读不到这类问题的第一嫌疑人就是它
+// （三级回退 FKA_HOME → 可执行文件目录 → cwd，见 internal/config）。
+// Home() 只读环境变量与 os.Executable，不碰文件系统——smoke 那条
+// 「零副作用」断言不受影响。
 func runVersion() int {
 	fmt.Println(version)
 	fmt.Println("commit:    " + commit)
 	fmt.Println("built:     " + buildDate)
 	fmt.Println("channel:   " + runtime.GOOS + "/" + runtime.GOARCH)
 	fmt.Println("cgo:       " + cgoFlag())
+	fmt.Println("home:      " + config.Home())
 	return exitOK
 }
 

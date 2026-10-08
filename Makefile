@@ -240,6 +240,20 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 		echo "$(BOLD)✗$(RESET) tools --json 被日志污染了，第一行是："; \
 		head -1 $(smoke_dir)/tools.json; exit 1; \
 	fi
+	@# **告警也不许污染 stdout**：默认控制台级别是 Warn，--json 的第一个字节必须仍是
+	@# `{`——WARN 走 stdout 的话，脚本只看到「JSON 解析失败」而**退出码仍是 0**。
+	@# 用一个必然触发 WARN 的取值（认不出的 effect）把它钉成常驻断言。
+	@LOG_LEVEL= LLM_TOOL_EFFECTS=wat $(FKA) tools --json > $(smoke_dir)/tools-warn.json 2> $(smoke_dir)/tools-warn.err
+	@if [ "$$(head -c 1 $(smoke_dir)/tools-warn.json)" != "{" ]; then \
+		echo "$(BOLD)✗$(RESET) WARN 污染了 stdout，第一行是："; \
+		head -1 $(smoke_dir)/tools-warn.json; exit 1; \
+	fi
+	@if grep -q "认不出的取值" $(smoke_dir)/tools-warn.err; then \
+		echo "$(BOLD)✓$(RESET) 告警走 stderr，stdout 仍是纯 JSON"; \
+	else \
+		echo "$(BOLD)✗$(RESET) 告警没出现在 stderr——被吞了？stderr 内容是："; \
+		cat $(smoke_dir)/tools-warn.err; exit 1; \
+	fi
 	@echo
 	@# **只读子命令零副作用**：`version` 连日志目录都不该建。`config.Log()` 是惰性
 	@# 构造（import 不产生 IO），而 CLI 里那句「定下控制台级别」会把它唤醒——纯输出
