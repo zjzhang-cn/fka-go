@@ -281,14 +281,43 @@ func safeMtime(path string) int64 {
 	return info.ModTime().UnixMilli()
 }
 
+// entryFile 找技能目录里的入口文件：先试规范名 `SKILL.md`，找不到再按
+// **大小写不敏感**扫一圈——手工放进去的目录不会讲究大小写，而 Linux 上
+// `skill.md` 与 `SKILL.md` 是两个名字（macOS/Windows 默认不区分，本地测不出来）。
+//
+// **signatureOf 与 load 必须走同一个入口**：一个算签名、一个真读文件，
+// 两处口径一旦分叉，缓存就会在不该命中的时候命中。
+func entryFile(dir string) (string, bool) {
+	canonical := filepath.Join(dir, SkillFile)
+	if info, err := os.Stat(canonical); err == nil && !info.IsDir() {
+		return canonical, true
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.EqualFold(entry.Name(), SkillFile) {
+			return filepath.Join(dir, entry.Name()), true
+		}
+	}
+	return "", false
+}
+
 func (s *source) signatureOf(scanned [][2]any) string {
 	var parts []string
 	for _, item := range scanned {
 		dir, _ := item[0].(string)
 		names, _ := item[1].([]string)
 		for _, name := range names {
-			parts = append(parts, dir+"\x00"+name+"\x00"+
-				itoa(safeMtime(filepath.Join(dir, name, SkillFile))))
+			// 与 load 同口径：签名算的是**实际会被读的那个入口文件**的 mtime
+			//（大小写不敏感），找不到记 0——两处口径分叉会让缓存失准
+			mtime := int64(0)
+			if entry, ok := entryFile(filepath.Join(dir, name)); ok {
+				mtime = safeMtime(entry)
+			}
+			parts = append(parts, dir+"\x00"+name+"\x00"+itoa(mtime))
 		}
 	}
 	return strings.Join(parts, "\x01")
@@ -308,7 +337,14 @@ func (s *source) load() []Skill {
 		dir, _ := item[0].(string)
 		names, _ := item[1].([]string)
 		for _, name := range names {
-			raw, err := os.ReadFile(filepath.Join(dir, name, SkillFile))
+			entry, ok := entryFile(filepath.Join(dir, name))
+			if !ok {
+				// 一个技能读不了，不能把别的技能一起带走
+				config.Log().Warn(config.TypeTOOL, "技能读不了，已跳过",
+					config.Context{"skill": dir + "/" + name, "error": "目录里没有 " + SkillFile + "（大小写不限）"})
+				continue
+			}
+			raw, err := os.ReadFile(entry)
 			if err != nil {
 				// 一个技能读不了，不能把别的技能一起带走
 				config.Log().Warn(config.TypeTOOL, "技能读不了，已跳过",

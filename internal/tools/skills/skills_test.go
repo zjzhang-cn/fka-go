@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
@@ -322,6 +323,58 @@ func TestSource_改完不用重启(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "第二个") {
 		t.Errorf("新技能应当立刻可用：%s", result.Content)
+	}
+}
+
+// TestSource_技能入口大小写不敏感 注释承诺「大小写都要认：手工放进去的目录不会讲究」，
+// 而 Linux 上 `skill.md` 与 `SKILL.md` 是两个名字——只认大写的话技能会被**静默跳过**
+// （只剩一条 Warn），而 macOS/Windows 默认不区分，本地开发永远测不出来。
+func TestSource_技能入口大小写不敏感(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "backup")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("建技能目录失败：%v", err)
+	}
+	entry := filepath.Join(skillDir, "skill.md")
+	if err := os.WriteFile(entry, []byte("---\nname: 备份\ndescription: d\n---\n小写入口的步骤"), 0o644); err != nil {
+		t.Fatalf("写技能失败：%v", err)
+	}
+
+	source := NewSource([]string{dir})
+
+	// 清单里要有它
+	section, err := source.PromptSection(tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(section, "备份") {
+		t.Errorf("小写入口的技能该出现在清单里：%q", section)
+	}
+
+	// 取全文也要认
+	result, err := source.Call(context.Background(), ToolLoad, map[string]any{"name": "备份"}, tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !strings.Contains(result.Content, "小写入口的步骤") {
+		t.Errorf("小写入口该被读出来：%s", result.Content)
+	}
+
+	// **缓存签名与实际读的文件同口径**：改内容后下一轮要看得见。
+	// mtime 明确前移——快速连续写时文件系统的毫秒精度不可靠
+	if err := os.WriteFile(entry, []byte("---\nname: 备份\ndescription: d\n---\n改过的步骤"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(entry, future, future); err != nil {
+		t.Fatal(err)
+	}
+	result, err = source.Call(context.Background(), ToolLoad, map[string]any{"name": "备份"}, tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Content, "改过的步骤") {
+		t.Errorf("改完该立刻生效（签名与 load 同口径）：%s", result.Content)
 	}
 }
 
