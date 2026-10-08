@@ -5,8 +5,7 @@
       "type": "local",
       "command": [
         "/Users/zhangzhenjiang/aoci_0.1.0-rc12_darwin_arm64/aoci",
-        "--repo",
-        "/Users/zhangzhenjiang/fka-go",
+        "--repo",".",
         "mcp"
       ],
       "enabled": true
