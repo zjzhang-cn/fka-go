@@ -9,6 +9,7 @@
 // ## 子命令
 //
 //	ask    无头跑一轮工具循环问答（不经过渠道）
+//	chat   交互式多轮问答（不经过渠道，回答写 stdout、提示写 stderr）
 //	tools  列出模型现在能看到的工具与五类放行情况
 //	serve  常驻：接渠道、收消息、跑问答
 //	login  扫码登录渠道账号
@@ -106,6 +107,8 @@ func run(args []string) int {
 	switch parsed.command {
 	case "ask":
 		return runAsk(ctx, parsed)
+	case "chat":
+		return runChat(ctx, parsed)
 	case "tools":
 		return runTools(ctx, parsed)
 	case "serve":
@@ -129,6 +132,7 @@ func printUsage() {
 
 用法：
   fka ask [参数] <问题>  无头跑一轮工具循环问答
+  fka chat [参数]       交互式多轮问答（回答写 stdout，提示与颜色写 stderr）
   fka tools [--json]    列出模型现在能看到的工具与五类放行情况
   fka serve             常驻：接渠道、收消息、跑问答
   fka login [--account N]  扫码登录（不给就用第一个空槽位）
@@ -140,6 +144,8 @@ fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安�
 LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要用得显式加上。
 
 参数**写在子命令前后都认**（fka --log-level debug serve 也行），认不出的以 2 退出。
+颜色只在真终端上开；管道、重定向、NO_COLOR、TERM=dumb 都自动关，也可用 --no-color 强制关
+（FKA_COLOR=always/never 强制开/关）。
 `)
 
 	// 日志那行印在正文之外：**它是每个子命令都认的**，不属于任何一个

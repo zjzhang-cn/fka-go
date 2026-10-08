@@ -320,7 +320,8 @@ func parseFlags(args []string) (cliArgs, error) {
 // 混进用户提示词**，没有任何报错。所以「认不认识」只在这里判一次。
 var knownFlags = map[string]bool{
 	// 布尔（不取值）
-	"--json": false,
+	"--json":     false,
+	"--no-color": false,
 	// 取一个值
 	principalFlag: true,
 	sessionFlag:   true,

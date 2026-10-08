@@ -1,0 +1,448 @@
+// 本文件是 `fka chat`：一个**多轮**的交互式问答循环，参照 `ask`，区别只在「会话续着走」。
+//
+// ## 与 ask 的唯一区别就是会话
+//
+// `ask` 没给 `--session` 时每次都新生成一个 id，所以它是一次性的；`chat` 整场复用
+// 同一个 id，于是 `Runner` 每轮读到的历史前缀就是上一轮的对话，收尾再追加回去
+// （见 `agent/loop` 的 `persistTurn` 与 `internal/llm/history`）。除了这一点，两者
+// 走的是同一套装配、同一个模型、同一条工具链。
+//
+// ## stdout 与 stderr 的分工（这是本仓的不变量）
+//
+// 回答（`result.Text`）是**结果**，只进 stdout；提示符、角色标签、「用了工具」、
+// 错误、帮助全部进 stderr。所以 `fka chat < 提问.txt > 回答.txt` 里那份文件是一串
+// 干净的回答，而终端上照样看得到带色的交互。这与 `make smoke` 钉的
+// 「CLI 的 stdout 只有结果」是同一条规矩——把标签混进 stdout，重定向后再 grep
+// 就分不清哪一行是模型说的、哪一行是我们加的。
+//
+// ## 颜色为什么是手写的 ANSI
+//
+// 全仓只有 4 个直接依赖且刻意保持极少（见 AGENTS.md「依赖纪律」）。一个 REPL 的上色
+// 不值得引一门 TUI 框架。默认**只在真终端上上色**：管道、重定向、`NO_COLOR`、
+// `TERM=dumb` 都自动关掉——给一个文件写 ANSI 转义是把文件弄脏，不是让输出好看。
+//
+// ## 为什么没有逐字流式回显
+//
+// `ChatClient` 只交出拼好的整段 `ChatResult`（`internal/llm/openai` 内部虽是流式，
+// 但不把 token 往外吐）。所以这里只能「思考中…」然后整段出现。要做真流式，得先改
+// 模型契约；那是另一件事。
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/zjzhang-cn/fka-go/internal/agent"
+	"github.com/zjzhang-cn/fka-go/internal/llm"
+	"github.com/zjzhang-cn/fka-go/internal/tools"
+)
+
+// chatEngine 是 chat 循环用到的那部分工具循环。
+//
+// **接口声明在消费者这一侧**，宽度就一个方法：`ask` 与 `messages` 用的是同一个
+// `*agent.Runner`，可替换成本全在这行签名上。测试注入假引擎走的就是它。
+type chatEngine interface {
+	Run(ctx context.Context, input agent.RunnerInput) (agent.RunResult, error)
+}
+
+// chatToolLister 是 `/tools` 需要的那部分注册表。`tools.Service` 满足它。
+type chatToolLister interface {
+	Tools(ctx context.Context, tc tools.Context) ([]tools.RegisteredTool, error)
+}
+
+// runChat 起一场交互式多轮问答。
+//
+// 前置检查与 `ask` **逐条一致**（没配模型 / 工具循环关了 / 一个工具都没放行各自
+// 说清缺什么）。不一致的话会出现「ask 报得出原因、chat 只回一句没接上」这种
+// 同一个环境两种诊断的分叉。
+func runChat(ctx context.Context, parsed cliArgs) int {
+	application := build()
+	defer application.Close()
+
+	application.WarmMcp(ctx)
+
+	if !application.LLMReady {
+		fmt.Fprintln(os.Stderr, "没配 LLM_API_KEY / LLM_MODEL，chat 没法跑。")
+		return exitFail
+	}
+	if !application.Agent.Enabled() {
+		fmt.Fprintln(os.Stderr, "工具循环未启用（LLM_TOOLS=off）。")
+		return exitFail
+	}
+
+	hasTools, err := application.Agent.HasTools(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "列工具失败：%s\n", err.Error())
+		return exitFail
+	}
+	if !hasTools {
+		fmt.Fprintln(os.Stderr, "现在没有任何工具被放行，chat 无从跑起。")
+		fmt.Fprintf(os.Stderr, "  请设 LLM_TOOL_EFFECTS=read,external，并在 %s 里配好服务器。\n",
+			application.McpConfigPath)
+		fmt.Fprintln(os.Stderr, "  跑 `fka tools` 看现在放行了什么。")
+		return exitFail
+	}
+
+	colors := palette{enabled: shouldColor(os.Stderr, hasFlag(parsed, "--no-color"))}
+
+	// **历史不落盘时多轮是假的**：每轮 `LoadHistoryPrefix` 都拿不到东西，于是
+	// 「接着上一句说」变成一句空话，而界面上完全看不出来。所以这里必须响。
+	if application.History == nil {
+		fmt.Fprintln(os.Stderr, colors.err("SESSION_HISTORY=0：历史不落盘，"+
+			"这个会话带不上上一轮。要真正的多轮请去掉它（默认就是开的）。"))
+	}
+
+	repl := &chatREPL{
+		engine:    application.Agent,
+		lister:    application.Tools,
+		in:        bufio.NewReader(os.Stdin),
+		out:       os.Stdout,
+		ui:        os.Stderr,
+		pal:       colors,
+		spinner:   isCharDevice(os.Stderr) && isCharDevice(os.Stdin),
+		debug:     debugEnabled(),
+		principal: flagOrEnv(parsed, principalFlag, principalEnv, "cli"),
+		session:   sessionID(parsed),
+	}
+	return repl.loop(ctx)
+}
+
+// chatREPL 一场会话的全部状态。
+//
+// `out` 与 `ui` **刻意分开**：前者只收回答，后者收一切给人看的提示。合成一个
+// writer 之后「stdout 只有结果」就守不住了，而那条不变量正是 `--json` / `version`
+// 那些闸门在钉的东西。
+type chatREPL struct {
+	engine chatEngine
+	lister chatToolLister
+	in     *bufio.Reader
+	out    io.Writer
+	ui     io.Writer
+	pal    palette
+	// spinner 只在**两侧都是真终端**时为真。管道下转圈会把日志弄脏，而「思考中」
+	// 对脚本没有任何意义。
+	spinner bool
+	// debug 输出会话/步数等排查信息（FKA_DEBUG=1）。与 `ask` 同一个开关。
+	debug     bool
+	principal string
+	session   string
+}
+
+// loop 是 REPL 主体。返回退出码。
+func (r *chatREPL) loop(ctx context.Context) int {
+	r.banner()
+
+	for {
+		// Ctrl-C：`run` 里的 signal ctx 已取消。把它当**干净退出**而不是错误——
+		// 用户按 Ctrl-C 就是想走，再回一句红字没有意义。
+		if ctx.Err() != nil {
+			r.bye()
+			return exitOK
+		}
+
+		r.prompt()
+		line, err := r.readLine()
+		if err != nil {
+			// EOF（Ctrl-D）是正常结束，不是错
+			r.bye()
+			return exitOK
+		}
+
+		text := strings.TrimSpace(line)
+		if text == "" {
+			continue
+		}
+
+		if strings.HasPrefix(text, "/") {
+			if done, code := r.command(ctx, text); done {
+				return code
+			}
+			continue
+		}
+
+		// **一轮失败不带走整场会话**：模型接口偶发、单条问题太长，都不该让用户
+		// 从头再来。错误已经打印过，这里只继续读下一行。
+		r.ask(ctx, text)
+	}
+}
+
+// banner 开场白。**只有它出现在第一行**，所以把「会话 id 与历史文件」一起说了
+// ——「我上一句哪去了」是 chat 最常被问的问题，答案就在那两行里。
+func (r *chatREPL) banner() {
+	fmt.Fprintf(r.ui, "%s %s\n", r.pal.assistant("fka chat"), r.pal.dim("多轮工具循环问答"))
+	fmt.Fprintf(r.ui, "%s\n", r.pal.dim("会话 "+r.session+"　历史 "+llm.SessionPath(r.session, "")))
+	fmt.Fprintf(r.ui, "%s\n", r.pal.dim("/help 看命令，/new 重开一个会话，Ctrl-D 退出。"))
+	fmt.Fprintln(r.ui)
+}
+
+func (r *chatREPL) bye() {
+	fmt.Fprintln(r.ui)
+	fmt.Fprintln(r.ui, r.pal.dim("再见。"))
+}
+
+// prompt 提问符。**在读之前写**，所以用户敲进去的那一行前面就是带色的 `> `——
+// 这是唯一能在不改终端 raw 模式的前提下给「回显」上色的位置。
+func (r *chatREPL) prompt() {
+	fmt.Fprint(r.ui, r.pal.user("> "))
+}
+
+// readLine 读一行去掉行尾。EOF 与真错误分两种。
+//
+// 末行没有换行（`printf '问' | fka chat`）时 `ReadString` 会同时给出内容与
+// `io.EOF`——**那一行不能丢**，下一次读才是干净的 EOF。
+func (r *chatREPL) readLine() (string, error) {
+	line, err := r.in.ReadString('\n')
+	text := strings.TrimRight(line, "\r\n")
+	switch {
+	case err == nil:
+		return text, nil
+	case errors.Is(err, io.EOF) && text != "":
+		return text, nil
+	default:
+		return text, err
+	}
+}
+
+// command 处理一条 `/` 开头的行。done=true 表示该结束整场会话。
+func (r *chatREPL) command(ctx context.Context, line string) (done bool, code int) {
+	name, _ := splitSlash(line)
+	switch name {
+	case "/quit", "/exit", "/q":
+		r.bye()
+		return true, exitOK
+	case "/help", "/h", "/?":
+		r.help()
+		return false, exitOK
+	case "/new":
+		r.session = newCliSessionID()
+		fmt.Fprintf(r.ui, "%s %s\n", r.pal.assistant("新会话"), r.pal.dim(r.session))
+		return false, exitOK
+	case "/session":
+		fmt.Fprintf(r.ui, "%s\n", r.pal.dim("会话 "+r.session+"　历史 "+llm.SessionPath(r.session, "")))
+		return false, exitOK
+	case "/tools":
+		r.showTools(ctx)
+		return false, exitOK
+	default:
+		// 认不出的命令**不能当问题发出去**：`/sesion`（拼错）会让模型认真回答一个
+		// 莫名其妙的字符串。这条规矩与 `parseFlags` 对未知参数的处理是同一条。
+		fmt.Fprintf(r.ui, "%s\n", r.pal.err("认不出的命令："+name+"（/help 看全部）"))
+		return false, exitOK
+	}
+}
+
+// ask 问一轮并把回答写出去。
+//
+// 顺序是硬要求：**先停转圈，再写角色标签，最后写回答**。标签与回答分处两个
+// writer（ui / out），转圈还占着 ui 那一行时写标签会叠字。
+func (r *chatREPL) ask(ctx context.Context, question string) {
+	stop := startSpinner(r.ui, r.pal, r.spinner)
+
+	result, err := r.engine.Run(ctx, agent.RunnerInput{
+		SessionID:   r.session,
+		PrincipalID: r.principal,
+		Question:    question,
+	})
+	stop()
+
+	if err != nil {
+		// 被 Ctrl-C 掐断的：舞一句错误就走，别诱导用户再问一轮
+		if ctx.Err() != nil {
+			fmt.Fprintln(r.ui, r.pal.dim("已中断。"))
+			return
+		}
+		// 模型的错**如实报**，不静默降级——与 ask 同一条理由
+		fmt.Fprintln(r.ui, r.pal.err("问答失败："+err.Error()))
+		return
+	}
+
+	fmt.Fprintln(r.ui, r.pal.assistant("● 助手"))
+	fmt.Fprintln(r.out, result.Text)
+
+	if len(result.UsedTools) > 0 {
+		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 用了工具："+strings.Join(result.UsedTools, "、")))
+	}
+	if r.debug {
+		fmt.Fprintf(r.ui, "%s\n", r.pal.dim(fmt.Sprintf(
+			"[debug] session=%s steps=%d stoppedBy=%s", r.session, result.Steps, result.StoppedBy)))
+	}
+	fmt.Fprintln(r.ui)
+}
+
+func (r *chatREPL) showTools(ctx context.Context) {
+	if r.lister == nil {
+		fmt.Fprintln(r.ui, r.pal.dim("（没有注册表可查）"))
+		return
+	}
+	listed, err := r.lister.Tools(ctx, tools.Context{})
+	if err != nil {
+		fmt.Fprintln(r.ui, r.pal.err("列工具失败："+err.Error()))
+		return
+	}
+	if len(listed) == 0 {
+		fmt.Fprintln(r.ui, r.pal.dim("模型现在看不到任何工具。"))
+		return
+	}
+	for _, tool := range listed {
+		fmt.Fprintf(r.ui, "%s %s %s\n",
+			r.pal.tool(fmt.Sprintf("%-40s", tool.FullName)),
+			r.pal.dim(fmt.Sprintf("%-9s", tool.Spec.Effect)),
+			firstLine(tool.Spec.Description))
+	}
+}
+
+func (r *chatREPL) help() {
+	lines := []string{
+		"/help     这份帮助",
+		"/new      重开一个会话（换一个 session id 与历史文件）",
+		"/session  显示当前会话 id 与历史文件路径",
+		"/tools    列出模型现在能看到的工具",
+		"/quit     退出（Ctrl-D 同效）",
+		"",
+		"直接输入问题就是问一轮；本会话的每一轮都带着上一轮的上下文。",
+		"回答写 stdout，提示与标签写 stderr——重定向时那份文件是一串干净的回答。",
+	}
+	for _, line := range lines {
+		fmt.Fprintf(r.ui, "%s\n", r.pal.dim(line))
+	}
+}
+
+// splitSlash 把一个 `/` 开头的行拆成命令名与剩下的参数。
+//
+// 命令名是**第一个空格之前**的全部；参数保留原样（含空格），这样将来的
+// `/save 我的问题` 这类带空格参数不会被吃掉后半截。
+func splitSlash(line string) (name, arg string) {
+	trimmed := strings.TrimSpace(line)
+	if index := strings.IndexAny(trimmed, " \t"); index >= 0 {
+		return trimmed[:index], strings.TrimSpace(trimmed[index+1:])
+	}
+	return trimmed, ""
+}
+
+// ── 颜色 ──────────────────────────────────────────────
+
+// palette 只有「开/关」一个状态。**关掉时每个方法都原样返回**，所以调用点不必到处
+// 判「现在有没有颜色」——那种判散开就一定会漏一处，漏的那处会在重定向的输出里留下
+// 一串 `\x1b[0m`。
+type palette struct{ enabled bool }
+
+const (
+	ansiReset  = "\x1b[0m"
+	ansiRed    = "\x1b[31m"
+	ansiGreen  = "\x1b[32m"
+	ansiYellow = "\x1b[33m"
+	ansiCyan   = "\x1b[96m"
+	ansiDim    = "\x1b[2m"
+)
+
+func (p palette) paint(code, s string) string {
+	if !p.enabled {
+		return s
+	}
+	return code + s + ansiReset
+}
+
+func (p palette) user(s string) string      { return p.paint(ansiCyan, s) }
+func (p palette) assistant(s string) string { return p.paint(ansiGreen, s) }
+func (p palette) tool(s string) string      { return p.paint(ansiYellow, s) }
+func (p palette) err(s string) string       { return p.paint(ansiRed, s) }
+func (p palette) dim(s string) string       { return p.paint(ansiDim, s) }
+
+// shouldColor 这一路输出上不上色。**从上往下第一条命中的说了算**：
+//
+//	--no-color 参数   → 关（用户当场说不要）
+//	FKA_COLOR=always  → 开（演示/截图；也是测试唯一能强制开的口子）
+//	FKA_COLOR=never   → 关
+//	NO_COLOR 已设置   → 关（这是那个约定的语义：**只要存在**就关，值无关）
+//	TERM=dumb         → 关
+//	不是字符设备      → 关（管道/重定向/文件）
+//
+// 顺序有意：参数优先于环境变量，环境变量优先于自动探测。反过来会让
+// `NO_COLOR=1 fka chat --no-color` 之类的组合出现「谁说了算」的不确定。
+func shouldColor(w *os.File, noColorFlag bool) bool {
+	if noColorFlag {
+		return false
+	}
+	if value := strings.ToLower(strings.TrimSpace(os.Getenv("FKA_COLOR"))); value != "" {
+		switch value {
+		case "always", "1", "true", "on", "yes":
+			return true
+		case "never", "0", "false", "off", "no":
+			return false
+		}
+	}
+	if _, present := os.LookupEnv("NO_COLOR"); present {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
+		return false
+	}
+	return isCharDevice(w)
+}
+
+// isCharDevice 这个文件是不是终端。**不引 isatty 库**：它已经作为 MCP SDK 的间接
+// 依赖躺在 go.sum 里，用它就会把依赖表从 4 个直接依赖变成 5 个，而这一行
+// `Stat` 就是全部所需。
+//
+// 字符设备只是**近似**（`/dev/null` 也是字符设备），但对「要不要上色」这个用途，
+// 近似的两个方向代价都很小：真终端被误判成不是 → 少点颜色；反之 → 多几个转义，
+// 而 `NO_COLOR` / `--no-color` 都能救。精确判定需要 ioctl，不值得。
+func isCharDevice(w *os.File) bool {
+	if w == nil {
+		return false
+	}
+	info, err := w.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// ── 转圈 ──────────────────────────────────────────────
+
+// startSpinner 在等待模型时原地转圈，返回一个「停下并擦掉这一行」的函数。
+//
+// 关闭时返回的是个空操作，**不是 nil**——调用点就能无条件 `defer stop()` 而不必
+// 再判一次开关，少一处会漏的分支。
+//
+// 擦除用 `\r\x1b[K`（回车 + 清到行尾）而不是补空格：转圈宽度会变，
+// 补的空格数算错就留下残渣。
+func startSpinner(w io.Writer, p palette, enabled bool) func() {
+	if !enabled {
+		return func() {}
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		frames := [...]string{"|", "/", "-", "\\"}
+		ticker := time.NewTicker(90 * time.Millisecond)
+		defer ticker.Stop()
+		index := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				fmt.Fprintf(w, "\r\x1b[K%s", p.dim(frames[index%len(frames)]+" 思考中…"))
+				index++
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		wg.Wait()
+		fmt.Fprint(w, "\r\x1b[K")
+	}
+}

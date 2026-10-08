@@ -119,7 +119,7 @@ Go 的 `internal` 规则只管「树内不许外泄」，**管不了「树外不
 ## 本仓库的写法约定
 
 - **测试名是中文句子**：`Test主体_场景` 或 `Test一句话描述`（`TestMigrate_认领失败不重建`、
-  `TestRegistry_未放行的工具不告诉模型`）。`t.Run` 的子测试名同理。这不是玩笑，328 个顶层用例（约 350 含子测试）都这样。
+  `TestRegistry_未放行的工具不告诉模型`）。`t.Run` 的子测试名同理。这不是玩笑，347 个顶层用例（约 410 含子测试）都这样。
 - **文件头注释解释「为什么」，不解释「是什么」**：几乎每个非平凡文件开头都有 `//` 头，
   带 `##` 小节、`**加粗**` 的关键论断、常见「刻意这么做」的解释（有时还写清
   Node 版原来的做法与它的痛点）。写新文件请照这个密度写。
@@ -160,10 +160,10 @@ skill front matter 解析不引 YAML 库（只认 `key: value`，认不出的当
 **`docs/dev-log.md` 不要改**——它记的是当时的状态，里面的路径有的已经搬走了。
 `docs/node-to-go.md` 被人删掉了（一直没写），引用它的死链已清掉。
 
-**实际存在的树**（86 个 .go 文件，328 个顶层用例）：
+**实际存在的树**（89 个 .go 文件，347 个顶层用例）：
 
 ```
-cmd/fka/            入口：ask / tools / serve / login / version
+cmd/fka/            入口：ask / chat / tools / serve / login / version
 internal/agent      工具循环（≤N 步，LLM_MAX_STEPS）
 internal/app        装配根（唯一装配点）
 internal/channels   渠道接缝 + ilink/{adapter,provider} + ilink/bot（协议：加解密/上传/长轮询/登录）

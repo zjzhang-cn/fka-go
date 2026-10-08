@@ -67,6 +67,10 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
 # 接着上一条 CLI 问的继续（不给 --session 就是每次一个新会话）
 ./bin/fka ask --session cli-3f2a9c1e-7b4d-4a2f-8e6c-1d5b0a9c3e7f "那去年呢"
 
+# 交互式多轮问答：整场复用一个会话，回答写 stdout、提示与颜色写 stderr（Ctrl-D 退出）
+FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
+  FKA_PRINCIPAL=zhang ./bin/fka chat
+
 # 常驻：接渠道、收消息、跑问答
 FKA_HOME=/path/to/fka ./bin/fka serve
 ```
@@ -75,6 +79,10 @@ FKA_HOME=/path/to/fka ./bin/fka serve
 `<安装根>/data/history/cli-<uuid>.jsonl`）。这是有意的：兜底曾是固定的一个名字，
 于是**每一条**不带参数的 `ask` 都在续上一条——「模型忽然提起你半小时前随口问过的
 那件事」，而命令行里什么都没变。想连续会话就显式给 `--session`（或 `FKA_SESSION`）。
+
+**`fka chat` 正好相反**：它整场只用一个会话（`/new` 才换），所以每一轮都带着上一轮的
+上下文，不需要你记 `--session`。回答只进 stdout、提示符与角色标签只进 stderr，
+于是 `fka chat < 提问.txt > 回答.txt` 里那份文件是一串干净的回答。
 `--debug`（或 `FKA_DEBUG=1`）会把这一轮用的会话 id 打在答案后面。
 
 必填环境变量只有 `LLM_API_KEY` 与 `LLM_MODEL`。没配时 `ask` 会**明确报错**，
