@@ -28,7 +28,7 @@
 #===索引规范完毕===
 #===头部索引完毕===
 ===/Users/zhangzhenjiang/fka-go/===
-.env.example[OO3T]: F:配置样例 | R:internal/config/config.go | A:- | S:账号槽位那几行刻意注释掉，只有 `fka login` 会写它们
+.env.example[OO3S]: F:配置样例 | R:internal/config/config.go, internal/tools/mcp/config.go, mcp/memory/main.go | A:- | S:账号槽位那几行刻意注释掉，只有 `fka login` 会写；记忆那两行靠 .env 继承进子进程
 .gitattributes[OO5JT]: F:强制 LF 检出 | R:.aoci/baseline.json | A:- | S:AOCI 基线按原始字节算 SHA-256，所以检出必须逐字节一致（`eol=lf` 压过 Windows 默认的 CRLF 改写，否则整棵树在别的平台上都算漂移）
 .gitignore[OO3T]: F:忽略规则 | R:- | A:- | S:含凭证与用户消息的路径全忽略；`go.sum` 必须入库
 AGENTS.md[OO8TM]: F:仓库硬约束与不变量 | R:docs/port-plan.md, docs/decisions.md, Makefile, internal/config/config.go, internal/app/app.go | A:- | S:记的全是硬约束：安装根按 FKA_HOME、可执行文件所在目录、cwd 三级回退，直接跑二进制与走 Makefile 读的不是同一份配置，这是「技能不生效」的多数来源；零 CGO 是硬约束，每个构建目标显式声明，version 打印的 cgo 由 build tag 判定；依赖纪律 5 个直接依赖，唯一例外是 ergochat/readline（fka chat 行编辑：canonical 回显按列擦除致中文回退残留，手写不出 East Asian 宽度表；纯 Go、CJK 宽度按 x/text/width 算，复用已在 go.sum 的 x/sys、x/text）；两条边界（记忆 server 子树不许 import 树外、渠道接缝不许 import 具体渠道）Go 的 internal 规则管不到，只能靠 AST 扫描测试守，破了照常编译照常跑；viewer_wxid 由模型填，权限过滤是唯一数据防线，必须留在 SQL WHERE 每次查询都带，查完再筛漏一处即泄漏；工具全名、tool_calls.arguments 的原始字节、历史按整组丢弃都不可动——模型逐字重放会话历史，改一处会让该轮起前缀缓存全失效，留下孤儿 tool 消息直接 400；MCP server 启动后 stdout 一个字都不能有；退出码 0/1/2 是契约；末尾的 aoci 区块由工具维护，不要手写
