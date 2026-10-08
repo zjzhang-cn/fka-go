@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-29T13:49:22Z",
-  "updated_at": "2026-10-08T07:15:47Z",
+  "updated_at": "2026-10-08T08:22:06Z",
   "files": {
     ".env.example": {
       "sha256": "2a0cba73cc75d118ec48e4bf084be0357a32280ba10c077ec29209313e70c3b6",
@@ -19,9 +19,9 @@
       "normalized_sha256": "4fc6536f76a9be4311f391f843b87de30d975e77d95e626208c74776729db446"
     },
     "AGENTS.md": {
-      "sha256": "8e59d3fd7ee967aa12af6e8da347d97759ee9199c170b9bb695b3df210bb333c",
-      "size": 24558,
-      "normalized_sha256": "8e59d3fd7ee967aa12af6e8da347d97759ee9199c170b9bb695b3df210bb333c"
+      "sha256": "7506723735ea5f37ddd6b3fd66c4e32cd46ca23e832cf434af6ac2af33f4ea27",
+      "size": 24994,
+      "normalized_sha256": "7506723735ea5f37ddd6b3fd66c4e32cd46ca23e832cf434af6ac2af33f4ea27"
     },
     "LICENSE": {
       "sha256": "dd0ad62d764cd285175c701be60cd2dca160b44559d0ffe03e9d53de6b555a54",
@@ -39,9 +39,9 @@
       "normalized_sha256": "4f83a286ff904ed53773a01f5626874c82c377c4438e9fca53f24baef23857bb"
     },
     "aoci.txt": {
-      "sha256": "53a18b10e0771e59e7e3f5bf9ca44139e4401b325e5a3c0bf8191caa0c33c9ee",
-      "size": 80336,
-      "normalized_sha256": "53a18b10e0771e59e7e3f5bf9ca44139e4401b325e5a3c0bf8191caa0c33c9ee"
+      "sha256": "d939a254d0290c039974c269e7d2eba920fd54489ccbff3321dbe4165156e37a",
+      "size": 80860,
+      "normalized_sha256": "d939a254d0290c039974c269e7d2eba920fd54489ccbff3321dbe4165156e37a"
     },
     "cmd/fka/ask.go": {
       "sha256": "01171397f4816abd2a6f95badbc6f19dc52ad878ddd3dedc986f4cbefa76184a",
@@ -72,17 +72,17 @@
       "format_kind": "gofmt"
     },
     "cmd/fka/chat.go": {
-      "sha256": "fa59a7576ea9b96057bb5d46a6de961385a8555716a1e7c2546b7197a44c8b4b",
-      "size": 15901,
-      "normalized_sha256": "fa59a7576ea9b96057bb5d46a6de961385a8555716a1e7c2546b7197a44c8b4b",
-      "format_sha256": "fa59a7576ea9b96057bb5d46a6de961385a8555716a1e7c2546b7197a44c8b4b",
+      "sha256": "8354da471b0d8aa4536ce5e4926d8f361ba40534221be4841e73552084eedb34",
+      "size": 18533,
+      "normalized_sha256": "8354da471b0d8aa4536ce5e4926d8f361ba40534221be4841e73552084eedb34",
+      "format_sha256": "8354da471b0d8aa4536ce5e4926d8f361ba40534221be4841e73552084eedb34",
       "format_kind": "gofmt"
     },
     "cmd/fka/chat_test.go": {
-      "sha256": "9130ce17e146432509018d65a2b80df59036f277154e04af3fb4253e7cc17cad",
-      "size": 12147,
-      "normalized_sha256": "9130ce17e146432509018d65a2b80df59036f277154e04af3fb4253e7cc17cad",
-      "format_sha256": "9130ce17e146432509018d65a2b80df59036f277154e04af3fb4253e7cc17cad",
+      "sha256": "62e30516aa756f10a479c4f03f580c307bb504e4e63f890e9014f5260610f78f",
+      "size": 14678,
+      "normalized_sha256": "62e30516aa756f10a479c4f03f580c307bb504e4e63f890e9014f5260610f78f",
+      "format_sha256": "62e30516aa756f10a479c4f03f580c307bb504e4e63f890e9014f5260610f78f",
       "format_kind": "gofmt"
     },
     "cmd/fka/login.go": {
@@ -150,19 +150,19 @@
       "normalized_sha256": "59d70dd54d95802fd6a5b76468e6e0d835e112c5ef4a746bafebb92834302b2e"
     },
     "docs/port-plan.md": {
-      "sha256": "81ea7dfd03ce81e25a163bdd88f20abb65cdc651d106933f24befc85915e4ddb",
-      "size": 14657,
-      "normalized_sha256": "81ea7dfd03ce81e25a163bdd88f20abb65cdc651d106933f24befc85915e4ddb"
+      "sha256": "f6d1a402f6367a9f050f13aa4f6c8da142112be9d714b4cb6e3d889786a19a8e",
+      "size": 14740,
+      "normalized_sha256": "f6d1a402f6367a9f050f13aa4f6c8da142112be9d714b4cb6e3d889786a19a8e"
     },
     "go.mod": {
-      "sha256": "891d9d734dfb5ca9f06dc55aa1629a330a448069dd53d0bcf9150c71c4615bc7",
-      "size": 922,
-      "normalized_sha256": "891d9d734dfb5ca9f06dc55aa1629a330a448069dd53d0bcf9150c71c4615bc7"
+      "sha256": "6d2d59fc9855ab1550e70baf06a753e47e0da8de8d1e7c5718901a1d092aa757",
+      "size": 959,
+      "normalized_sha256": "6d2d59fc9855ab1550e70baf06a753e47e0da8de8d1e7c5718901a1d092aa757"
     },
     "go.sum": {
-      "sha256": "0b56aa0bd4177b3a1b5a55745b32e219a1ab4c4efaee71773dea836d3ef33a67",
-      "size": 7295,
-      "normalized_sha256": "0b56aa0bd4177b3a1b5a55745b32e219a1ab4c4efaee71773dea836d3ef33a67"
+      "sha256": "24e0b0a4d25ca103d44b8eed2f1cf46967440d528f66cb745ec72e915a4e3910",
+      "size": 7470,
+      "normalized_sha256": "24e0b0a4d25ca103d44b8eed2f1cf46967440d528f66cb745ec72e915a4e3910"
     },
     "internal/agent/loop.go": {
       "sha256": "77e8c29741032d2af3259b06598ba386551cc7a7164ec3fdf3b2189eea662f03",
