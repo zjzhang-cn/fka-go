@@ -3,6 +3,7 @@ module github.com/zjzhang-cn/fka-go
 go 1.25.5
 
 require (
+	github.com/ergochat/readline v0.1.3
 	github.com/mark3labs/mcp-go v1.1.1
 	github.com/sashabaranov/go-openai v1.42.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e

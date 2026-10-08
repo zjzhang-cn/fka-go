@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ergochat/readline"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
 )
@@ -316,6 +319,81 @@ func Test颜色开关_第一条命中说了算(t *testing.T) {
 				t.Errorf("shouldColor = %v，想要 %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// fakeLineReader 假的行编辑器。用它钉住「真终端上输入只走 readline 这一条路」——
+// 若两条路都读，管道与终端会各读一半，问题就串了。
+type fakeLineReader struct {
+	lines []string
+	err   error
+	i     int
+}
+
+func (f *fakeLineReader) Readline() (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.i >= len(f.lines) {
+		return "", io.EOF
+	}
+	line := f.lines[f.i]
+	f.i++
+	return line, nil
+}
+
+func (f *fakeLineReader) Close() error { return nil }
+
+// Test会话_行编辑器接管输入：有 rl 时输入只来自它，bufio 那条不碰。
+func Test会话_行编辑器接管输入(t *testing.T) {
+	engine := &fakeEngine{}
+	repl, out, _ := newTestREPL("", engine)
+	repl.rl = &fakeLineReader{lines: []string{"问题一", "问题二", "/quit"}}
+
+	if code := repl.loop(context.Background()); code != exitOK {
+		t.Fatalf("退出码 = %d，想要 %d", code, exitOK)
+	}
+	inputs := engine.inputs()
+	if len(inputs) != 2 {
+		t.Fatalf("跑了 %d 轮，想要 2 轮", len(inputs))
+	}
+	if inputs[0].Question != "问题一" || inputs[1].Question != "问题二" {
+		t.Errorf("问题传丢了：%q / %q", inputs[0].Question, inputs[1].Question)
+	}
+	if !strings.Contains(out.String(), "答：问题一") {
+		t.Errorf("回答没走 stdout：%q", out.String())
+	}
+}
+
+// Test会话_行编辑器EOF干净退出：Ctrl-D（readline 返回 io.EOF）是正常结束。
+func Test会话_行编辑器EOF干净退出(t *testing.T) {
+	engine := &fakeEngine{}
+	repl, _, ui := newTestREPL("", engine)
+	repl.rl = &fakeLineReader{} // 立刻 EOF
+
+	if code := repl.loop(context.Background()); code != exitOK {
+		t.Errorf("退出码 = %d，想要 %d", code, exitOK)
+	}
+	if !strings.Contains(ui.String(), "再见") {
+		t.Errorf("没有干净的道别：%q", ui.String())
+	}
+}
+
+// Test会话_行编辑器CtrlC干净退出：readline 把 Ctrl-C 变成 ErrInterrupt（不是信号），
+// 它和 EOF 一样应当**当成用户要走**，不调模型、不报错。
+func Test会话_行编辑器CtrlC干净退出(t *testing.T) {
+	engine := &fakeEngine{}
+	repl, _, ui := newTestREPL("", engine)
+	repl.rl = &fakeLineReader{err: readline.ErrInterrupt}
+
+	if code := repl.loop(context.Background()); code != exitOK {
+		t.Errorf("退出码 = %d，想要 %d", code, exitOK)
+	}
+	if len(engine.inputs()) != 0 {
+		t.Errorf("中断还调了模型：%+v", engine.inputs())
+	}
+	if !strings.Contains(ui.String(), "再见") {
+		t.Errorf("没有干净的道别：%q", ui.String())
 	}
 }
 

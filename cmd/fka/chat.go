@@ -17,9 +17,20 @@
 //
 // ## 颜色为什么是手写的 ANSI
 //
-// 全仓只有 4 个直接依赖且刻意保持极少（见 AGENTS.md「依赖纪律」）。一个 REPL 的上色
-// 不值得引一门 TUI 框架。默认**只在真终端上上色**：管道、重定向、`NO_COLOR`、
+// 上色本身不值得引一门框架。默认**只在真终端上上色**：管道、重定向、`NO_COLOR`、
 // `TERM=dumb` 都自动关掉——给一个文件写 ANSI 转义是把文件弄脏，不是让输出好看。
+//
+// ## 为什么单独引了一个行编辑库
+//
+// **行编辑必须自己接管**，否则中文回退会残留：不接管时回退键由内核 canonical 模式
+// 处理，而内核擦除一个字符只回显 `\b \b`（**一列**），双列宽的汉字于是被擦掉一半、
+// 另一半留在屏幕上（缓冲里其实整字已删）。没有任何 termios 开关能让 canonical 的回显
+// 按显示宽度擦除（`IUTF8` 只按字符而非按字节删除，回显仍是 `\b \b`）。所以真终端上用
+// `github.com/ergochat/readline` 接管：纯 Go、CJK 宽度按 `x/text/width` 算、跨平台。
+//
+// 它是**行编辑库，不是全屏 TUI**：提示符与回显仍写 stderr，回答仍只写 stdout，
+// `fka chat < 问.txt > 答.txt` 照旧是一串干净回答。管道/重定向与测试不经过它，
+// 走下面的 bufio 整行读，行为一字不变。
 //
 // ## 为什么没有逐字流式回显
 //
@@ -39,6 +50,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ergochat/readline"
+
 	"github.com/zjzhang-cn/fka-go/internal/agent"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
@@ -50,6 +63,14 @@ import (
 // `*agent.Runner`，可替换成本全在这行签名上。测试注入假引擎走的就是它。
 type chatEngine interface {
 	Run(ctx context.Context, input agent.RunnerInput) (agent.RunResult, error)
+}
+
+// chatLineReader 是 REPL 那一行输入的来源：真终端上是 `*readline.Instance`，管道与
+// 测试下为 nil（走 bufio）。**接口声明在消费者这一侧**，与 chatEngine 同一条规矩——
+// 测试注入假 reader 走的就是它。
+type chatLineReader interface {
+	Readline() (string, error)
+	Close() error
 }
 
 // chatToolLister 是 `/tools` 需要的那部分注册表。`tools.Service` 满足它。
@@ -111,6 +132,28 @@ func runChat(ctx context.Context, parsed cliArgs) int {
 		principal: flagOrEnv(parsed, principalFlag, principalEnv, "cli"),
 		session:   sessionID(parsed),
 	}
+
+	// 只有**读写两侧都是真终端**才接管行编辑：管道/重定向（含 `fka chat < 问.txt`、
+	// `fka chat 2>err.txt`）与测试继续走 bufio 整行读，那条路一字不变。回显写 stderr，
+	// 所以 stderr 不是终端时也不接管——否则 readline 会被判成非交互、连回显都没有，
+	// 而 canonical 模式的内核回显本来还能看见。提示符与回显都指向 stderr，stdout 仍只收
+	// 回答；历史留在内存里（HistoryFile 留空 → 不落盘），本次会话内 ↑ 能翻回上一句。
+	if isCharDevice(os.Stdin) && isCharDevice(os.Stderr) {
+		if rl, err := readline.NewEx(&readline.Config{
+			Prompt:          colors.user("> "),
+			Stdin:           os.Stdin,
+			Stdout:          os.Stderr,
+			Stderr:          os.Stderr,
+			InterruptPrompt: "\n",
+			EOFPrompt:       "\n",
+		}); err == nil {
+			repl.rl = rl
+			defer rl.Close()
+		} else {
+			fmt.Fprintln(os.Stderr, colors.dim("行编辑没起来，退回最简输入："+err.Error()))
+		}
+	}
+
 	return repl.loop(ctx)
 }
 
@@ -126,6 +169,9 @@ type chatREPL struct {
 	out    io.Writer
 	ui     io.Writer
 	pal    palette
+	// rl 非 nil 时接管一行输入（真终端 + readline 起得来），否则走 in 的 bufio 整行读。
+	// **两条路只走一条**：用 rl 时提示符由它自己写，免得与 prompt() 重复。
+	rl chatLineReader
 	// spinner 只在**两侧都是真终端**时为真。管道下转圈会把日志弄脏，而「思考中」
 	// 对脚本没有任何意义。
 	spinner bool
@@ -147,10 +193,9 @@ func (r *chatREPL) loop(ctx context.Context) int {
 			return exitOK
 		}
 
-		r.prompt()
 		line, err := r.readLine()
 		if err != nil {
-			// EOF（Ctrl-D）是正常结束，不是错
+			// EOF（Ctrl-D）与 readline 的 Ctrl-C 都是正常结束，不是错
 			r.bye()
 			return exitOK
 		}
@@ -187,17 +232,22 @@ func (r *chatREPL) bye() {
 	fmt.Fprintln(r.ui, r.pal.dim("再见。"))
 }
 
-// prompt 提问符。**在读之前写**，所以用户敲进去的那一行前面就是带色的 `> `——
-// 这是唯一能在不改终端 raw 模式的前提下给「回显」上色的位置。
+// prompt 提问符。**只在没有行编辑器时用**：有 readline 时提示符由它自己写，还会
+// 随输入一起重绘，这里再写一遍就重复了。
 func (r *chatREPL) prompt() {
 	fmt.Fprint(r.ui, r.pal.user("> "))
 }
 
 // readLine 读一行去掉行尾。EOF 与真错误分两种。
 //
-// 末行没有换行（`printf '问' | fka chat`）时 `ReadString` 会同时给出内容与
-// `io.EOF`——**那一行不能丢**，下一次读才是干净的 EOF。
+// 有行编辑器时整行交给它（它自己写提示符、自己上色、按 CJK 宽度重绘）；否则走 bufio，
+// 末行没有换行（`printf '问' | fka chat`）时 `ReadString` 会同时给出内容与 `io.EOF`
+// ——**那一行不能丢**，下一次读才是干净的 EOF。
 func (r *chatREPL) readLine() (string, error) {
+	if r.rl != nil {
+		return r.rl.Readline()
+	}
+	r.prompt()
 	line, err := r.in.ReadString('\n')
 	text := strings.TrimRight(line, "\r\n")
 	switch {
@@ -388,8 +438,8 @@ func shouldColor(w *os.File, noColorFlag bool) bool {
 }
 
 // isCharDevice 这个文件是不是终端。**不引 isatty 库**：它已经作为 MCP SDK 的间接
-// 依赖躺在 go.sum 里，用它就会把依赖表从 4 个直接依赖变成 5 个，而这一行
-// `Stat` 就是全部所需。
+// 依赖躺在 go.sum 里，用它就会平白多一个直接依赖，而这一行 `Stat` 就是全部所需
+// （真正需要终端能力的行编辑已经交给 readline，见文件头）。
 //
 // 字符设备只是**近似**（`/dev/null` 也是字符设备），但对「要不要上色」这个用途，
 // 近似的两个方向代价都很小：真终端被误判成不是 → 少点颜色；反之 → 多几个转义，
