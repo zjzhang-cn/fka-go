@@ -329,8 +329,9 @@ func (p *Provider) accounts() []bot.WeixinAccount {
 
 // AccountsFromEnv 扫 `ILINK_ACCOUNT_<N>_*` 读账号表。
 //
-// **扫到第一个没有 `_ID` 的槽位就停**：中间的空洞允许（删掉一个账号不必重排
-// 剩下的），而末尾的空洞说明后面没有了。
+// **逐个槽位扫到上限，空洞一律跳过**：删掉中间某个账号不必把后面的重排。
+// 若改成「扫到第一个空洞就停」，一个空洞会把它后面的账号全部吞掉——
+// 而用户以为自己只是删了中间那一个。
 func AccountsFromEnv(dataDir string) []bot.WeixinAccount {
 	var out []bot.WeixinAccount
 

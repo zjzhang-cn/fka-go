@@ -50,8 +50,11 @@ func newClient(ctx context.Context, cfg ServerConfig) (*mcpclient.Client, error)
 	)
 
 	if cfg.Command != "" {
-		// 不给 env 时 SDK 只继承一小撮安全变量（PATH 等）；给了就完全用它——
-		// 与 exec 的语义一致，密钥写在 mcp.json 里就能传进去
+		// **SDK 是「全量继承 + 追加覆盖」，不是白名单**：它的默认路径与下面的
+		// stdioCommand 都是 `cmd.Env = append(os.Environ(), env...)`，cfg.Env
+		// 只会追加、同名覆盖。也就是说宿主环境里的一切（含 .env 载入的
+		// LLM_API_KEY）子进程都能拿到——外部能力进程默认被**完全信任**；
+		// 要划 env 边界得自己换 CommandFunc。密钥写在 mcp.json 里当然也传得进去
 		env := make([]string, 0, len(cfg.Env))
 		for key, value := range cfg.Env {
 			env = append(env, key+"="+value)
