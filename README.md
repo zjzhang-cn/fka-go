@@ -83,7 +83,7 @@ FKA_HOME=/path/to/fka ./bin/fka serve
 **`fka chat` 正好相反**：它整场只用一个会话（`/new` 才换），所以每一轮都带着上一轮的
 上下文，不需要你记 `--session`。回答只进 stdout、提示符与角色标签只进 stderr，
 于是 `fka chat < 提问.txt > 回答.txt` 里那份文件是一串干净的回答。
-`--debug`（或 `FKA_DEBUG=1`）会把这一轮用的会话 id 打在答案后面。
+`FKA_DEBUG=1` 会把这一轮用的会话 id 与步数打在 stderr（`ask` 与 `chat` 都认）。
 
 必填环境变量只有 `LLM_API_KEY` 与 `LLM_MODEL`。没配时 `ask` 会**明确报错**，
 不会静默降级成空答案。
