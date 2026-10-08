@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-29T13:49:22Z",
-  "updated_at": "2026-10-08T14:44:08Z",
+  "updated_at": "2026-10-08T14:48:23Z",
   "files": {
     ".env.example": {
       "sha256": "2a0cba73cc75d118ec48e4bf084be0357a32280ba10c077ec29209313e70c3b6",
@@ -39,9 +39,9 @@
       "normalized_sha256": "4f83a286ff904ed53773a01f5626874c82c377c4438e9fca53f24baef23857bb"
     },
     "aoci.txt": {
-      "sha256": "813ef4481705bef378ba1ef18d6336ef41b2b436929016802734b967e9054a5c",
-      "size": 83798,
-      "normalized_sha256": "813ef4481705bef378ba1ef18d6336ef41b2b436929016802734b967e9054a5c"
+      "sha256": "8dc91f3c2913bc383f1fe217c691d582b8cf013cd08d946963e9a7953a195e75",
+      "size": 83802,
+      "normalized_sha256": "8dc91f3c2913bc383f1fe217c691d582b8cf013cd08d946963e9a7953a195e75"
     },
     "cmd/fka/ask.go": {
       "sha256": "01171397f4816abd2a6f95badbc6f19dc52ad878ddd3dedc986f4cbefa76184a",
