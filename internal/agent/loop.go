@@ -131,10 +131,16 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 存储关掉时（SESSION_HISTORY=0）就没有历史，这一轮从零开始。
 	prior := llm.LoadHistoryPrefix(r.sessionHistory, input.SessionID, input.AccountID)
 
+	// 本轮 user 消息**只算一次**：预算与实际发出的必须是同一份文本。
+	// 预算按 input.Question 算、发出时再走一遍 userContent（拼上引用正文）的话，
+	// 引用那截字（≤400）就从预算里漏掉了——漏的不多，但「预算与实发口径不同」
+	// 这类错只能靠人记得，而人总会忘
+	question := userContent(input)
+
 	// 预算里先扣掉**固定开销**：system、本轮问题、给回答留的位置，以及工具声明本身
 	// （工具一多，声明也能占掉不少）。剩下的才是历史可用的部分
 	encodedTools, _ := json.Marshal(toolDefs)
-	fixed := llm.EstimateTokens(system) + llm.EstimateTokens(input.Question) +
+	fixed := llm.EstimateTokens(system) + llm.EstimateTokens(question) +
 		llm.MaxAnswerTokens + llm.EstimateTokens(string(encodedTools))
 	budget := 0
 	if r.ContextTokens > 0 {
@@ -146,7 +152,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	messages := make([]llm.ChatMessage, 0, len(kept.Messages)+8)
 	messages = append(messages, llm.ChatMessage{Role: llm.RoleSystem, Content: system})
 	messages = append(messages, kept.Messages...)
-	messages = append(messages, llm.ChatMessage{Role: llm.RoleUser, Content: userContent(input)})
+	messages = append(messages, llm.ChatMessage{Role: llm.RoleUser, Content: question})
 
 	// 本回合新产生的消息从本轮 user 起。收尾时原样落进会话文件——**含 assistant 的
 	// toolCalls 与工具结果**，下一轮才能逐字重放这一整段前缀
