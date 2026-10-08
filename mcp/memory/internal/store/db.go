@@ -100,6 +100,18 @@ type FindMemoriesResult struct {
 	Total int
 }
 
+// scopeWhere 权限过滤谓词与参数的**唯一出处**。
+//
+// `(visibility = ? OR owner_wxid = ?)` 是本 server 唯一的数据防线：散在多处的话，
+// 漏掉的那一处不会报错、只会泄漏。所以谓词与参数绑在一起返回——任何新的读查询
+// 都从这里取，不许手写。公开那一档取自 domain.VisPublic：它同时是「写进去的值」
+// 与「人人能查到的值」，两处必须一致。
+//
+// （用例里仍写字符串字面量：那钉的是库里实际存了什么；拿常量去测就是自证。）
+func scopeWhere(viewerWxid string) (string, []any) {
+	return `(visibility = ? OR owner_wxid = ?)`, []any{string(domain.VisPublic), viewerWxid}
+}
+
 // FindMemories 关键词检索。
 //
 // 权限过滤进 WHERE。**这是本函数最要紧的一处**：private 的记忆不进别人的检索，
@@ -110,13 +122,10 @@ func (d *DB) FindMemories(ctx context.Context, in FindMemoriesInput) (FindMemori
 		limit = DefaultMemoryLimit
 	}
 
-	// **权限过滤在 WHERE 里，每次查询都带**（见类型上的注释）。公开那一档取自
-	// 领域词汇——它同时是「写进去的那个值」与「人人能查到的那个值」，两处必须一致，
-	// 所以只留一处出处。
-	//
-	// 用例里仍然写字符串字面量：那钉的是**库里实际存的是什么**；用常量去测就是自证。
-	where := []string{`(visibility = ? OR owner_wxid = ?)`}
-	args := []any{string(domain.VisPublic), in.ViewerWxid}
+	// **权限过滤在 WHERE 里，每次查询都带**。谓词与参数从 scopeWhere 取——
+	// 手写一份就多一处「可能忘了加」的地方
+	scope, args := scopeWhere(in.ViewerWxid)
+	where := []string{scope}
 
 	// 词之间是「且」：每个词都要出现在内容里
 	for _, term := range searchterms.SplitTerms(in.Query) {
