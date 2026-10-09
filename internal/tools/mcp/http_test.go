@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -12,6 +13,9 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
+// samplePNGBase64 一段可以当图片数据的 base64。
+var samplePNGBase64 = base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+
 // newEchoServer 一个带 echo 工具的 MCP server。
 func newEchoServer() *mcpserver.MCPServer {
 	server := mcpserver.NewMCPServer("fka-test", "0.0.1")
@@ -21,6 +25,18 @@ func newEchoServer() *mcpserver.MCPServer {
 			mcpapi.WithString("text", mcpapi.Description("要说的话"))),
 		func(_ context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
 			return mcpapi.NewToolResultText(request.GetString("text", "（空）")), nil
+		},
+	)
+	return server
+}
+
+// newPictureServer 一个带 picture 工具的 MCP server：调用返回一个 image 内容块。
+func newPictureServer() *mcpserver.MCPServer {
+	server := mcpserver.NewMCPServer("fka-picture", "0.0.1")
+	server.AddTool(
+		mcpapi.NewTool("picture", mcpapi.WithDescription("回一张图")),
+		func(_ context.Context, _ mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
+			return mcpapi.NewToolResultImage("图", samplePNGBase64, "image/png"), nil
 		},
 	)
 	return server
@@ -161,5 +177,33 @@ func TestHTTP服务器_headers真的发出去了(t *testing.T) {
 	defer mu.Unlock()
 	if seen != "Bearer test-token" {
 		t.Errorf("服务器该收到 Authorization: Bearer test-token，实际 %q", seen)
+	}
+}
+
+// TestHTTP服务器_image块抽成附件 钉住「图片经 MCP 交给模型」这条链路的接缝：服务器
+// 返回 `type:"image"` 内容块，客户端必须把它抽成 `CallResult.Images`（data URI），
+// 而不是只在文本里留一行「[图片 …]」。真起一个 MCP HTTP server，走完整条解码路径。
+func TestHTTP服务器_image块抽成附件(t *testing.T) {
+	httpServer := httptest.NewServer(mcpserver.NewStreamableHTTPServer(newPictureServer()))
+	t.Cleanup(httpServer.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	connection, err := ConnectMcpServer(ctx, "pic", ServerConfig{URL: httpServer.URL + "/mcp"})
+	if err != nil {
+		t.Fatalf("该连上：%v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	result, err := connection.CallTool(ctx, "picture", map[string]any{})
+	if err != nil {
+		t.Fatalf("调用失败：%v", err)
+	}
+	if len(result.Images) != 1 {
+		t.Fatalf("image 块该抽成 1 个附件，实际 %d 个", len(result.Images))
+	}
+	if want := "data:image/png;base64," + samplePNGBase64; result.Images[0].DataURI != want {
+		t.Errorf("DataURI = %q，期望 %q", result.Images[0].DataURI, want)
 	}
 }

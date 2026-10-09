@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"slices"
@@ -276,22 +278,51 @@ func TestContentToText_未知类型不假装是文本(t *testing.T) {
 	blocks := []mcpContent{
 		{Type: "text", Text: "第一段"},
 		{Type: "image", MimeType: "image/png"},
-		{Type: "resource", Resource: struct {
-			URI  string
-			Text string
-		}{URI: "fka://files/a.pdf", Text: "PDF 正文"}},
-		{Type: "resource", Resource: struct {
-			URI  string
-			Text string
-		}{URI: "fka://files/b.pdf"}},
+		{Type: "audio", MimeType: "audio/wav"},
+		{Type: "resource", Resource: mcpResource{URI: "fka://files/a.pdf", Text: "PDF 正文"}},
+		{Type: "resource", Resource: mcpResource{URI: "fka://files/b.pdf", MimeType: "application/pdf"}},
+		{Type: "resource_link", URI: "fka://files/c.pdf", Name: "c.pdf"},
 		{Type: "别的东西", Raw: `{"type":"未来类型"}`},
 	}
 
 	got := contentToText(blocks)
-	for _, want := range []string{"第一段", "[图片 image/png]", "PDF 正文", "[资源 fka://files/b.pdf]", "未来类型"} {
+	for _, want := range []string{
+		"第一段", "[图片 image/png]", "[音频 audio/wav",
+		"PDF 正文", "[资源 fka://files/b.pdf application/pdf]",
+		"[资源链接 c.pdf fka://files/c.pdf]", "未来类型",
+	} {
 		if !contains(got, want) {
 			t.Errorf("缺 %q：\n%s", want, got)
 		}
+	}
+}
+
+// TestImagesFromContent_图片抽成附件且超限跳过 image 块要转成 data URI 附件；超过
+// 总上限的图**跳过而不是把上下文撑爆**。
+func TestImagesFromContent_图片抽成附件且超限跳过(t *testing.T) {
+	small := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+	images := imagesFromContent([]mcpContent{
+		{Type: "text", Text: "说明"},
+		{Type: "image", MimeType: "image/png", Data: small},
+	})
+	if len(images) != 1 {
+		t.Fatalf("该抽出 1 张图，实际 %d", len(images))
+	}
+	if want := "data:image/png;base64," + small; images[0].DataURI != want {
+		t.Errorf("DataURI = %q，期望 %q", images[0].DataURI, want)
+	}
+
+	// 嵌入式图片资源（type=resource，blob 且 mime 是 image/*）也要抽出来
+	embedded := imagesFromContent([]mcpContent{
+		{Type: "resource", Resource: mcpResource{MimeType: "image/jpeg", Blob: small}},
+	})
+	if len(embedded) != 1 || embedded[0].DataURI != "data:image/jpeg;base64,"+small {
+		t.Errorf("嵌入式图片资源该被抽出：%+v", embedded)
+	}
+
+	big := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), maxToolImageBytes+1))
+	if got := imagesFromContent([]mcpContent{{Type: "image", MimeType: "image/png", Data: big}}); len(got) != 0 {
+		t.Errorf("超过上限的图该跳过，实际抽出 %d 张", len(got))
 	}
 }
 

@@ -80,6 +80,13 @@ type Spec struct {
 type Result struct {
 	OK      bool
 	Content string
+	// Images 结果里附带的图片（MCP 的 image 内容块）。
+	//
+	// **与 Content 并列，不是它的替代**：Content 是给模型看的文字，Images 是**图片
+	// 字节**。循环把它们搬到一条额外的 user 消息上发给模型——因为 role=tool 的消息
+	// 只能装字符串，装不下图片（见 internal/agent 的 runToolCall 与装配点）。
+	// 空 = 这条结果没有图片。
+	Images []llm.ImageAttachment
 }
 
 // OKResult 造一条成功结果。

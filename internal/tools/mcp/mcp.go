@@ -22,9 +22,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/zjzhang-cn/fka-go/internal/config"
+	"github.com/zjzhang-cn/fka-go/internal/llm"
 )
 
 // ToolInfo 一件 MCP 工具。InputSchema 是 JSON Schema，直接当作 Spec.Parameters。
@@ -38,6 +42,8 @@ type ToolInfo struct {
 type CallResult struct {
 	OK      bool
 	Content string
+	// Images 结果里的 image 内容块，已转成 data URI 附件。空 = 没有图片。
+	Images []llm.ImageAttachment
 }
 
 // Connection 一条连上的 MCP 连接。
@@ -106,8 +112,12 @@ func withTimeout[T any](ctx context.Context, ms int, what string, fn func(contex
 	}
 }
 
-// contentToText 结果里的 content 块 → 一段给模型看的文字。
-// 非文本块说清它是什么，**不假装是文本**。
+// contentToText 结果里的 content 块 → 一段给模型看的文字。**MCP 的每种内容类型
+// 都有分支**，非文本块说清它是什么，**不假装是文本、也不静默丢**。
+//
+// 图片另有 image 附件走（见 imagesFromContent），这里只留一行占位；音频与其它
+// 资源块**没法随消息发送**（当前 OpenAI 兼容的内容块只有 text 与 image_url），
+// 所以在这里如实说一句「未发送」，而不是让模型以为看到了内容。
 func contentToText(content []mcpContent) string {
 	parts := make([]string, 0, len(content))
 
@@ -120,19 +130,70 @@ func contentToText(content []mcpContent) string {
 		case "image":
 			parts = append(parts, "[图片 "+block.MimeType+"]")
 		case "audio":
-			parts = append(parts, "[音频 "+block.MimeType+"]")
+			parts = append(parts, "[音频 "+block.MimeType+"，当前模型接口不支持音频内容块，未随消息发送]")
 		case "resource":
-			if block.Resource.Text != "" {
+			// 嵌入式资源：文本型直接展开，二进制型只报位置与类型（图片型的字节
+			// 另走 imagesFromContent 作为附件）
+			switch {
+			case block.Resource.Text != "":
 				parts = append(parts, block.Resource.Text)
-			} else if block.Resource.URI != "" {
-				parts = append(parts, "[资源 "+block.Resource.URI+"]")
+			case block.Resource.URI != "":
+				parts = append(parts, "[资源 "+block.Resource.URI+" "+block.Resource.MimeType+"]")
+			default:
+				parts = append(parts, "[资源]")
 			}
+		case "resource_link":
+			label := block.Name
+			if label == "" {
+				label = block.URI
+			}
+			parts = append(parts, "[资源链接 "+label+" "+block.URI+"]")
 		default:
 			parts = append(parts, block.Raw)
 		}
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// maxToolImageBytes 一次工具结果里所有图片解出来的总字节上限。
+//
+// 内容由外部 server 决定，没有上限就等于让它决定这一轮往上下文里塞多少字节
+// （失败形态是 OOM 或把上下文撑爆）。超限的图**跳过并记一条 Warn**，其余照常。
+const maxToolImageBytes = 5 << 20
+
+// imagesFromContent 把结果里的图片转成附件——包括 `type:"image"` 块，以及 blob 型
+// 且 mime 是 image/* 的嵌入式 `resource` 块。**base64 不拼进文本**：真正的字节从
+// 这里走，由 agent 以一条 user 消息附件发给模型；文本里 contentToText 另留一行占位。
+func imagesFromContent(content []mcpContent) []llm.ImageAttachment {
+	var images []llm.ImageAttachment
+	total := 0
+	for _, block := range content {
+		data, mime := "", ""
+		switch block.Type {
+		case "image":
+			data, mime = block.Data, block.MimeType
+		case "resource":
+			if strings.HasPrefix(block.Resource.MimeType, "image/") {
+				data, mime = block.Resource.Blob, block.Resource.MimeType
+			}
+		}
+		if data == "" {
+			continue
+		}
+		size := base64.StdEncoding.DecodedLen(len(data))
+		if size > maxToolImageBytes || total+size > maxToolImageBytes {
+			config.Log().Warn(config.TypeSYS, "MCP 结果里的图片超过上限，已跳过",
+				config.Context{"mime": mime, "bytes": size, "limit": maxToolImageBytes})
+			continue
+		}
+		total += size
+		images = append(images, llm.ImageAttachment{
+			Name:    mime,
+			DataURI: "data:" + mime + ";base64," + data,
+		})
+	}
+	return images
 }
 
 func itoa(n int) string {

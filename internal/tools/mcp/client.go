@@ -20,18 +20,32 @@ const (
 	clientVersion = "0.1.0"
 )
 
+// mcpResource 嵌入式资源（content 块里的 resource.resource）。
+type mcpResource struct {
+	URI      string
+	MimeType string
+	// Text 文本型资源的内容
+	Text string
+	// Blob base64 型的资源内容（mimeType 为非文本时）
+	Blob string
+}
+
 // mcpContent 一个 content 块。**刻意自己解而不是用 SDK 的 Content 接口**：
 // SDK 的 Content 是带私有方法的 sealed interface，第三方类型实现不了，只能靠
-// 类型断言逐个认。这里解成普通结构，未知类型保留原文——
-// 「不假装是文本」比「认全所有类型」更重要。
+// 类型断言逐个认。这里把 MCP **全部**内容类型都解出来（text / image / audio /
+// resource / resource_link），未知类型保留原文——「不假装是文本」比「认全所有
+// 类型」更重要。
 type mcpContent struct {
-	Type     string
-	Text     string
+	Type string
+	Text string
+	// Data image / audio 块的 base64 数据。
+	Data     string
 	MimeType string
-	Resource struct {
-		URI  string
-		Text string
-	}
+	// URI / Name 是 resource_link 的顶层字段
+	URI  string
+	Name string
+	// Resource 是嵌入式资源（type=resource）
+	Resource mcpResource
 	// Raw 该块的原始 JSON。未知类型时原样交给模型
 	Raw string
 }
@@ -256,12 +270,15 @@ func (c *connection) CallTool(ctx context.Context, name string, args map[string]
 				return CallResult{}, err
 			}
 
-			text := contentToText(decodeContent(result.Content))
+			decoded := decodeContent(result.Content)
 			return CallResult{
 				// isError 是**给模型看的业务失败**（参数不对、查不到），不是协议层错误。
 				// 交给模型自己改正，所以这里 ok=false 但不是异常
 				OK:      !result.IsError,
-				Content: fallbackText(text),
+				Content: fallbackText(contentToText(decoded)),
+				// 图片块**另立门户**：文字里只留一行「[图片 …]」占位，真正的字节
+				// 从这里带出去，由 agent 以一条 user 消息附件发给模型。
+				Images: imagesFromContent(decoded),
 			}, nil
 		})
 }
