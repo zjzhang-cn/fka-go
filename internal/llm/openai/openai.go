@@ -335,7 +335,7 @@ func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 			request.ToolChoice = "auto"
 		}
 
-		result, err := postCompletion(ctx, client, cfg, request, host, p.reasoningWriter(), p.retryWriter())
+		result, err := postCompletion(ctx, client, cfg, request, host, p.reasoningSinkFor(ctx), p.retryWriter())
 		if err != nil {
 			return llm.ChatResult{}, err
 		}
@@ -374,7 +374,7 @@ func postCompletion(
 	cfg llm.Config,
 	request goopenai.ChatCompletionRequest,
 	host string,
-	reasoningOut io.Writer,
+	reasoning reasoningSink,
 	retryOut io.Writer,
 ) (llm.ChatResult, error) {
 	overallDur := time.Duration(cfg.TimeoutMs) * time.Millisecond
@@ -393,7 +393,7 @@ func postCompletion(
 	var lastErr error
 	retries := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, err, retryable := streamOnce(overallCtx, ctx, client, cfg, request, host, reasoningOut, overallErr)
+		result, err, retryable := streamOnce(overallCtx, ctx, client, cfg, request, host, reasoning, overallErr)
 		if err == nil {
 			return result, nil
 		}
@@ -428,7 +428,7 @@ func streamOnce(
 	cfg llm.Config,
 	request goopenai.ChatCompletionRequest,
 	host string,
-	reasoningOut io.Writer,
+	reasoning reasoningSink,
 	overallErr error,
 ) (llm.ChatResult, error, bool) {
 	idleDur := time.Duration(cfg.StreamTimeoutMs) * time.Millisecond
@@ -465,13 +465,12 @@ func streamOnce(
 		"timeoutMs": cfg.TimeoutMs, "streamTimeoutMs": cfg.StreamTimeoutMs,
 	}))
 
-	sink := newReasoningSink(reasoningOut)
 	var (
-		content   strings.Builder
-		reasoning strings.Builder
-		toolCalls = map[int]*llm.ToolCall{}
-		order     []int
-		sawReason bool
+		content      strings.Builder
+		reasoningBuf strings.Builder
+		toolCalls    = map[int]*llm.ToolCall{}
+		order        []int
+		sawReason    bool
 	)
 
 	for {
@@ -500,8 +499,8 @@ func streamOnce(
 		// 以前它只进控制台——重定向到文件或关掉前台之后就彻底没了，
 		// 「模型为什么这么答」就成了只能猜的事
 		if delta.ReasoningContent != "" {
-			sink(delta.ReasoningContent)
-			reasoning.WriteString(delta.ReasoningContent)
+			reasoning(delta.ReasoningContent)
+			reasoningBuf.WriteString(delta.ReasoningContent)
 			sawReason = true
 		}
 
@@ -537,7 +536,7 @@ func streamOnce(
 	}
 
 	if sawReason {
-		sink("\n")
+		reasoning("\n")
 	}
 
 	// 服务端没发 [DONE] 就断流：按已收到的内容收尾，**不假装失败**
@@ -554,14 +553,14 @@ func streamOnce(
 	// **推理只记截断后的开头**：它可能有几千字，全量落盘会把日志撑爆。
 	// 完整的推理在控制台（`LLM_SHOW_REASONING=0` 可关）与 transcript 里。
 	config.Log().Debug(config.TypeRSN, "模型的推理", config.Fields(parentCtx, config.Context{
-		"chars": len([]rune(reasoning.String())),
-		"text":  snippetRunes(reasoning.String(), reasoningLogChars),
+		"chars": len([]rune(reasoningBuf.String())),
+		"text":  snippetRunes(reasoningBuf.String(), reasoningLogChars),
 	}))
 
 	answer := strings.TrimSpace(content.String())
 	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(parentCtx, config.Context{
 		"chars": len([]rune(answer)), "toolCalls": len(calls),
-		"reasoningChars": len([]rune(reasoning.String())),
+		"reasoningChars": len([]rune(reasoningBuf.String())),
 		"ms":             time.Since(startedAt).Milliseconds(),
 	}))
 
@@ -648,6 +647,33 @@ func newReasoningSink(out io.Writer) reasoningSink {
 		}
 		fmt.Fprint(out, text)
 	}
+}
+
+// newRawReasoningSink 与 newReasoningSink 一样逐块写出，但**不打 `[推理] ` 前缀**——
+// 前缀由拿到增量的前端自己决定（见 `agent.Emitter`）：chat 想要带色的、ask 想要
+// 纯文字，统一加在这里会把它们的格式定死。
+func newRawReasoningSink(out io.Writer) reasoningSink {
+	if !ReasoningVisible() {
+		return func(string) {}
+	}
+	return func(text string) {
+		if text == "" {
+			return
+		}
+		fmt.Fprint(out, text)
+	}
+}
+
+// reasoningSinkFor 这一轮推理写到哪：**ctx 里有绑定就用它（原始增量，前端自己排版），
+// 否则退回配置的 writer（带 `[推理] ` 前缀）**。
+//
+// 工具循环在 `agent.Emitter` 非 nil 时会把 emitter 绑进 ctx，于是 chat / ask / 渠道
+// 各拿到自己那份；没绑（没有前端关心）时才用装配期配置的那个落点。
+func (p Provider) reasoningSinkFor(ctx context.Context) reasoningSink {
+	if w, ok := llm.ReasoningWriter(ctx); ok {
+		return newRawReasoningSink(w)
+	}
+	return newReasoningSink(p.reasoningWriter())
 }
 
 // toAPIMessages 把内部消息转成 SDK 的消息。

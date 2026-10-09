@@ -62,6 +62,9 @@ type RunnerInput struct {
 	// Images 本轮问题附带的图片（CLI 的 `@图片` 引用）。**只在这一轮发给模型**，
 	// 不落进会话历史——见 llm.ChatMessage.ImageAttachments。
 	Images []llm.ImageAttachment
+	// Emitter 过程事件（推理 / 工具调用 / 答案）的接收者，供各前端「回显」。
+	// **nil = 不回显**。chat/ask 画给人看，渠道记日志并只把答复发回去。
+	Emitter Emitter
 	// Reply 以 Bot 的身份回话（发文件）。**逐条消息给**——「能发给谁」取决这条
 	// 消息的会话与回复令牌，那是消息层的事实。工具层不该知道。
 	Reply tools.Reply

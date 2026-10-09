@@ -136,6 +136,13 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 而漏掉一处身份的后果是权限过滤失效（见 tools.Context.PrincipalID）。
 	tc := tools.Context{PrincipalID: input.PrincipalID, Reply: input.Reply}
 
+	// 回显：前端传了 Emitter 就把推理流也接到它上面；没传就让 provider 走自己的落点。
+	// 推理由模型层按块写出，这里经 ctx 换一条通道，逐块变成 Emitter 事件。
+	emitter := input.Emitter
+	if emitter != nil {
+		ctx = llm.WithReasoningWriter(ctx, emitterWriter{emitter})
+	}
+
 	toolDefs, err := r.tools.ToToolDefs(ctx, tc)
 	if err != nil {
 		return RunResult{}, err
@@ -223,6 +230,9 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 				Role: llm.RoleAssistant, Content: result.Content,
 			})
 			persistTurn()
+			if emitter != nil {
+				emitter.Answer(result.Content)
+			}
 
 			return RunResult{
 				Text: result.Content, UsedTools: usedTools,
@@ -245,11 +255,11 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 
 			// 失败也照样喂回去：模型看到「参数不合法」会自己改，这正是循环的意义
 			outcome := r.runToolCall(ctx, call, tc)
-			toolEvents = append(toolEvents, ToolEvent{
-				Name:      call.Name,
-				Arguments: call.Arguments,
-				Result:    outcome.Content,
-			})
+			event := ToolEvent{Name: call.Name, Arguments: call.Arguments, Result: outcome.Content}
+			toolEvents = append(toolEvents, event)
+			if emitter != nil {
+				emitter.Tool(event)
+			}
 			messages = append(messages, llm.ChatMessage{
 				Role:       llm.RoleTool,
 				ToolCallID: call.ID,
@@ -311,6 +321,9 @@ func (r *Runner) forcedAnswer(
 	text := result.Content
 	if text == "" {
 		text = MaxStepsAnswer
+	}
+	if input.Emitter != nil {
+		input.Emitter.Answer(text)
 	}
 	return RunResult{Text: text, UsedTools: usedTools, ToolEvents: toolEvents, Steps: steps, StoppedBy: StoppedByMaxSteps}
 }
