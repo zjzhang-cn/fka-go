@@ -63,8 +63,8 @@ func Test引用文件_读不到按普通文字(t *testing.T) {
 	if len(got.names) != 0 {
 		t.Errorf("读不到不该算引用：%v", got.names)
 	}
-	if !strings.Contains(warn.String(), "读不到") {
-		t.Errorf("该提示一句读不到：%q", warn.String())
+	if !strings.Contains(warn.String(), "文件不存在") {
+		t.Errorf("该说清为什么读不到（文件不存在）：%q", warn.String())
 	}
 }
 
@@ -201,6 +201,25 @@ func Test引用文件_中文连着写也认(t *testing.T) {
 	}
 	if !strings.Contains(got.text, "，谢谢") {
 		t.Errorf("句读后的正文被吞了：%q", got.text)
+	}
+}
+
+// Test引用文件_路径后紧跟中文正文也能断开：中文文件名要支持，于是扫描器不会停在汉字
+// 上——`@图.png里面有什么` 会把正文一起吞成文件名。用「确实存在的最长路径前缀」断开：
+// 路径只取到 `图.png`，`里面有什么` 留回问题里。
+func Test引用文件_路径后紧跟中文正文也能断开(t *testing.T) {
+	path := writeRefFile(t, "图.png", pngBytes(32))
+
+	got := expandFileRefs("分析 @"+path+"里面有什么", &strings.Builder{})
+
+	if len(got.names) != 1 || got.names[0] != path {
+		t.Fatalf("路径没断开：%v", got.names)
+	}
+	if len(got.images) != 1 {
+		t.Errorf("图片该成附件：%v", got.images)
+	}
+	if !strings.Contains(got.text, "里面有什么") {
+		t.Errorf("尾巴正文被吞了：%q", got.text)
 	}
 }
 

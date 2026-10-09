@@ -11,6 +11,10 @@
 //	@README.md              普通路径，到空白或句读为止
 //	@"我的 文档.txt"         路径含空格或中文时用引号
 //
+// 路径按**进程的当前目录**解析（不是安装根）。无引号、且路径后紧跟中文正文时
+// （`@图.png里面有什么`），取「确实存在的**最长路径前缀**」断开——文件系统就是那个
+// 分隔符；没有存在的前缀就原样当文字并提示一句。
+//
 // 只认**词首**的 `@`：`foo@bar` 里的 `@` 前面是 ASCII 字母，不当引用（否则邮箱会被
 // 吃掉）。认得出但读不到的（不存在 / 目录 / 过大的图片）**不报错、不中断**——原样当
 // 普通文字，顶多在 stderr 上提示一句。一次问答不该因为一个笔误的引用就发不出去。
@@ -32,6 +36,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -83,7 +88,13 @@ func expandFileRefs(question string, warn io.Writer) expandedQuestion {
 	var out strings.Builder
 	for i := 0; i < len(question); {
 		if question[i] == '@' && atFileRefBoundary(question, i) {
-			if name, end, ok := scanFileRef(question, i); ok {
+			if name, end, quoted, ok := scanFileRef(question, i); ok {
+				if !quoted {
+					// 无引号时，路径可能把紧跟的中文正文一起吞进来（`@图.png里面有什么`
+					// ——中文文件名要支持，所以扫描器不停在汉字上）。用**确实存在的
+					// 最长路径前缀**把它断开：文件系统就是那个分隔符。
+					name, end = trimToExisting(question, i, end)
+				}
 				out.WriteString(question[i:end])
 				i = end
 				if !seen[name] {
@@ -166,19 +177,20 @@ func fileRefPathRune(r rune) bool {
 	return true
 }
 
-// scanFileRef 从 `at`（`@` 处）读出一个引用，返回路径、消费到的结束位置与是否成立。
-func scanFileRef(s string, at int) (string, int, bool) {
+// scanFileRef 从 `at`（`@` 处）读出一个引用，返回路径、消费到的结束位置、
+// **是否带引号**与是否成立。
+func scanFileRef(s string, at int) (name string, end int, quoted bool, ok bool) {
 	i := at + 1
 	if i < len(s) && s[i] == '"' {
 		offset := strings.IndexByte(s[i+1:], '"')
 		if offset < 0 {
-			return "", 0, false
+			return "", 0, false, false
 		}
 		name := s[i+1 : i+1+offset]
 		if strings.TrimSpace(name) == "" {
-			return "", 0, false
+			return "", 0, false, false
 		}
-		return name, i + 1 + offset + 1, true
+		return name, i + 1 + offset + 1, true, true
 	}
 
 	start := i
@@ -190,9 +202,32 @@ func scanFileRef(s string, at int) (string, int, bool) {
 		i += size
 	}
 	if i == start {
-		return "", 0, false
+		return "", 0, false, false
 	}
-	return s[start:i], i, true
+	return s[start:i], i, false, true
+}
+
+// trimToExisting 把无引号引用里**确实存在的最长路径前缀**截出来，让尾巴（多半是紧跟着
+// 的中文正文）回到问题里。
+//
+// 两条克制：**整段存在就不裁**（哪怕它是目录，交给 loadRef 去说「是目录」）；**只裁到
+// 「存在的普通文件」**——否则 `/no/such/file` 会被裁到存在的祖先 `/`，把「读不到」变成
+// 「@/ 是目录」。裁不到就原样返回，让 loadRef 报读不到。退位按 rune（不能按字节，会切坏
+// 汉字）。
+func trimToExisting(s string, at, end int) (string, int) {
+	token := s[at+1 : end]
+	if _, err := os.Stat(token); err == nil {
+		return token, end
+	}
+	for cut := len(token); cut > 0; {
+		candidate := token[:cut]
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, at + 1 + cut
+		}
+		_, size := utf8.DecodeLastRuneInString(token[:cut])
+		cut -= size
+	}
+	return token, end
 }
 
 // loadRef 读一个被引用文件并分类。**读不到不算错**——调用方转成一句提示，
@@ -200,7 +235,7 @@ func scanFileRef(s string, at int) (string, int, bool) {
 func loadRef(name string) (loadedRef, error) {
 	info, err := os.Stat(name)
 	if err != nil {
-		return loadedRef{}, errors.New("读不到这个文件")
+		return loadedRef{}, statReason(name, err)
 	}
 	if info.IsDir() {
 		return loadedRef{}, errors.New("是目录")
@@ -208,6 +243,9 @@ func loadRef(name string) (loadedRef, error) {
 
 	file, err := os.Open(name)
 	if err != nil {
+		if os.IsPermission(err) {
+			return loadedRef{}, errors.New("没有读权限")
+		}
 		return loadedRef{}, errors.New("打不开这个文件")
 	}
 	defer file.Close()
@@ -261,6 +299,23 @@ func loadRef(name string) (loadedRef, error) {
 		ref.text += fmt.Sprintf("\n…（文件超过 %d 字节，已截断）", fileRefLimit)
 	}
 	return ref, nil
+}
+
+// statReason 把 `os.Stat` 的错翻成一句人话。**相对路径按进程的当前目录解析**是最常
+// 踩的一个坑：用户按安装根（FKA_HOME）的心智去找文件，而引用走的是 cwd——两种跑法
+// （`make ask` 与直接跑二进制）cwd 不一样，症状就是「明明在那儿却读不到」。
+func statReason(name string, err error) error {
+	switch {
+	case os.IsNotExist(err):
+		if !filepath.IsAbs(name) {
+			return errors.New("文件不存在（相对路径按当前目录解析，不是安装根）")
+		}
+		return errors.New("文件不存在")
+	case os.IsPermission(err):
+		return errors.New("没有读权限")
+	default:
+		return err
+	}
 }
 
 // humanBytes 把字节数写成人看的大小。
