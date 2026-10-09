@@ -18,6 +18,7 @@
 //
 // 流被掐断（断流超时命中，或读数途中连接出错）时**按 LLM_STREAM_RETRIES 重试**
 // （默认 3 次），整体超时跨所有重试、不重置。整体超时与调用方主动取消不重试。
+// 每次重试往注入的 writer（默认 stderr）写一行人话提示，不静默重试。
 //
 // Go 里用 `context.WithTimeoutCause` / `context.WithCancelCause` 表达两种中止原因：
 // `context.Cause` 能取回「到底是被整体超时掐的，还是断流掐的」，报给人看的错误
@@ -209,6 +210,13 @@ type Provider struct {
 	//
 	// 想彻底关掉推理输出用 `LLM_SHOW_REASONING=0`（见 `ReasoningVisible`）。
 	Reasoning io.Writer
+
+	// Retry 断流重试的**提示**写到哪。**nil = os.Stderr**。
+	//
+	// 与 Reasoning 同一条规矩：库代码不往 stdout 写字，落点由装配根决定。
+	// 每次重试写一行人话（如「[断流] 第 1/3 次尝试断流，重试…」）——重试会让人
+	// 多等一会儿，不给提示的话「这次怎么这么慢」就永远没有答案。
+	Retry io.Writer
 }
 
 func (Provider) ID() string { return "openai" }
@@ -221,6 +229,15 @@ func (p Provider) ReadConfig() (llm.Config, bool) { return ReadConfig() }
 func (p Provider) reasoningWriter() io.Writer {
 	if p.Reasoning != nil {
 		return p.Reasoning
+	}
+	return os.Stderr
+}
+
+// retryWriter 断流重试提示写到哪：注入的 writer，没注入就 stderr。
+// 与 reasoningWriter 同一条规矩——绝不默认 stdout。
+func (p Provider) retryWriter() io.Writer {
+	if p.Retry != nil {
+		return p.Retry
 	}
 	return os.Stderr
 }
@@ -318,7 +335,7 @@ func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 			request.ToolChoice = "auto"
 		}
 
-		result, err := postCompletion(ctx, client, cfg, request, host, p.reasoningWriter())
+		result, err := postCompletion(ctx, client, cfg, request, host, p.reasoningWriter(), p.retryWriter())
 		if err != nil {
 			return llm.ChatResult{}, err
 		}
@@ -358,6 +375,7 @@ func postCompletion(
 	request goopenai.ChatCompletionRequest,
 	host string,
 	reasoningOut io.Writer,
+	retryOut io.Writer,
 ) (llm.ChatResult, error) {
 	overallDur := time.Duration(cfg.TimeoutMs) * time.Millisecond
 	overallErr := errors.New("模型调用整体超时")
@@ -384,9 +402,13 @@ func postCompletion(
 			break
 		}
 		retries = attempt
-		config.Log().Warn(config.TypeLLM, "模型断流，重试", config.Fields(ctx, config.Context{
+		// 结构化记录：文件里始终全量；放在 Info 而非 Warn，是因为控制台那行人话
+		// 提示由 retryOut 单独输出——都是 Warn 的话默认控制台会重复打两条。
+		config.Log().Info(config.TypeLLM, "模型断流，重试", config.Fields(ctx, config.Context{
 			"attempt": attempt, "maxAttempts": maxAttempts, "error": err.Error(),
 		}))
+		// 给人看的提示：重试会让人多等一会儿，不说一声就只是「这次怎么这么慢」
+		fmt.Fprintf(retryOut, "[断流] 第 %d/%d 次尝试断流，重试…\n", attempt, maxAttempts)
 	}
 
 	if retries > 0 {

@@ -55,7 +55,8 @@ func flakySSEServer(t *testing.T, failFirst int, content string) (*httptest.Serv
 // StreamRetries 再试几次——第三次接到正常流就应当拿到答案。
 func Test断流后重试_再试几次能成功(t *testing.T) {
 	server, calls := flakySSEServer(t, 2, "接上了")
-	chat := Provider{}.CreateChat(llm.Config{
+	notice := &strings.Builder{}
+	chat := Provider{Retry: notice}.CreateChat(llm.Config{
 		BaseURL: server.URL + "/v1", APIKey: "k", Model: "test-model",
 		TimeoutMs: 5000, StreamTimeoutMs: 60, StreamRetries: 3,
 	})
@@ -72,12 +73,17 @@ func Test断流后重试_再试几次能成功(t *testing.T) {
 	if got := atomic.LoadInt32(calls); got != 3 {
 		t.Errorf("服务端收到 %d 次请求，想要 3（两次断流 + 一次成功）", got)
 	}
+	// 重试要有提示，不静默：两次重试各一行
+	if got := strings.Count(notice.String(), "[断流]"); got != 2 {
+		t.Errorf("重试提示行数 = %d，想要 2：%q", got, notice.String())
+	}
 }
 
 // Test断流重试用尽_如实失败：一直断流时，试满次数就报错，且错误说清是断流。
 func Test断流重试用尽_如实失败(t *testing.T) {
 	server, calls := flakySSEServer(t, 100, "永远到不了")
-	chat := Provider{}.CreateChat(llm.Config{
+	notice := &strings.Builder{}
+	chat := Provider{Retry: notice}.CreateChat(llm.Config{
 		BaseURL: server.URL + "/v1", APIKey: "k", Model: "test-model",
 		TimeoutMs: 5000, StreamTimeoutMs: 60, StreamRetries: 2,
 	})
@@ -94,6 +100,13 @@ func Test断流重试用尽_如实失败(t *testing.T) {
 	// 1 次初始 + 2 次重试
 	if got := atomic.LoadInt32(calls); got != 3 {
 		t.Errorf("服务端收到 %d 次请求，想要 3（1 次初始 + 2 次重试）", got)
+	}
+	// 重试用尽：提示里两次重试都要有，且带上总数
+	if got := strings.Count(notice.String(), "[断流]"); got != 2 {
+		t.Errorf("重试提示行数 = %d，想要 2：%q", got, notice.String())
+	}
+	if !strings.Contains(notice.String(), "2/3") {
+		t.Errorf("提示该带「第 2/3 次」，实际：%q", notice.String())
 	}
 }
 

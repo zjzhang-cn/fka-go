@@ -172,8 +172,10 @@ func Build(opts Options) *App {
 // 结果（`fka ask` 的答案、`fka tools --json` 的 JSON）。以前 provider 直接 `fmt.Print`
 // 到 stdout，于是 `fka ask > 答案.txt` 里混着半截推理。想彻底关掉用
 // `LLM_SHOW_REASONING=0`。
+//
+// `Retry: os.Stderr` 同理：断流重试的提示也是过程信息，同样只进 stderr。
 func defaultLLMProviders() []llm.Provider {
-	return []llm.Provider{llmopenai.Provider{Reasoning: os.Stderr}}
+	return []llm.Provider{llmopenai.Provider{Reasoning: os.Stderr, Retry: os.Stderr}}
 }
 
 // registerLLM 从候选里挑第一个配好的。
