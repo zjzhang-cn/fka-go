@@ -148,3 +148,32 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 		t.Errorf("结果里该有命令输出，实际 %q", body)
 	}
 }
+
+// TestHelp参数直接以0退出 帮助必须**早于沙盒构造与 ServeStdio**：晚于沙盒构造时，
+// 没装 bwrap 的机器会让 `-h` 以 1 退出；晚于 ServeStdio 时，装了 bwrap 的机器上
+// `-h` 会真的起成 stdio server 把进程挂住（测试会一直等）。两种都不该发生。
+func TestHelp参数直接以0退出(t *testing.T) {
+	// 帮助走 stderr，测试里把它接到 /dev/null，免得刷屏
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = devnull
+	defer func() {
+		os.Stderr = old
+		_ = devnull.Close()
+	}()
+
+	for _, args := range [][]string{
+		{"-h"},
+		{"--help"},
+		{"help"},
+		{"--transport", "sse", "--help"},
+		{"--root", "/definitely/not/a/real/root", "-h"},
+	} {
+		if code := run(args); code != 0 {
+			t.Errorf("%v 该以 0 退出，实际 %d", args, code)
+		}
+	}
+}

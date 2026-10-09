@@ -103,6 +103,13 @@ const shutdownGrace = 5 * time.Second
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
+	// **帮助要早于沙盒构造**：`-h` 不该因为没装 bwrap 或根目录不可用而失败，
+	// 也不该在建沙盒的途中落下目录/日志这些副作用。它只印一段字就退出 0。
+	if wantsHelp(args) {
+		printUsage()
+		return 0
+	}
+
 	// **不要**在这个进程里往 stdout 打任何东西。stdio 档的信号由 SDK 自己接
 	// （ServeStdio 收到 SIGINT / SIGTERM 会返回 context.Canceled）；HTTP 档没这个
 	// 待遇，信号在 serveHTTP 里单独接。两档都刻意把干净停机返成 context.Canceled。
@@ -235,6 +242,53 @@ func exitCodeFor(err error) int {
 		return 0
 	}
 	return 1
+}
+
+// wantsHelp 是否要把帮助印出来。
+//
+// **扫全部参数**而不是只看第一个：`--transport sse --help` 也该给帮助，而不是
+// 因为前面有别的参数就当成启动配置去连。
+func wantsHelp(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "-h", "--help", "help":
+			return true
+		}
+	}
+	return false
+}
+
+// printUsage 印帮助。**走 stderr 不走 stdout**——stdio 档下 stdout 是 JSON-RPC
+// 通道，把帮助写进去就是往协议流里插字节。与 `fka` 的 printUsage 同一条纪律。
+func printUsage() {
+	fmt.Fprint(os.Stderr, `fka-bash —— 沙盒 bash 执行的 MCP server
+
+用法：
+  fka-bash [参数]
+
+默认以 stdio 运行（被主程序当子进程拉起）。--transport 可换成 HTTP，
+此时主程序那份 mcp.json 用 url 连过来，工具实现不变。
+
+传输：
+  --transport stdio|sse|http   启动方式（默认 stdio；sse 挂 /sse，http 挂 /mcp）
+  --addr ADDR                  SSE / http 的监听地址（默认 127.0.0.1:8080）
+
+沙盒：
+  --root PATH                  沙盒根（默认 <安装根>/sandbox）
+  --mode bwrap|direct          沙盒引擎（默认 bwrap；direct 只固定 cwd，不隔离）
+  --bwrap PATH                 Bubblewrap 路径（默认从 PATH 找）
+  --share-net                  保留宿主网络（默认独立网络命名空间）
+  --allow A,B                  命令白名单（非空即白名单模式）
+  --deny A,B                   追加命令黑名单（内置那份不能清空）
+
+  -h, --help                   这份帮助
+
+环境变量：
+  BASH_SANDBOX_ROOT / BASH_SANDBOX_MODE / BASH_BWRAP / BASH_BWRAP_ARGS /
+  BASH_SHARE_NET / BASH_ALLOW / BASH_DENY / BASH_MCP_TRANSPORT / BASH_MCP_ADDR
+
+stdout 是 JSON-RPC 通道：server 运行期间一个字节都不能往 stdout 打。
+`)
 }
 
 // resolveRoot 定出沙盒根：--root 参数 > BASH_SANDBOX_ROOT 环境变量 > <安装根>/sandbox。

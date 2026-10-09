@@ -90,6 +90,9 @@ bin/fka-bash --transport http --addr 127.0.0.1:8080   # streamable HTTP，路径
 | `sse` | 老式 HTTP+SSE：GET 开着一条流，服务端先给 `endpoint` 事件告诉你往哪 POST |
 | `http` | streamable HTTP：直接 POST 那个 url，响应就在响应体里 |
 
+全部参数一览：`fka-bash -h`（或 `--help`）。它也走 stderr——stdio 档下 stdout 是
+JSON-RPC 通道，帮助不能往那里写。帮助**早于沙盒构造**：没装 bwrap 也能看。
+
 ⚠️ **默认只听 `127.0.0.1:8080`**。这个 server 能在沙盒里跑命令，默认绑 `0.0.0.0`
 等于把命令执行权敞开给同网段——要对外必须显式写 `--addr`。
 ⚠️ **认不出的 `--transport` 按用法错退出（2）**，不静默退回 stdio——否则「我配了 sse」
