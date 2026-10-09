@@ -150,6 +150,31 @@ func Test会话_显示工具调用与结果(t *testing.T) {
 	}
 }
 
+// Test会话_引用文件进模型问题：`@路径` 的正文要进到模型看到的问题里，
+// 并在 stderr 上提示引了哪些文件。
+func Test会话_引用文件进模型问题(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "笔记.txt")
+	if err := os.WriteFile(path, []byte("三亚的行程"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := &fakeEngine{}
+	repl, _, ui := newTestREPL("看下 @"+path+"\n/quit\n", engine)
+
+	repl.loop(context.Background())
+
+	inputs := engine.inputs()
+	if len(inputs) != 1 {
+		t.Fatalf("跑了 %d 轮，想要 1 轮", len(inputs))
+	}
+	if !strings.Contains(inputs[0].Question, "三亚的行程") {
+		t.Errorf("文件正文没进问题：%q", inputs[0].Question)
+	}
+	if !strings.Contains(ui.String(), "引用文件") {
+		t.Errorf("stderr 没提示引用：%q", ui.String())
+	}
+}
+
 // Test会话_颜色开启时stdout仍然干净 是上一条的加强版：**即使开了颜色，回答那一侧
 // 也不许有转义**。转义只属于给人看的提示，写进重定向文件就是把文件弄脏。
 func Test会话_颜色开启时stdout仍然干净(t *testing.T) {

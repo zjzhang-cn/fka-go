@@ -35,6 +35,13 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 	principal := flagOrEnv(parsed, principalFlag, principalEnv, "cli")
 	session := sessionID(parsed)
 
+	// `@路径` 的引用在这里展开：问题原文保留，文件正文追加在末尾（见 fileref.go）。
+	// 提示写 stderr——stdout 只该有答案。
+	question, attached := expandFileRefs(question, os.Stderr)
+	if len(attached) > 0 {
+		fmt.Fprintf(os.Stderr, "引用文件：%s\n", strings.Join(attached, "、"))
+	}
+
 	application := build()
 	defer application.Close()
 
