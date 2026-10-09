@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-29T13:49:22Z",
-  "updated_at": "2026-10-09T01:47:50Z",
+  "updated_at": "2026-10-09T01:53:07Z",
   "files": {
     ".env.example": {
       "sha256": "c89aee8d3a86450e868606709f3588605eddcc9dfc59768d8609703e6b2b02f0",
@@ -39,15 +39,15 @@
       "normalized_sha256": "4f83a286ff904ed53773a01f5626874c82c377c4438e9fca53f24baef23857bb"
     },
     "aoci.txt": {
-      "sha256": "443d4558c408a4fd2c27fe6731829d5a884a1f8271a78b23db394dffe14db602",
-      "size": 86216,
-      "normalized_sha256": "443d4558c408a4fd2c27fe6731829d5a884a1f8271a78b23db394dffe14db602"
+      "sha256": "7dbde2bcf22ba935568f1ea16554e623a0010ffa52521b5760a67d3b4b506893",
+      "size": 87854,
+      "normalized_sha256": "7dbde2bcf22ba935568f1ea16554e623a0010ffa52521b5760a67d3b4b506893"
     },
     "cmd/fka/ask.go": {
-      "sha256": "01171397f4816abd2a6f95badbc6f19dc52ad878ddd3dedc986f4cbefa76184a",
-      "size": 14729,
-      "normalized_sha256": "01171397f4816abd2a6f95badbc6f19dc52ad878ddd3dedc986f4cbefa76184a",
-      "format_sha256": "01171397f4816abd2a6f95badbc6f19dc52ad878ddd3dedc986f4cbefa76184a",
+      "sha256": "f92cb075e59457b7fe1f0535b0ba8c79ecc82c4c0994c2cdc815bd7da0416df1",
+      "size": 15060,
+      "normalized_sha256": "f92cb075e59457b7fe1f0535b0ba8c79ecc82c4c0994c2cdc815bd7da0416df1",
+      "format_sha256": "f92cb075e59457b7fe1f0535b0ba8c79ecc82c4c0994c2cdc815bd7da0416df1",
       "format_kind": "gofmt"
     },
     "cmd/fka/ask_test.go": {
@@ -72,17 +72,31 @@
       "format_kind": "gofmt"
     },
     "cmd/fka/chat.go": {
-      "sha256": "ef4bf3913b69057e8a066c07e2507eec8f99c8b074a293bbc39caf0483bf7cec",
-      "size": 19937,
-      "normalized_sha256": "ef4bf3913b69057e8a066c07e2507eec8f99c8b074a293bbc39caf0483bf7cec",
-      "format_sha256": "ef4bf3913b69057e8a066c07e2507eec8f99c8b074a293bbc39caf0483bf7cec",
+      "sha256": "97010972bcb3c817397b3015811887a6fc36a1b24756509db90e837f8b66e7dd",
+      "size": 20446,
+      "normalized_sha256": "97010972bcb3c817397b3015811887a6fc36a1b24756509db90e837f8b66e7dd",
+      "format_sha256": "97010972bcb3c817397b3015811887a6fc36a1b24756509db90e837f8b66e7dd",
       "format_kind": "gofmt"
     },
     "cmd/fka/chat_test.go": {
-      "sha256": "263f98325a5d0a6b457ca87859723cfd9b04fb4af06c2c3edda2d543a2a9d1c8",
-      "size": 16097,
-      "normalized_sha256": "263f98325a5d0a6b457ca87859723cfd9b04fb4af06c2c3edda2d543a2a9d1c8",
-      "format_sha256": "263f98325a5d0a6b457ca87859723cfd9b04fb4af06c2c3edda2d543a2a9d1c8",
+      "sha256": "4d15d5f3c775ea0e1fc8640bca3d4174db83dd888e9da489381f7a882cb65b3d",
+      "size": 16930,
+      "normalized_sha256": "4d15d5f3c775ea0e1fc8640bca3d4174db83dd888e9da489381f7a882cb65b3d",
+      "format_sha256": "4d15d5f3c775ea0e1fc8640bca3d4174db83dd888e9da489381f7a882cb65b3d",
+      "format_kind": "gofmt"
+    },
+    "cmd/fka/fileref.go": {
+      "sha256": "bf9849976a85dc3122305e5271e75e7088a41daf0abb3a68f476d968f18d9344",
+      "size": 6369,
+      "normalized_sha256": "bf9849976a85dc3122305e5271e75e7088a41daf0abb3a68f476d968f18d9344",
+      "format_sha256": "bf9849976a85dc3122305e5271e75e7088a41daf0abb3a68f476d968f18d9344",
+      "format_kind": "gofmt"
+    },
+    "cmd/fka/fileref_test.go": {
+      "sha256": "c7b428cadcdf5351c261106ed77dd04ddb9a5d39a2cbc9012e56b233ea3bdb09",
+      "size": 5573,
+      "normalized_sha256": "c7b428cadcdf5351c261106ed77dd04ddb9a5d39a2cbc9012e56b233ea3bdb09",
+      "format_sha256": "c7b428cadcdf5351c261106ed77dd04ddb9a5d39a2cbc9012e56b233ea3bdb09",
       "format_kind": "gofmt"
     },
     "cmd/fka/login.go": {
@@ -114,10 +128,10 @@
       "format_kind": "gofmt"
     },
     "cmd/fka/main.go": {
-      "sha256": "4e58851a32121ff59d9c54488ed42e0a0470b2d734ec35fdc5599e179048f5ae",
-      "size": 6778,
-      "normalized_sha256": "4e58851a32121ff59d9c54488ed42e0a0470b2d734ec35fdc5599e179048f5ae",
-      "format_sha256": "4e58851a32121ff59d9c54488ed42e0a0470b2d734ec35fdc5599e179048f5ae",
+      "sha256": "e3f8e38ceed2a5d9a83ecfc771c505d08ec2d50ae572677d51624cc8ac222de9",
+      "size": 6897,
+      "normalized_sha256": "e3f8e38ceed2a5d9a83ecfc771c505d08ec2d50ae572677d51624cc8ac222de9",
+      "format_sha256": "e3f8e38ceed2a5d9a83ecfc771c505d08ec2d50ae572677d51624cc8ac222de9",
       "format_kind": "gofmt"
     },
     "cmd/fka/serve.go": {
