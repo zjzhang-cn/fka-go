@@ -9,6 +9,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 
 	mcpServer := server.NewMCPServer("fka-bash", "0.1.0",
 		server.WithToolCapabilities(true))
-	register(mcpServer, newTestSandbox(t))
+	register(mcpServer, newTestSandbox(t), nil)
 
 	httpServer := httptest.NewServer(server.NewSSEServer(mcpServer))
 	t.Cleanup(httpServer.Close)
@@ -146,6 +147,21 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 	}
 	if body := mcp.GetTextFromContent(result.Content[0]); !strings.Contains(body, "hello-over-sse") {
 		t.Errorf("结果里该有命令输出，实际 %q", body)
+	}
+}
+
+// TestExecLogDir_落在安装根logs下 执行日志默认落在 <安装根>/logs，FKA_LOG_DIR 可盖。
+// 目录必须是**安装根**而不是临时目录：审计日志要能被人找到，且与沙盒根同一套锚点。
+func TestExecLogDir_落在安装根logs下(t *testing.T) {
+	t.Setenv("FKA_LOG_DIR", "/custom/logs")
+	if got := execLogDir(); got != "/custom/logs" {
+		t.Errorf("FKA_LOG_DIR 该压过安装根，实际 %q", got)
+	}
+
+	t.Setenv("FKA_LOG_DIR", "")
+	t.Setenv("FKA_HOME", "/home-x")
+	if got := execLogDir(); got != filepath.Join("/home-x", "logs") {
+		t.Errorf("该落在 <安装根>/logs，实际 %q", got)
 	}
 }
 

@@ -62,6 +62,13 @@
 // `direct` 模式只固定 cwd，**不是安全边界**——`cd /` 照样能离开工作目录。细节见
 // sandbox.go 文件头。
 //
+// ## 每次执行都留痕（执行日志默认开）
+//
+// 每条 `run` 命令写成一行 JSON（命令、cwd、退出码、超时、耗时）追加到
+// `<安装根>/logs/bash-exec-<UTC 日期>.log`（`FKA_LOG_DIR` 可改目录）。**放在安装根
+// 而非沙盒根**：沙盒对模型可写，审计不该让被审计者自己删。被策略拒 / 越界的尝试也记
+// 一条（error 字段），输出正文不记。见 execlog.go 与 execLogDir()。
+//
 // ## stdout 一个字都不能有（stdio 档）
 //
 // stdio 档下 stdout 是 JSON-RPC 通道。**任何** fmt.Println 都会插进协议流里把
@@ -134,9 +141,14 @@ func run(args []string) int {
 		"deny":  len(sandbox.Deny),
 	})
 
+	// 执行日志默认开，写在 <安装根>/logs 下的 bash-exec-<日期>.log（bwrap 模式下
+	// 沙盒只读绑定到 /，模型删不掉这份审计）。写不进去不报错，见 execlog.go。
+	execLog := NewExecLog(execLogDir())
+	defer func() { _ = execLog.Close() }()
+
 	mcpServer := server.NewMCPServer("fka-bash", "0.1.0",
 		server.WithToolCapabilities(true))
-	register(mcpServer, sandbox)
+	register(mcpServer, sandbox, execLog)
 
 	transport := resolveTransport(args)
 	if transport == "" {
@@ -289,6 +301,18 @@ func printUsage() {
 
 stdout 是 JSON-RPC 通道：server 运行期间一个字节都不能往 stdout 打。
 `)
+}
+
+// execLogDir 执行日志目录：FKA_LOG_DIR > <安装根>/logs。
+//
+// 与 internal/log 的 log.LogDir() 相比多了「可执行文件所在目录」这一级（home()），
+// 所以直接跑 ./bin/fka-bash、没设 FKA_HOME 时，审计日志落在 bin/logs 而不是临时
+// 目录——与沙盒根 resolveRoot 用同一套安装根锚点，行为一致。
+func execLogDir() string {
+	if dir := strings.TrimSpace(os.Getenv("FKA_LOG_DIR")); dir != "" {
+		return dir
+	}
+	return filepath.Join(home(), "logs")
 }
 
 // resolveRoot 定出沙盒根：--root 参数 > BASH_SANDBOX_ROOT 环境变量 > <安装根>/sandbox。

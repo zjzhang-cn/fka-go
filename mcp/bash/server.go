@@ -33,11 +33,13 @@ const (
 // bashServer 工具实现。**只有本目录内的 main 与测试用得到**。
 type bashServer struct {
 	sandbox *Sandbox
+	// execLog 执行日志。**可为 nil**（测试里不关心落盘时）：nil 即不记。
+	execLog *ExecLog
 }
 
 // register 把工具挂到 MCP server 上。sandbox 已按配置建好。
-func register(mcpServer *server.MCPServer, sandbox *Sandbox) {
-	s := &bashServer{sandbox: sandbox}
+func register(mcpServer *server.MCPServer, sandbox *Sandbox, execLog *ExecLog) {
+	s := &bashServer{sandbox: sandbox, execLog: execLog}
 
 	mcpServer.AddTool(mcp.NewTool(ToolRun,
 		mcp.WithDescription(
@@ -79,22 +81,44 @@ func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest)
 	// 于是超时参数会永远取默认值，而界面上看不出任何异常（见 mcp/memory 的同款坑）。
 	timeoutSec := request.GetInt("timeout_sec", 0)
 
+	cwd := request.GetString("cwd", "")
 	result, err := s.sandbox.Run(ctx, RunRequest{
 		Command: command,
-		Cwd:     request.GetString("cwd", ""),
+		Cwd:     cwd,
 		Timeout: time.Duration(timeoutSec) * time.Second,
 	})
 	if err != nil {
-		// 策略拒绝 / cwd 越界 / 启动失败：这是**没能跑起来**，不是命令跑完的退出码
+		// 策略拒绝 / cwd 越界 / 启动失败：这是**没能跑起来**，不是命令跑完的退出码。
+		// 也照样记一条执行日志——「模型试过什么但被挡下」正是审计要看的。
 		log.Log().Warn("命令被拒或没能启动", log.Context{"error": err.Error()})
+		s.recordExec(execRecord{Cwd: cwd, Command: command, Error: err.Error()})
 		return fail(err.Error()), nil
 	}
+
+	rec := execRecord{
+		Cwd:        cwd,
+		Command:    command,
+		TimedOut:   result.TimedOut,
+		Truncated:  result.Truncated,
+		DurationMS: result.Duration.Milliseconds(),
+	}
+	// 超时时命令是被杀的，退出码没有意义，不记（免得 0 被读成「正常结束」）
+	if !result.TimedOut {
+		code := result.ExitCode
+		rec.ExitCode = &code
+	}
+	s.recordExec(rec)
 
 	body := formatResult(result)
 	if result.TimedOut {
 		return fail(body), nil
 	}
 	return text(body), nil
+}
+
+// recordExec 落一条执行日志。execLog 为 nil（测试）时静默跳过。
+func (s *bashServer) recordExec(rec execRecord) {
+	s.execLog.Record(rec)
 }
 
 // handleRead 把沙盒文件按类别交给模型。**版式对齐 CLI `@引用`**：每个文件一段

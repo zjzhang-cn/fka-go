@@ -123,6 +123,25 @@ CGO_ENABLED=0 go build -o bin/fka-bash ./mcp/bash   # 零 CGO
 | `--transport` | `BASH_MCP_TRANSPORT` | `stdio`（默认）/ `sse` / `http`，控制启动方式 |
 | `--addr` | `BASH_MCP_ADDR` | SSE / http 的监听地址，默认 `127.0.0.1:8080` |
 
+## 执行日志
+
+每条 `run` 命令**默认**落一行 JSON（JSON Lines）到
+`<安装根>/logs/bash-exec-<UTC日期>.log`（`FKA_LOG_DIR` 可改目录，安装根按
+`$FKA_HOME` → 可执行文件目录 → cwd 三级回退）。`read` 不记。
+
+```json
+{"time":"2026-10-09T08:11:12.345Z","cwd":"work","command":"ls -la","exit_code":0,"duration_ms":7}
+{"time":"2026-10-09T08:11:13.100Z","cwd":"","command":"mount /dev/sda1","duration_ms":0,"error":"命令 \"mount\" 在内置/配置的禁用列表里，已拒绝执行"}
+```
+
+记的是**元信息不记输出正文**：时间、cwd、命令、退出码、是否超时、是否截断、耗时。
+被策略拒 / cwd 越界 / 启动失败的尝试也记一条（有 `error`、**没有 `exit_code`**——
+没跑的命令不能伪装成退出码 0）。超时时不记退出码（命令是被杀的，0 会被误读成正常结束）。
+
+⚠️ **落在安装根而非沙盒根**：沙盒对模型可写，审计不该让被审计者自己擦。bwrap 模式下
+`/` 只读绑定，模型写不进也删不掉这份日志。
+⚠️ **写不进去不报错**：日志是旁路，磁盘满 / 权限问题不该把一条本来能跑的命令挡下来。
+
 ## 三条硬约束
 
 ### stdout 一个字都不能有
@@ -150,12 +169,14 @@ mcp/bash/
 ├── main_test.go           --transport / --addr 解析与 SSE 真链路用例
 ├── server.go              run / read 工具的声明与实现
 ├── sandbox.go             沙盒核心：cwd/path 限制、超时、输出上限、命令策略
+├── execlog.go             执行日志：每次 run 一条 JSON Lines，按 UTC 日期轮转
 ├── read.go                read 工具：把沙盒文件按类别经 MCP 内容块交给模型
 ├── proc_unix.go           进程组（Unix）：超时杀整棵进程树
 ├── proc_windows.go        进程组的 Windows 退化实现
 ├── sandbox_test.go        cwd/超时/输出/策略用例（direct 档）
 ├── sandbox_bwrap_test.go  bwrap 参数顺序与真实隔离用例
 ├── server_test.go         run 工具参数与结果文本用例
+├── execlog_test.go        执行日志用例：JSON Lines、按天轮转、没跑的不留假退出码
 ├── read_test.go           read 工具分类与越界用例
 └── internal/log/          stdio 子进程用的 logger（自给自足的刻意副本）
 ```
