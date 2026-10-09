@@ -1,4 +1,4 @@
-// Command fka-bash 是**沙盒 bash 执行的 MCP server**（stdio）。
+// Command fka-bash 是**沙盒 bash 执行的 MCP server**。
 //
 // ## 它是什么
 //
@@ -17,6 +17,29 @@
 // 主程序要放行 `external`（**MCP 工具一律是 external**）：
 //
 //	LLM_TOOL_EFFECTS=read,external
+//
+// ## 传输方式由参数决定
+//
+// 默认是 `stdio`（被主程序当子进程拉起）。`--transport` 可以在**同一份工具实现**上
+// 换传输，不改 server.go 一行：
+//
+//	--transport stdio   本地管道（默认，主程序拉子进程用这种）
+//	--transport sse     老式 HTTP+SSE，监听 --addr（默认 127.0.0.1:8080），路径 /sse
+//	--transport http    streamable HTTP，监听 --addr，路径 /mcp
+//
+// 换成 HTTP 后，主程序那种「拉子进程」的配置就换成一端 `url`：
+//
+//	{
+//	  "mcpServers": {
+//	    "bash": { "url": "http://127.0.0.1:8080/sse", "transport": "sse" }
+//	  }
+//	}
+//
+// 内容块是协议层的，不绑定传输：`read` 的文本 / 图片 / 音频块换到 HTTP 后面照旧。
+//
+//	--addr ADDR             监听地址（SSE / http 用；默认 127.0.0.1:8080）
+//	BASH_MCP_TRANSPORT      等价于 --transport
+//	BASH_MCP_ADDR           等价于 --addr
 //
 // ## 默认沙盒根是**自己的**目录
 //
@@ -39,10 +62,11 @@
 // `direct` 模式只固定 cwd，**不是安全边界**——`cd /` 照样能离开工作目录。细节见
 // sandbox.go 文件头。
 //
-// ## stdout 一个字都不能有
+// ## stdout 一个字都不能有（stdio 档）
 //
-// stdout 是 JSON-RPC 通道。**任何** fmt.Println 都会插进协议流里把 server 打挂。
-// 诊断信息一律走 log.Log()（stderr + 按天轮转的日志文件）。
+// stdio 档下 stdout 是 JSON-RPC 通道。**任何** fmt.Println 都会插进协议流里把
+// server 打挂。诊断信息一律走 log.Log()（stderr + 按天轮转的日志文件）。
+// 换到 HTTP 档后 stdout 不再是通道，但这条纪律仍然保留——两种档共用一份源码。
 package main
 
 import (
@@ -50,20 +74,38 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/zjzhang-cn/fka-go/mcp/bash/internal/log"
 )
 
+// 传输方式。**取值与 mcp.json 里 `transport` 一字不差**——写错一个字符的表现是
+// 「配置读进来了但没人认」。
+const (
+	transportStdio = "stdio"
+	transportSSE   = "sse"
+	transportHTTP  = "http"
+)
+
+// defaultAddr 监听地址默认**只绑本地回环**：这是个能在沙盒里跑命令的 server，
+// 默认暴露到 0.0.0.0 等于把命令执行权敞开给同网段。要对外必须显式写 --addr。
+const defaultAddr = "127.0.0.1:8080"
+
+// shutdownGrace 收到停机信号后等 HTTP 连接关掉的宽限。
+const shutdownGrace = 5 * time.Second
+
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
-	// **不要**在这个进程里往 stdout 打任何东西。信号由 SDK 自己接（ServeStdio
-	// 收到 SIGINT / SIGTERM 会返回 context.Canceled），这里没有需要 defer 清理的
-	// 资源，所以不必再自建 NotifyContext——留着那个 ctx 反而是个没人用的变量。
+	// **不要**在这个进程里往 stdout 打任何东西。stdio 档的信号由 SDK 自己接
+	// （ServeStdio 收到 SIGINT / SIGTERM 会返回 context.Canceled）；HTTP 档没这个
+	// 待遇，信号在 serveHTTP 里单独接。两档都刻意把干净停机返成 context.Canceled。
 	sandbox, err := NewSandbox(Options{
 		Root:         resolveRoot(args),
 		Allow:        sandboxAllow(args),
@@ -89,23 +131,105 @@ func run(args []string) int {
 		server.WithToolCapabilities(true))
 	register(mcpServer, sandbox)
 
-	// ServeStdio 独占 stdin/stdout。**不要**在它前后往 stdout 打任何东西
-	err = server.ServeStdio(mcpServer)
-	if code := exitCodeFor(err); code != 0 {
-		fmt.Fprintln(os.Stderr, "bash server 退出："+err.Error())
+	transport := resolveTransport(args)
+	if transport == "" {
+		fmt.Fprintln(os.Stderr, "bash server：--transport 只能是 stdio / sse / http，收到 "+firstNonEmpty(flagValue(args, "--transport"), os.Getenv("BASH_MCP_TRANSPORT")))
+		return 2
+	}
+
+	// 换传输只换「谁把 JSON-RPC 送进来」，工具实现一行不改：stdio 独占 stdin/stdout，
+	// HTTP 档另起一个监听。**不要在它前后往 stdout 打任何东西**
+	var serveErr error
+	switch transport {
+	case transportStdio:
+		serveErr = server.ServeStdio(mcpServer)
+	case transportSSE, transportHTTP:
+		serveErr = serveHTTP(transport, resolveAddr(args), mcpServer)
+	}
+	if code := exitCodeFor(serveErr); code != 0 {
+		fmt.Fprintln(os.Stderr, "bash server 退出："+serveErr.Error())
 		return code
 	}
-	if err != nil {
-		log.Log().Info("收到停机信号，已退出", log.Context{})
+	if serveErr != nil {
+		log.Log().Info("收到停机信号，已退出", log.Context{"transport": transport})
 	}
 	return 0
 }
 
-// exitCodeFor 把 `ServeStdio` 的返回翻成退出码。
+// httpServer 两种 HTTP 传输都满足的最小接口。用一个接口而不是各自分支，是因为
+// Start / Shutdown / 信号收尾三件事对 sse 与 http 完全一样，只有构造不同。
+type httpServer interface {
+	Start(addr string) error
+	Shutdown(ctx context.Context) error
+}
+
+// serveHTTP 起一个监听 addr 的 HTTP MCP server，直到收到停机信号。
+//
+// ## 为什么信号要自己接，stdio 档却不用
+//
+// stdio 档由 SDK 的 ServeStdio 注册 SIGINT / SIGTERM 并返回 context.Canceled。
+// HTTP 档 SDK 不管信号，`Start` 是阻塞的 ListenAndServe——不自己接信号、不调
+// Shutdown，进程就会带着半开的连接被直接杀掉（干净停机被记成崩溃，见 exitCodeFor）。
+func serveHTTP(transport, addr string, mcpServer *server.MCPServer) error {
+	var srv httpServer
+	if transport == transportSSE {
+		srv = server.NewSSEServer(mcpServer)
+	} else {
+		srv = server.NewStreamableHTTPServer(mcpServer)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Start(addr) }()
+
+	log.Log().Info("bash MCP server 开始监听", log.Context{
+		"transport": transport, "addr": addr,
+	})
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		// 返 context.Canceled：exitCodeFor 认它是干净停机的 0
+		return ctx.Err()
+	case err := <-errCh:
+		// Start 自己的错（端口被占等）**原样上抛**，别吞掉：那才是真正起不来
+		return err
+	}
+}
+
+// resolveTransport 定出传输方式：--transport > BASH_MCP_TRANSPORT > 默认 stdio。
+//
+// 认不出的取值返回空串，由调用方按用法错退出（退出码 2）——静默退回 stdio 会让
+// 「我明明配了 sse」变成一句查不出的假象。
+func resolveTransport(args []string) string {
+	value := strings.ToLower(strings.TrimSpace(
+		firstNonEmpty(flagValue(args, "--transport"), os.Getenv("BASH_MCP_TRANSPORT"))))
+	switch value {
+	case "":
+		return transportStdio
+	case transportStdio, transportSSE, transportHTTP:
+		return value
+	}
+	return ""
+}
+
+// resolveAddr 定出 HTTP 监听地址：--addr > BASH_MCP_ADDR > 127.0.0.1:8080。
+func resolveAddr(args []string) string {
+	return firstNonEmpty(flagValue(args, "--addr"), strings.TrimSpace(os.Getenv("BASH_MCP_ADDR")), defaultAddr)
+}
+
+// exitCodeFor 把 `ServeStdio` / `serveHTTP` 的返回翻成退出码。
 //
 // 退出码是契约（0 成功 / 1 预期内的失败）。SDK 自己也注册了 SIGINT / SIGTERM，
 // 收到信号时 `ServeStdio` 返回 `context.Canceled`——照直报成 1 的话，**每一次干净的
-// 停机都会被记成一次崩溃**，systemd 的 Restart 策略跟着走。
+// 停机都会被记成一次崩溃**，systemd 的 Restart 策略跟着走。HTTP 档的 serveHTTP
+// 也刻意返回 context.Canceled，走同一条换算。
 func exitCodeFor(err error) int {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return 0

@@ -3,7 +3,9 @@
 **这里是能力，不是 agent。** agent 在 [`internal/`](../../internal) 里，它**不认识任何数据的存储**——
 它的本事全靠 MCP server 与 skill 顶上，本目录就是其中之一。
 
-`bin/fka-bash` 是一个**独立进程**（stdio），由主程序从 `mcp.json` 当子进程拉起。崩了不影响主程序。
+`bin/fka-bash` 是一个**独立进程**。默认走 **stdio**，由主程序从 `mcp.json` 当子进程拉起；
+`--transport` 可以让它在**同一份工具实现**上换成 **HTTP+SSE** 或 **streamable HTTP**。
+崩了不影响主程序。
 
 它提供两个工具：
 
@@ -41,6 +43,8 @@
 
 ## 挂上去
 
+默认（stdio）——主程序把它当子进程拉起：
+
 ```jsonc
 // <安装根>/mcp.json
 {
@@ -60,6 +64,37 @@ LLM_TOOL_EFFECTS=read,external
 ```
 
 `--root` 不给时默认 `<安装根>/sandbox`，启动时建。
+
+## 换传输方式（`--transport`）
+
+传输由参数决定，**工具实现一行不改**：
+
+```bash
+bin/fka-bash --transport sse  --addr 127.0.0.1:8080   # 老式 HTTP+SSE，路径 /sse
+bin/fka-bash --transport http --addr 127.0.0.1:8080   # streamable HTTP，路径 /mcp
+```
+
+此时主程序那份 `mcp.json` 换成一端 `url`（不再拉子进程）：
+
+```jsonc
+{
+  "mcpServers": {
+    "bash": { "url": "http://127.0.0.1:8080/sse", "transport": "sse" }
+  }
+}
+```
+
+| 值 | 说明 |
+|---|---|
+| `stdio` | 默认。JSON-RPC 走 stdin/stdout，被主程序当子进程拉起 |
+| `sse` | 老式 HTTP+SSE：GET 开着一条流，服务端先给 `endpoint` 事件告诉你往哪 POST |
+| `http` | streamable HTTP：直接 POST 那个 url，响应就在响应体里 |
+
+⚠️ **默认只听 `127.0.0.1:8080`**。这个 server 能在沙盒里跑命令，默认绑 `0.0.0.0`
+等于把命令执行权敞开给同网段——要对外必须显式写 `--addr`。
+⚠️ **认不出的 `--transport` 按用法错退出（2）**，不静默退回 stdio——否则「我配了 sse」
+会变成一句查不出的假象。
+⚠️ 内容块是协议层的，不绑定传输：`read` 的文本 / 图片 / 音频块换到 HTTP 后面照旧。
 
 ## 构建
 
@@ -82,6 +117,8 @@ CGO_ENABLED=0 go build -o bin/fka-bash ./mcp/bash   # 零 CGO
 | — | `BASH_BWRAP_ARGS` | 追加给 bwrap 的参数（空白分隔） |
 | `--allow` | `BASH_ALLOW` | 命令白名单（非空即白名单模式） |
 | `--deny` | `BASH_DENY` | 追加命令黑名单（内置那份不能清空） |
+| `--transport` | `BASH_MCP_TRANSPORT` | `stdio`（默认）/ `sse` / `http`，控制启动方式 |
+| `--addr` | `BASH_MCP_ADDR` | SSE / http 的监听地址，默认 `127.0.0.1:8080` |
 
 ## 三条硬约束
 
@@ -106,7 +143,8 @@ stdout 是 JSON-RPC 的通道。**任何** `fmt.Println` 都会插进协议流�
 ```
 mcp/bash/
 ├── boundary_test.go       边界测试：不许依赖树外的包；server 必须是 main 包
-├── main.go                启动（沙盒路径/模式/策略解析）
+├── main.go                启动（沙盒路径/模式/策略解析、--transport 选传输）
+├── main_test.go           --transport / --addr 解析与 SSE 真链路用例
 ├── server.go              run / read 工具的声明与实现
 ├── sandbox.go             沙盒核心：cwd/path 限制、超时、输出上限、命令策略
 ├── read.go                read 工具：把沙盒文件按类别经 MCP 内容块交给模型
