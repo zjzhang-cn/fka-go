@@ -401,6 +401,33 @@ type MediaFetcher interface {
 	FetchMedia(ctx context.Context, ref MediaRef) ([]byte, error)
 }
 
+// Emitter 渠道的「回显」接收者（**可选能力**）。
+//
+// 消息层把工具循环推来的过程事件转给它：推理增量、每次工具调用、最终答案。渠道
+// 自己决定显不显示、怎么显示——iLink 只记日志、不做终端回显；将来的渠道可以发一条
+// 「正在查…」的草稿消息，或什么都不做。
+//
+// **用基本类型而不是 `agent.ToolEvent`**：接缝不认识 agent（否则加渠道就得依赖
+// 工具循环那一层）；加一个渠道只依赖本包。
+type Emitter interface {
+	// Reasoning 推理增量（模型按块吐，一次一小段）
+	Reasoning(text string)
+	// Tool 一次工具调用完成：名字、原样参数、结果
+	Tool(name, arguments, result string)
+	// Answer 最终答案全文
+	Answer(text string)
+}
+
+// EmitterProvider **可选**能力：渠道为**一条消息**提供它的回显实现。
+//
+// ctx 里带着账号/消息号等归属（消息层已绑好），渠道据此写出带归属的日志。
+// 返回 nil = 用消息层的默认（只记工具日志、不做回显）。
+//
+// 与 AddressResolver / MediaFetcher 同一条规矩：调用方用**类型断言**探测支持与否。
+type EmitterProvider interface {
+	Emitter(ctx context.Context) Emitter
+}
+
 // LoginParams 交互式登录的参数。
 type LoginParams struct {
 	// Account 账号选择器（槽位号或账号 id）。怎么读是渠道自己的事

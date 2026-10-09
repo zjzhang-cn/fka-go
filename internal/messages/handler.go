@@ -128,6 +128,7 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 		Question:    question,
 		QuotedText:  quotedTextOf(message),
 		Reply:       newChannelReply(channel, message),
+		Emitter:     emitterFor(ctx, channel),
 	})
 	if err != nil {
 		// **工具循环缺席要说清是缺席**，不能混进「这一轮没答出来」——用户看到
@@ -185,6 +186,56 @@ func (h *Handler) reply(ctx context.Context, channel channels.Channel,
 	// **发成功也要记**：排查「机器人到底答没答」时，「已作答」与「答复已发出」
 	// 是两条独立的证据，缺一条就只能猜
 	config.Log().Info(config.TypeMSG, "答复已发出", config.Fields(ctx, config.Context{"chars": len(text)}))
+}
+
+// emitterFor 定这一条消息的回显：**渠道实现了 `channels.EmitterProvider` 就用它的**，
+// 否则用默认的 loggingEmitter（只记工具日志、不做终端回显）。
+//
+// 这正是「加一个渠道只实现接口」在回显上的落点：渠道想要自己的回显，就实现
+// `EmitterProvider`，**消息层一行不用改**；不实现也照跑。
+func emitterFor(ctx context.Context, channel channels.Channel) agent.Emitter {
+	var echo channels.Emitter = loggingEmitter{ctx: ctx}
+	if provider, ok := channel.(channels.EmitterProvider); ok {
+		if custom := provider.Emitter(ctx); custom != nil {
+			echo = custom
+		}
+	}
+	return channelEcho{inner: echo}
+}
+
+// channelEcho 把渠道的 `channels.Emitter` 适配成工具循环要的 `agent.Emitter`。
+// 两边的差异只有「工具事件是结构体还是三个基本值」——适配放在这里，接缝与 agent
+// 因此互不认识。
+type channelEcho struct{ inner channels.Emitter }
+
+func (e channelEcho) Reasoning(text string) { e.inner.Reasoning(text) }
+func (e channelEcho) Tool(event agent.ToolEvent) {
+	e.inner.Tool(event.Name, event.Arguments, event.Result)
+}
+func (e channelEcho) Answer(text string) { e.inner.Answer(text) }
+
+// loggingEmitter 默认回显：**不往控制台画东西**——`serve` 是常驻进程，往 stderr 画
+// 推理只会是噪音。推理不看、答案由 handler 经渠道发回去，只有工具调用值得记一条
+// Info 日志（排查「它到底查了什么」时最有用的一步）。
+type loggingEmitter struct{ ctx context.Context }
+
+func (loggingEmitter) Reasoning(string) {}
+func (loggingEmitter) Answer(string)    {}
+
+func (e loggingEmitter) Tool(name, arguments, result string) {
+	config.Log().Info(config.TypeTOOL, "工具调用", config.Fields(e.ctx, config.Context{
+		"tool": name, "args": arguments, "result": clipLine(result),
+	}))
+}
+
+// clipLine 把一段可能带换行的结果压成一行、并截断——日志一条一行（见 logger 的约定）。
+func clipLine(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	runes := []rune(text)
+	if len(runes) > 120 {
+		return string(runes[:120]) + "…"
+	}
+	return text
 }
 
 // quotedTextOf 被引用那条的正文。**拿不到就返回空串**——
