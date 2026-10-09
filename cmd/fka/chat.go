@@ -301,6 +301,10 @@ func (r *chatREPL) ask(ctx context.Context, question string) {
 		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 引用文件："+strings.Join(expanded.names, "、")))
 	}
 
+	// 回显：工具行与「● 助手 + 答案」都由 emitter 写出（见 chatEmitter）。
+	// 与转圈同属「给人看」的一侧，答案仍只进 stdout。
+	emitter := &chatEmitter{ui: r.ui, out: r.out, pal: r.pal}
+
 	stop := startSpinner(r.ui, r.pal, r.spinner)
 
 	result, err := r.engine.Run(ctx, agent.RunnerInput{
@@ -308,6 +312,7 @@ func (r *chatREPL) ask(ctx context.Context, question string) {
 		PrincipalID: r.principal,
 		Question:    question,
 		Images:      expanded.images,
+		Emitter:     emitter,
 	})
 	stop()
 
@@ -322,11 +327,6 @@ func (r *chatREPL) ask(ctx context.Context, question string) {
 		return
 	}
 
-	r.showToolEvents(result)
-
-	fmt.Fprintln(r.ui, r.pal.assistant("● 助手"))
-	fmt.Fprintln(r.out, result.Text)
-
 	if r.debug {
 		fmt.Fprintf(r.ui, "%s\n", r.pal.dim(fmt.Sprintf(
 			"[debug] session=%s steps=%d stoppedBy=%s", r.session, result.Steps, result.StoppedBy)))
@@ -334,34 +334,48 @@ func (r *chatREPL) ask(ctx context.Context, question string) {
 	fmt.Fprintln(r.ui)
 }
 
-// showToolEvents 把这一轮的工具调用逐条写给人看。**只进 ui，不进 stdout**——
-// 它与「● 助手」同属给人看的提示，混进 stdout 就把重定向的文件弄脏了。
+// chatEmitter 是 chat 的「回显」实现：把工具循环推来的事件画成带色的一行行。
+// **只写 ui（stderr）；答案写 out（stdout）**——见文件头那条不变量。
 //
-// ## 为什么要逐条，而不是只报「用了哪些」
+// ## 为什么要逐条工具行，而不是只报「用了哪些」
 //
 // 只报名字回答不了「它到底查到了什么」——而工具循环出问题时，人第一个想看的正是
-// 这一步的输入与输出。所以每次调用给一行：名字 + 原样参数 + 结果。
-//
-// ## 为什么三样都截断
-//
-// **不用显示完整信息**：结果动辄上千字，全量铺开会把对话淹掉（完整结果仍在
-// transcript 与会话历史里）。`firstLine` 顺手把换行压成空格，一行一次调用。
+// 这一步的输入与输出。所以每次调用给一行：名字 + 原样参数 + 结果。三者都截断：
+// 结果动辄上千字，全量铺开会把对话淹掉（完整内容仍在 transcript 与会话历史里）。
 // 参数保持原样字符串、不解析——解析再序列化会改变字节序（见 llm.ToolCall）。
-//
-// ToolEvents 为空但 UsedTools 非空时退回旧的一行汇总：那可能是假引擎或旧路径，
-// 汇总总比什么都不显示好。
-func (r *chatREPL) showToolEvents(result agent.RunResult) {
-	for _, event := range result.ToolEvents {
-		call := r.pal.tool(event.Name)
-		if args := firstLine(event.Arguments); args != "" {
-			call += r.pal.dim("（" + args + "）")
-		}
-		fmt.Fprintf(r.ui, "%s %s %s\n",
-			r.pal.tool("·"), call, r.pal.dim("→ "+firstLine(event.Result)))
+type chatEmitter struct {
+	ui  io.Writer
+	out io.Writer
+	pal palette
+
+	reasoningStarted bool
+}
+
+// Reasoning 推理增量。首块打一次 `[推理] ` 前缀，之后逐块原样；流结束会来一个换行
+// 把这一行收掉（见 openai 的 reasoningSink）。
+func (e *chatEmitter) Reasoning(text string) {
+	if text == "" {
+		return
 	}
-	if len(result.ToolEvents) == 0 && len(result.UsedTools) > 0 {
-		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 用了工具："+strings.Join(result.UsedTools, "、")))
+	if !e.reasoningStarted {
+		fmt.Fprint(e.ui, e.pal.dim("[推理] "))
+		e.reasoningStarted = true
 	}
+	fmt.Fprint(e.ui, e.pal.dim(text))
+}
+
+func (e *chatEmitter) Tool(event agent.ToolEvent) {
+	call := e.pal.tool(event.Name)
+	if args := firstLine(event.Arguments); args != "" {
+		call += e.pal.dim("（" + args + "）")
+	}
+	fmt.Fprintf(e.ui, "%s %s %s\n", e.pal.tool("·"), call, e.pal.dim("→ "+firstLine(event.Result)))
+}
+
+// Answer 最终答案：角色标签进 ui，答案进 out。
+func (e *chatEmitter) Answer(text string) {
+	fmt.Fprintln(e.ui, e.pal.assistant("● 助手"))
+	fmt.Fprintln(e.out, text)
 }
 
 func (r *chatREPL) showTools(ctx context.Context) {

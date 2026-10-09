@@ -28,12 +28,30 @@ func (f *fakeEngine) Run(_ context.Context, input agent.RunnerInput) (agent.RunR
 	f.mu.Lock()
 	f.seen = append(f.seen, input)
 	f.mu.Unlock()
+
+	var (
+		result agent.RunResult
+		err    error
+	)
 	if f.reply != nil {
-		return f.reply(input)
+		result, err = f.reply(input)
+	} else {
+		result = agent.RunResult{
+			Text: "答：" + input.Question, Steps: 1, StoppedBy: agent.StoppedByAnswered,
+		}
 	}
-	return agent.RunResult{
-		Text: "答：" + input.Question, Steps: 1, StoppedBy: agent.StoppedByAnswered,
-	}, nil
+
+	// 真 runner 把过程推给 Emitter（见 agent.Emitter）；假引擎照做，否则 chat 的
+	// 显示用例（工具行、● 助手）无从断言——现在那些都由 emitter 输出。
+	if err == nil && input.Emitter != nil {
+		for _, event := range result.ToolEvents {
+			input.Emitter.Tool(event)
+		}
+		if result.Text != "" {
+			input.Emitter.Answer(result.Text)
+		}
+	}
+	return result, err
 }
 
 func (f *fakeEngine) inputs() []agent.RunnerInput {

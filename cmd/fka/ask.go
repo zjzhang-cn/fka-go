@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -85,6 +86,7 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		PrincipalID: principal,
 		Question:    question,
 		Images:      expanded.images,
+		Emitter:     &askEmitter{ui: os.Stderr, out: os.Stdout},
 	})
 	if err != nil {
 		// 模型的错如实报，**不静默降级**——与原实现同一条理由：
@@ -93,8 +95,6 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		return exitFail
 	}
 
-	fmt.Println(result.Text)
-
 	if debugEnabled() {
 		// **会话 id 印出来**：没给 `--session` 时它是每次新生成的，
 		// 而「接着刚才那条 CLI 问的」只能靠这个 id —— 不印出来就等于没法接续
@@ -102,6 +102,49 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 			session, result.Steps, result.StoppedBy, strings.Join(result.UsedTools, ", "))
 	}
 	return exitOK
+}
+
+// toolLine 把一次工具调用拼成给人看的一行：`[工具] 名字（原样参数）→ 结果`。
+// 三者都经 firstLine 压成一行（与 chat 的显示同口径）。**原样参数不解析**——
+// 解析再序列化会改字节序（见 llm.ToolCall）。
+func toolLine(event agent.ToolEvent) string {
+	call := "[工具] " + event.Name
+	if args := firstLine(event.Arguments); args != "" {
+		call += "（" + args + "）"
+	}
+	return call + " → " + firstLine(event.Result)
+}
+
+// askEmitter 是 `ask` 的「回显」实现：过程信息（推理 / 工具 / 角色标签）只进 stderr，
+// **答案只进 stdout**——`fka ask "…" > 答案.txt` 拿到的仍是一份干净答案（本仓不变量）。
+//
+// 推理与工具由工具循环逐条推来（见 agent.Emitter）；`[推理] ` 前缀与 `[助手]` 标签
+// 由这里打，与 chat 的 `·` / `● 助手` 一样属于各自前端的排版决定。
+type askEmitter struct {
+	out io.Writer
+	ui  io.Writer
+
+	reasoningStarted bool
+}
+
+func (e *askEmitter) Reasoning(text string) {
+	if text == "" {
+		return
+	}
+	if !e.reasoningStarted {
+		fmt.Fprint(e.ui, "[推理] ")
+		e.reasoningStarted = true
+	}
+	fmt.Fprint(e.ui, text)
+}
+
+func (e *askEmitter) Tool(event agent.ToolEvent) {
+	fmt.Fprintln(e.ui, toolLine(event))
+}
+
+func (e *askEmitter) Answer(text string) {
+	fmt.Fprintln(e.ui, "[助手]")
+	fmt.Fprintln(e.out, text)
 }
 
 // sessionID 这一轮用哪个会话。**三层，从上往下**：`--session` > `FKA_SESSION` >
