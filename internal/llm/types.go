@@ -119,6 +119,14 @@ type ChatMessage struct {
 	// 这一轮请求**里——「历史上有的逐字重放」这条不变量管的是盘上那几个字段，
 	// 而这里从不出现在盘上。代价是下一轮追问「那张图」时图已经不在上下文里。
 	ImageAttachments []ImageAttachment `json:"-"`
+
+	// Transient 这条消息**只为当前这一轮请求存在**，不写进会话历史。
+	//
+	// 目前只有一处用它：工具结果里的图片装不进 role=tool 的消息，被搬到一条额外的
+	// user 消息上（见 internal/agent）。那条消息的正文只是「附了图」的说明，落盘后
+	// 会留下一句指向「已经不存在的图」的话——与图片本身一样，它不该进历史。
+	// 持久化时整条丢弃（internal/agent 的 persistable）。
+	Transient bool `json:"-"`
 }
 
 // ImageAttachment 一张随 user 消息发送的图片。

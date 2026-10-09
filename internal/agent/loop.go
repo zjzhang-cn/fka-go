@@ -33,6 +33,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -175,7 +176,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	turnStart := len(messages) - 1
 	persistTurn := func() {
 		if r.sessionHistory != nil {
-			r.sessionHistory.Append(input.SessionID, input.AccountID, messages[turnStart:])
+			r.sessionHistory.Append(input.SessionID, input.AccountID, persistable(messages[turnStart:]))
 		}
 	}
 
@@ -238,6 +239,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 			ToolCalls: result.ToolCalls,
 		})
 
+		var toolImages []llm.ImageAttachment
 		for _, call := range result.ToolCalls {
 			usedTools = append(usedTools, call.Name)
 
@@ -246,12 +248,26 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 			toolEvents = append(toolEvents, ToolEvent{
 				Name:      call.Name,
 				Arguments: call.Arguments,
-				Result:    outcome,
+				Result:    outcome.Content,
 			})
 			messages = append(messages, llm.ChatMessage{
 				Role:       llm.RoleTool,
 				ToolCallID: call.ID,
-				Content:    outcome,
+				Content:    outcome.Content,
+			})
+			toolImages = append(toolImages, outcome.Images...)
+		}
+
+		// 工具返回的图片：role=tool 的消息只能装字符串，装不下图，所以**另起一条
+		// user 消息**把图片作为附件带上。必须放在这一轮**所有** tool 消息之后
+		// （tool 消息要紧跟对应的 tool_calls），一张图一条消息也省了。
+		// 与 `@图片` 同一条规矩：只在本轮请求里发给模型，不落盘（Transient）。
+		if len(toolImages) > 0 {
+			messages = append(messages, llm.ChatMessage{
+				Role:             llm.RoleUser,
+				Content:          fmt.Sprintf("（工具返回了 %d 张图片，已作为本条消息的附件发送）", len(toolImages)),
+				ImageAttachments: toolImages,
+				Transient:        true,
 			})
 		}
 	}
@@ -299,9 +315,9 @@ func (r *Runner) forcedAnswer(
 	return RunResult{Text: text, UsedTools: usedTools, ToolEvents: toolEvents, Steps: steps, StoppedBy: StoppedByMaxSteps}
 }
 
-// runToolCall 执行一次工具调用，返回**要给模型看的那句话**。
+// runToolCall 执行一次工具调用，返回工具结果（文字 + 可能有的图片）。
 //
-// ## 为什么这里只取 Content，丢掉 Result.OK
+// ## 为什么文字部分只取 Content，丢掉 Result.OK
 //
 // `Result.OK` 是**如实搬过 MCP 边界**的（mcp/source.go 把 SDK 的 IsError 映射上来），
 // 但对模型来说工具只有一条通道：这段文字。所以成败都照原样喂回去，**不因为
@@ -309,15 +325,33 @@ func (r *Runner) forcedAnswer(
 // 再翻译一遍，而模型能改的只有「下一轮换个工具名」。
 //
 // 这个丢弃是**刻意的**，钉它的用例是 `TestRun_工具失败也喂回去让模型改`。
-func (r *Runner) runToolCall(ctx context.Context, call llm.ToolCall, tc tools.Context) string {
+//
+// ## Images 不在这里喂回去
+//
+// role=tool 装不下图片。调用方把它们攒起来，在整轮 tool 消息之后另起一条 user 消息
+// 发送（见 Run）。
+func (r *Runner) runToolCall(ctx context.Context, call llm.ToolCall, tc tools.Context) tools.Result {
 	args, ok := ParseToolArguments(call.Arguments)
 	if !ok {
 		// 模型把 JSON 写坏了。**不返错**——把这件事告诉它，下一轮它会写对
-		return "参数不是合法的 JSON 对象：" + llm.Clamp(call.Arguments, 200)
+		return tools.FailResult("参数不是合法的 JSON 对象：%s", llm.Clamp(call.Arguments, 200))
 	}
 
-	result := r.tools.Call(ctx, call.Name, args, tc)
-	return result.Content
+	return r.tools.Call(ctx, call.Name, args, tc)
+}
+
+// persistable 过滤掉**只为当前请求存在**的消息（工具图片那条 transient user 消息）
+// 再落盘。它的正文只是「附了图」的说明，图本身是 json:"-"，留下会变成一句指向
+// 「不存在的图」的话。
+func persistable(messages []llm.ChatMessage) []llm.ChatMessage {
+	out := make([]llm.ChatMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.Transient {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
 }
 
 // ParseToolArguments 解析模型给的参数。空串按「没有参数」处理——不带参数的工具很

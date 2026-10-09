@@ -21,6 +21,8 @@ type fakeSource struct {
 	// 分开是因为「注册表说没有这个工具」与「工具有话说」走的是两条不同的路，
 	// 而只有后者能验证 Result.OK 被搬上来了又被循环丢掉。
 	complaints map[string]string
+	// images 工具名 → 随结果返回的图片（模拟 MCP 的 image 内容块）
+	images map[string][]llm.ImageAttachment
 	// calls 记录被调过的（工具名, 参数）
 	calls  []recorded
 	closed bool
@@ -40,13 +42,15 @@ func (f *fakeSource) List(ctx context.Context, tc tools.Context) ([]tools.Spec, 
 
 func (f *fakeSource) Call(ctx context.Context, name string, args map[string]any, tc tools.Context) (tools.Result, error) {
 	f.calls = append(f.calls, recorded{name: name, args: args})
+
+	result := tools.FailResult("没有叫 %s 的东西", name)
 	if reply, ok := f.replies[name]; ok {
-		return tools.OKResult(reply), nil
+		result = tools.OKResult(reply)
+	} else if complaint, ok := f.complaints[name]; ok {
+		result = tools.FailResult("%s", complaint)
 	}
-	if complaint, ok := f.complaints[name]; ok {
-		return tools.FailResult("%s", complaint), nil
-	}
-	return tools.FailResult("没有叫 %s 的东西", name), nil
+	result.Images = f.images[name]
+	return result, nil
 }
 
 func (f *fakeSource) PromptSection(tc tools.Context) (string, error) { return "", nil }
