@@ -1,7 +1,14 @@
-# mcp/ —— 记忆 MCP server
+# mcp/ —— MCP server
 
 **这里是能力，不是 agent。** agent 在 [`internal/`](../internal) 里，它**不认识任何数据的存储**——
 它的本事全靠 MCP server 与 skill 顶上，本目录就是其中之一。
+
+本目录下目前有两个 server，各自独立、互不依赖：
+
+| server | 入口 | 能力 | 文档 |
+|---|---|---|---|
+| `fka-memory` | `./mcp/memory` | 家庭记忆（SQLite） | 本文件 |
+| `fka-bash` | `./mcp/bash` | 沙盒 bash 执行（Bubblewrap） | [`bash/README.md`](bash/README.md) |
 
 `bin/fka-memory` 是一个**独立进程**（stdio），由主程序从 `mcp.json` 当子进程拉起。崩了不影响主程序。
 
@@ -55,7 +62,7 @@ LLM_TOOL_EFFECTS=read,external
 CGO_ENABLED=0 go build -o bin/fka-memory ./mcp/memory   # 零 CGO
 ```
 
-依赖只有 `mark3labs/mcp-go`（钉在 v0.40.0）与 `modernc.org/sqlite`（纯 Go）。**没有 CGO。**
+依赖只有 `mark3labs/mcp-go`（钉在 v1.1.1）与 `modernc.org/sqlite`（纯 Go）。**没有 CGO。**
 
 ## 工具
 

@@ -119,7 +119,7 @@ Go 的 `internal` 规则只管「树内不许外泄」，**管不了「树外不
 ## 本仓库的写法约定
 
 - **测试名是中文句子**：`Test主体_场景` 或 `Test一句话描述`（`TestMigrate_认领失败不重建`、
-  `TestRegistry_未放行的工具不告诉模型`）。`t.Run` 的子测试名同理。这不是玩笑，350 个顶层用例（约 413 含子测试）都这样。
+  `TestRegistry_未放行的工具不告诉模型`）。`t.Run` 的子测试名同理。这不是玩笑，409 个顶层用例都这样。
 - **文件头注释解释「为什么」，不解释「是什么」**：几乎每个非平凡文件开头都有 `//` 头，
   带 `##` 小节、`**加粗**` 的关键论断、常见「刻意这么做」的解释（有时还写清
   Node 版原来的做法与它的痛点）。写新文件请照这个密度写。
@@ -165,7 +165,7 @@ skill front matter 解析不引 YAML 库（只认 `key: value`，认不出的当
 **`docs/dev-log.md` 不要改**——它记的是当时的状态，里面的路径有的已经搬走了。
 `docs/node-to-go.md` 被人删掉了（一直没写），引用它的死链已清掉。
 
-**实际存在的树**（89 个 .go 文件，350 个顶层用例）：
+**实际存在的树**（107 个 .go 文件，409 个顶层用例）：
 
 ```
 cmd/fka/            入口：ask / chat / tools / serve / login / version
@@ -178,7 +178,14 @@ internal/messages   入站消息 → 工具循环 → 按原路答复
 internal/prompts    系统提示词
 internal/tools      契约 + 五类 effect 放行 + 注册表 + mcp/ + skills/
 mcp/memory          独立 MCP server（memories 一张表，PRAGMA user_version 迁移）
+mcp/bash            独立 MCP server（沙盒 bash 执行；默认 bwrap 命名空间隔离）
 ```
+
+> `fka-bash` 是**第二个** MCP server，同样自给自足（boundary 测试禁止引树外包）。
+> 它默认用 **Bubblewrap** 做真实隔离：`/` 只读、只有沙盒根可写、独立网络/PID/user；
+> **找不到 `bwrap` 拒绝启动**，不会静默退化成不隔离的 `direct` 档。`direct` 只固定 cwd，
+> 挡不住 `cd /`，只在没有 bwrap 的平台（macOS/Windows）用。这是本仓库**唯一的外部
+> 运行期依赖**（不是 Go 依赖，不破坏「5 个直接依赖」与零 CGO）。
 
 <!-- aoci:begin -->
 ## AOCI 仓库认知

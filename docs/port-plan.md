@@ -45,6 +45,11 @@ make smoke 的 smoke-memory      # 记忆的端到端，**走真实二进制与�
   → 同一次调用换 viewer 再查：查不到（权限过滤在真实链路上生效）
   → stdout 只有 JSON-RPC 帧
 
+make smoke 的 smoke-bash        # 沙盒 bash 的端到端，**真起 bwrap**
+  → 命令跑得动且在沙盒根内
+  → cwd=../.. 越界被拒
+  → 往 /etc 写被只读根绑定挡住（沙盒是真隔离，不是说法）
+
 （另有 fka ask 的完整 tool-loop 链路：需要模型，见 docs/ 里那条
   `fka ask "记一条：…"` → remember_memory → SQLite → search_memories → 作答）
 ```
@@ -58,7 +63,7 @@ make smoke 的 smoke-memory      # 记忆的端到端，**走真实二进制与�
 ## 模块清单
 
 用例数是 `go test -list` 的条数（顶层 `Test` 函数，不含 `t.Run` 子测试）；
-**全仓 350 个顶层用例**。
+**全仓 409 个顶层用例**。
 
 | 模块 | 落点 | 用例 | 关键验证 |
 |---|---|---|---|
@@ -77,7 +82,8 @@ make smoke 的 smoke-memory      # 记忆的端到端，**走真实二进制与�
 | **渠道接缝** | `internal/channels` | 16 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；可选能力靠**类型断言**而不是 `ok=false`；**契约上每个方法都有活着的调用方**（`contract_test.go`） |
 | **记忆 server（边界 + 工具层）** | `mcp/memory` | 7 | `mcp/memory/**` 不许 import 树外任何包（编译器管不到，由测试守）；是 `main` 包；只认自己那张表；**参数按声明读**（`limit` 是 number 就得用 `GetInt`）；**别人的 private 不进结果** |
 | **记忆存储 + 迁移** | `mcp/memory/internal/store` | 17 | **认领老库 v0→v1，一行不动**；认领失败**绝不重建**；共用库时只认自己那张表；**库比代码新要拒绝启动**；权限过滤在 WHERE、关键词之间是「且」、`%`/`_` 要转义 |
-| **端到端（跨进程）** | `make smoke` 的 `smoke-memory` | — | A 进程记一条 → **另起一个进程**查回来 → 换个 viewer 查不到 → stdout 只有 JSON-RPC 帧 |
+| **沙盒 bash server** | `mcp/bash` | 24 | **bwrap 真隔离**：`/` 只读、只有沙盒根可写、独立网络/PID/IPC/UTS/user；**找不到 bwrap 拒绝启动**（不静默降到不隔离）；cwd 词法+符号链接双检；超时杀整进程组；命令首词策略**是护栏不是墙**（`direct` 档只固定 cwd） |
+| **端到端（跨进程）** | `make smoke` 的 `smoke-memory` / `smoke-bash` | — | 记忆：A 进程记一条 → **另起一个进程**查回来 → 换个 viewer 查不到。沙盒：真起 bwrap，断言越界被拒、只读根挡住沙盒外的写 |
 
 > 仍然没有用例的只有 `internal/app`（纯装配，它的正确性由 `make smoke` 的行为验）
 > 与 `mcp/memory/internal/{domain,searchterms,log}`（合计 107 行的小工具）。
