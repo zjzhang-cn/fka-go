@@ -1,12 +1,12 @@
 {
   "version": 1,
   "created_at": "2026-09-29T13:49:22Z",
-  "updated_at": "2026-10-09T06:38:12Z",
+  "updated_at": "2026-10-09T06:55:28Z",
   "files": {
     ".env.example": {
-      "sha256": "f0502dcfeaae2c74ca49b26f7590f263c1712e6006d8db070a39c1a8e84d0424",
-      "size": 7312,
-      "normalized_sha256": "f0502dcfeaae2c74ca49b26f7590f263c1712e6006d8db070a39c1a8e84d0424"
+      "sha256": "9da056b77a2bbc1cd602ee64aacfe4694890eba63b9a1fd96cca95207ba22f85",
+      "size": 7497,
+      "normalized_sha256": "9da056b77a2bbc1cd602ee64aacfe4694890eba63b9a1fd96cca95207ba22f85"
     },
     ".gitattributes": {
       "sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476",
@@ -39,9 +39,9 @@
       "normalized_sha256": "e4a973b9886faf93066ca884183183338818c2aada8e7b82b6931769ac1037fe"
     },
     "aoci.txt": {
-      "sha256": "ca161706ef481c49b9bf9cafbe0a7f79d613b89ad46960f0a6fcf26d4b4b0bfc",
-      "size": 96475,
-      "normalized_sha256": "ca161706ef481c49b9bf9cafbe0a7f79d613b89ad46960f0a6fcf26d4b4b0bfc"
+      "sha256": "5a4a13110cab9e8df8cdc89f26694f667578e0adad9489260f11d67975c74857",
+      "size": 97319,
+      "normalized_sha256": "5a4a13110cab9e8df8cdc89f26694f667578e0adad9489260f11d67975c74857"
     },
     "cmd/fka/ask.go": {
       "sha256": "6cb817dd427026cd15df3069b4167dc4a53b284b2a2fe8a180a3b5bcee11c82a",
@@ -695,9 +695,9 @@
       "normalized_sha256": "bc16451879d99c08b189bcf7730cedeeccb724870209b7ac885c8264cd5baf89"
     },
     "mcp/bash/README.md": {
-      "sha256": "e84a8cde58dbac069726fd122b9a26ffc746f567cdaa0cc7c0cc547d5c10fa1b",
-      "size": 5668,
-      "normalized_sha256": "e84a8cde58dbac069726fd122b9a26ffc746f567cdaa0cc7c0cc547d5c10fa1b"
+      "sha256": "a41e1375a3e430c5636ceaf65070ba82b538235b6015143d771a69d1ea65bf69",
+      "size": 7575,
+      "normalized_sha256": "a41e1375a3e430c5636ceaf65070ba82b538235b6015143d771a69d1ea65bf69"
     },
     "mcp/bash/boundary_test.go": {
       "sha256": "3f26daa67fd242e8338dab3bd0c1f71be3067db3150234dd9607e82e61c64351",
@@ -714,10 +714,17 @@
       "format_kind": "gofmt"
     },
     "mcp/bash/main.go": {
-      "sha256": "4011bf8604219143389efdc5781b4265d91438c86f03c55425472deca90937b7",
-      "size": 6592,
-      "normalized_sha256": "4011bf8604219143389efdc5781b4265d91438c86f03c55425472deca90937b7",
-      "format_sha256": "4011bf8604219143389efdc5781b4265d91438c86f03c55425472deca90937b7",
+      "sha256": "d40731bf7a30e888be474d057399c2c17023b9141d613da2b00b1fcb39a59488",
+      "size": 13551,
+      "normalized_sha256": "d40731bf7a30e888be474d057399c2c17023b9141d613da2b00b1fcb39a59488",
+      "format_sha256": "d40731bf7a30e888be474d057399c2c17023b9141d613da2b00b1fcb39a59488",
+      "format_kind": "gofmt"
+    },
+    "mcp/bash/main_test.go": {
+      "sha256": "de60832590f25f4760d45c250febe1d5e44d9b9591088c1b6c19e1a7de204a9b",
+      "size": 6419,
+      "normalized_sha256": "de60832590f25f4760d45c250febe1d5e44d9b9591088c1b6c19e1a7de204a9b",
+      "format_sha256": "de60832590f25f4760d45c250febe1d5e44d9b9591088c1b6c19e1a7de204a9b",
       "format_kind": "gofmt"
     },
     "mcp/bash/proc_unix.go": {
