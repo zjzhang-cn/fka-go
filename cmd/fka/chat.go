@@ -313,17 +313,46 @@ func (r *chatREPL) ask(ctx context.Context, question string) {
 		return
 	}
 
+	r.showToolEvents(result)
+
 	fmt.Fprintln(r.ui, r.pal.assistant("● 助手"))
 	fmt.Fprintln(r.out, result.Text)
 
-	if len(result.UsedTools) > 0 {
-		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 用了工具："+strings.Join(result.UsedTools, "、")))
-	}
 	if r.debug {
 		fmt.Fprintf(r.ui, "%s\n", r.pal.dim(fmt.Sprintf(
 			"[debug] session=%s steps=%d stoppedBy=%s", r.session, result.Steps, result.StoppedBy)))
 	}
 	fmt.Fprintln(r.ui)
+}
+
+// showToolEvents 把这一轮的工具调用逐条写给人看。**只进 ui，不进 stdout**——
+// 它与「● 助手」同属给人看的提示，混进 stdout 就把重定向的文件弄脏了。
+//
+// ## 为什么要逐条，而不是只报「用了哪些」
+//
+// 只报名字回答不了「它到底查到了什么」——而工具循环出问题时，人第一个想看的正是
+// 这一步的输入与输出。所以每次调用给一行：名字 + 原样参数 + 结果。
+//
+// ## 为什么三样都截断
+//
+// **不用显示完整信息**：结果动辄上千字，全量铺开会把对话淹掉（完整结果仍在
+// transcript 与会话历史里）。`firstLine` 顺手把换行压成空格，一行一次调用。
+// 参数保持原样字符串、不解析——解析再序列化会改变字节序（见 llm.ToolCall）。
+//
+// ToolEvents 为空但 UsedTools 非空时退回旧的一行汇总：那可能是假引擎或旧路径，
+// 汇总总比什么都不显示好。
+func (r *chatREPL) showToolEvents(result agent.RunResult) {
+	for _, event := range result.ToolEvents {
+		call := r.pal.tool(event.Name)
+		if args := firstLine(event.Arguments); args != "" {
+			call += r.pal.dim("（" + args + "）")
+		}
+		fmt.Fprintf(r.ui, "%s %s %s\n",
+			r.pal.tool("·"), call, r.pal.dim("→ "+firstLine(event.Result)))
+	}
+	if len(result.ToolEvents) == 0 && len(result.UsedTools) > 0 {
+		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 用了工具："+strings.Join(result.UsedTools, "、")))
+	}
 }
 
 func (r *chatREPL) showTools(ctx context.Context) {

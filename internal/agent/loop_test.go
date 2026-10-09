@@ -131,6 +131,16 @@ func TestRun_一轮工具调用后给出答案(t *testing.T) {
 		t.Errorf("参数没解析对：%+v", source.calls[0].args)
 	}
 
+	// 可见记录：给 CLI/TUI 显示用。名字是模型看到的全名，参数是**原样字符串**，
+	// 结果是喂回去的那段——三者都要在（chat 据此逐条渲染）。
+	if len(result.ToolEvents) != 1 {
+		t.Fatalf("ToolEvents = %d，期望 1", len(result.ToolEvents))
+	}
+	event := result.ToolEvents[0]
+	if event.Name != "fake__search" || event.Arguments != `{"q":"房产证"}` || event.Result != "房产证在抽屉里" {
+		t.Errorf("ToolEvent 不对：%+v", event)
+	}
+
 	// 第二轮请求里必须有一条 role=tool，且 tool_call_id 指向那次调用——
 	// **provider 要求 tool 消息紧跟对应的 tool_calls**，少一条就整轮 400
 	second := (*seen)[1]

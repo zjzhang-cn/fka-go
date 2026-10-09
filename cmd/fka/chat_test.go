@@ -113,6 +113,43 @@ func Test会话_回答只进stdout标签只进stderr(t *testing.T) {
 	}
 }
 
+// Test会话_显示工具调用与结果：一次工具调用要让人看到「调了什么、回了什么」，
+// 且结果截断（不用显示完整信息）、只进 stderr。stdout 仍只有回答。
+func Test会话_显示工具调用与结果(t *testing.T) {
+	engine := &fakeEngine{}
+	engine.reply = func(input agent.RunnerInput) (agent.RunResult, error) {
+		return agent.RunResult{
+			Text:      "查到了",
+			UsedTools: []string{"mcp__memory__search_memories"},
+			ToolEvents: []agent.ToolEvent{{
+				Name:      "mcp__memory__search_memories",
+				Arguments: `{"query":"生日"}`,
+				Result:    "找到 1 条：" + strings.Repeat("很长", 100),
+			}},
+			Steps: 2, StoppedBy: agent.StoppedByAnswered,
+		}, nil
+	}
+	repl, out, ui := newTestREPL("我的生日\n/quit\n", engine)
+
+	repl.loop(context.Background())
+
+	shown := ui.String()
+	for _, must := range []string{"mcp__memory__search_memories", `{"query":"生日"}`, "找到 1 条"} {
+		if !strings.Contains(shown, must) {
+			t.Errorf("stderr 缺 %q：%q", must, shown)
+		}
+	}
+	if strings.Contains(shown, strings.Repeat("很长", 100)) {
+		t.Errorf("结果没有截断，完整信息铺出来了：%q", shown)
+	}
+	if strings.Contains(out.String(), "mcp__memory__search_memories") {
+		t.Errorf("工具信息混进了 stdout：%q", out.String())
+	}
+	if !strings.Contains(out.String(), "查到了") {
+		t.Errorf("stdout 缺回答：%q", out.String())
+	}
+}
+
 // Test会话_颜色开启时stdout仍然干净 是上一条的加强版：**即使开了颜色，回答那一侧
 // 也不许有转义**。转义只属于给人看的提示，写进重定向文件就是把文件弄脏。
 func Test会话_颜色开启时stdout仍然干净(t *testing.T) {

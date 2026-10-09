@@ -90,10 +90,24 @@ type RunResult struct {
 	Text string
 	// UsedTools 这轮实际调过的工具名（含重复），供日志与测试断言
 	UsedTools []string
+	// ToolEvents 这轮每次工具调用的**可见记录**（名字 + 原样参数 + 结果），
+	// 按调用顺序。给 CLI/TUI 显示用：`chat` 据此逐条渲染「调了什么、回了什么」。
+	//
+	// 结果**不截断**（截断是显示层的事，见 `cmd/fka/chat.go`）；`Arguments` 是
+	// `ToolCall.Arguments` 那份原始 JSON 字符串，**不再解析**——见 llm.ToolCall。
+	ToolEvents []ToolEvent
 	// Steps 用了几次模型调用
 	Steps int
 	// StoppedBy 为什么停：answered = 模型自己给出答案；max-steps = 到上限收尾
 	StoppedBy string
+}
+
+// ToolEvent 一次工具调用的可见记录。**只给显示/日志看**，不参与喂回模型的通道
+// （那条通道是 role=tool 消息，见 runToolCall）。
+type ToolEvent struct {
+	Name      string
+	Arguments string
+	Result    string
 }
 
 // StoppedBy 的两个取值。
@@ -183,6 +197,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	}))
 
 	usedTools := make([]string, 0, 8)
+	toolEvents := make([]ToolEvent, 0, 8)
 	steps := 0
 
 	for index := 1; index <= maxSteps; index++ {
@@ -208,7 +223,8 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 
 			return RunResult{
 				Text: result.Content, UsedTools: usedTools,
-				Steps: index, StoppedBy: StoppedByAnswered,
+				ToolEvents: toolEvents,
+				Steps:      index, StoppedBy: StoppedByAnswered,
 			}, nil
 		}
 
@@ -225,6 +241,11 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 
 			// 失败也照样喂回去：模型看到「参数不合法」会自己改，这正是循环的意义
 			outcome := r.runToolCall(ctx, call, tc)
+			toolEvents = append(toolEvents, ToolEvent{
+				Name:      call.Name,
+				Arguments: call.Arguments,
+				Result:    outcome,
+			})
 			messages = append(messages, llm.ChatMessage{
 				Role:       llm.RoleTool,
 				ToolCallID: call.ID,
@@ -234,7 +255,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	}
 
 	// 步数用尽：**不再给工具**，只让它基于已有结果写答案
-	return r.forcedAnswer(ctx, messages, input, usedTools, steps, persistTurn), nil
+	return r.forcedAnswer(ctx, messages, input, usedTools, toolEvents, steps, persistTurn), nil
 }
 
 // forcedAnswer 步数用尽后的收尾。
@@ -247,6 +268,7 @@ func (r *Runner) forcedAnswer(
 	messages []llm.ChatMessage,
 	input RunnerInput,
 	usedTools []string,
+	toolEvents []ToolEvent,
 	steps int,
 	persistTurn func(),
 ) RunResult {
@@ -256,7 +278,7 @@ func (r *Runner) forcedAnswer(
 			"model": r.Model, "steps": steps, "error": err.Error(),
 		}))
 		return RunResult{
-			Text: MaxStepsAnswer, UsedTools: usedTools,
+			Text: MaxStepsAnswer, UsedTools: usedTools, ToolEvents: toolEvents,
 			Steps: steps, StoppedBy: StoppedByMaxSteps,
 		}
 	}
@@ -272,7 +294,7 @@ func (r *Runner) forcedAnswer(
 	if text == "" {
 		text = MaxStepsAnswer
 	}
-	return RunResult{Text: text, UsedTools: usedTools, Steps: steps, StoppedBy: StoppedByMaxSteps}
+	return RunResult{Text: text, UsedTools: usedTools, ToolEvents: toolEvents, Steps: steps, StoppedBy: StoppedByMaxSteps}
 }
 
 // runToolCall 执行一次工具调用，返回**要给模型看的那句话**。
