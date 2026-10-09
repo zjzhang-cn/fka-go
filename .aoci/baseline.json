@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-09-29T13:49:22Z",
-  "updated_at": "2026-10-09T05:51:32Z",
+  "updated_at": "2026-10-09T06:38:12Z",
   "files": {
     ".env.example": {
       "sha256": "f0502dcfeaae2c74ca49b26f7590f263c1712e6006d8db070a39c1a8e84d0424",
@@ -39,9 +39,9 @@
       "normalized_sha256": "e4a973b9886faf93066ca884183183338818c2aada8e7b82b6931769ac1037fe"
     },
     "aoci.txt": {
-      "sha256": "a964250f50fa3453b86ad947615d5bd53c2c069eb9a58330335160b863360ada",
-      "size": 96267,
-      "normalized_sha256": "a964250f50fa3453b86ad947615d5bd53c2c069eb9a58330335160b863360ada"
+      "sha256": "ca161706ef481c49b9bf9cafbe0a7f79d613b89ad46960f0a6fcf26d4b4b0bfc",
+      "size": 96475,
+      "normalized_sha256": "ca161706ef481c49b9bf9cafbe0a7f79d613b89ad46960f0a6fcf26d4b4b0bfc"
     },
     "cmd/fka/ask.go": {
       "sha256": "6cb817dd427026cd15df3069b4167dc4a53b284b2a2fe8a180a3b5bcee11c82a",
@@ -86,17 +86,17 @@
       "format_kind": "gofmt"
     },
     "cmd/fka/fileref.go": {
-      "sha256": "39170079b061134182da321709a8542b1c0ced0e540e9271021d3e193e4f48d2",
-      "size": 9066,
-      "normalized_sha256": "39170079b061134182da321709a8542b1c0ced0e540e9271021d3e193e4f48d2",
-      "format_sha256": "39170079b061134182da321709a8542b1c0ced0e540e9271021d3e193e4f48d2",
+      "sha256": "096e4452b3e6d881dc6db28d769428c687c31c23ddd8d052933790c59eb18d06",
+      "size": 11549,
+      "normalized_sha256": "096e4452b3e6d881dc6db28d769428c687c31c23ddd8d052933790c59eb18d06",
+      "format_sha256": "096e4452b3e6d881dc6db28d769428c687c31c23ddd8d052933790c59eb18d06",
       "format_kind": "gofmt"
     },
     "cmd/fka/fileref_test.go": {
-      "sha256": "b1a38737acfd344ee0af32c74fce54fed9dd1b1b72c3f3d422b816097b7c8c77",
-      "size": 7349,
-      "normalized_sha256": "b1a38737acfd344ee0af32c74fce54fed9dd1b1b72c3f3d422b816097b7c8c77",
-      "format_sha256": "b1a38737acfd344ee0af32c74fce54fed9dd1b1b72c3f3d422b816097b7c8c77",
+      "sha256": "19914c3ee6b319731d44e80e70bbaa852c4ff17d4fbc2f740437db3ea1da0f13",
+      "size": 8193,
+      "normalized_sha256": "19914c3ee6b319731d44e80e70bbaa852c4ff17d4fbc2f740437db3ea1da0f13",
+      "format_sha256": "19914c3ee6b319731d44e80e70bbaa852c4ff17d4fbc2f740437db3ea1da0f13",
       "format_kind": "gofmt"
     },
     "cmd/fka/login.go": {
