@@ -16,6 +16,9 @@
 // 所以模型持续吐推理或正文时不会超时，只有真正卡住才中止。长思考的模型因此不会
 // 被总时长砍掉——这正是原 Node 版改成流式要解决的问题。
 //
+// 流被掐断（断流超时命中，或读数途中连接出错）时**按 LLM_STREAM_RETRIES 重试**
+// （默认 3 次），整体超时跨所有重试、不重置。整体超时与调用方主动取消不重试。
+//
 // Go 里用 `context.WithTimeoutCause` / `context.WithCancelCause` 表达两种中止原因：
 // `context.Cause` 能取回「到底是被整体超时掐的，还是断流掐的」，报给人看的错误
 // 因此能说清是哪一种，而不是笼统的「context deadline exceeded」。
@@ -67,6 +70,12 @@ const DefaultTimeoutMs = 120_000
 // DefaultStreamTimeoutMs 流式接收的断流超时：这么久没有新数据就认为卡死。
 // **每收到一块都会重置**。
 const DefaultStreamTimeoutMs = 10_000
+
+// DefaultStreamRetries 断流后再试几次。默认 3（共最多 4 次尝试）。
+const DefaultStreamRetries = 3
+
+// StreamRetriesEnv 断流重试次数的环境变量。0 = 不重试。
+const StreamRetriesEnv = "LLM_STREAM_RETRIES"
 
 // DefaultContextTokens 默认上下文预算。0 表示不压缩历史。
 const DefaultContextTokens = 0
@@ -137,6 +146,7 @@ func ReadConfig() (llm.Config, bool) {
 		Model:           model,
 		TimeoutMs:       positiveInt(os.Getenv("LLM_TIMEOUT_MS"), DefaultTimeoutMs),
 		StreamTimeoutMs: positiveInt(os.Getenv("LLM_STREAM_TIMEOUT_MS"), DefaultStreamTimeoutMs),
+		StreamRetries:   nonNegativeInt(os.Getenv(StreamRetriesEnv), DefaultStreamRetries),
 		ContextTokens:   nonNegativeInt(os.Getenv("LLM_CONTEXT_TOKENS"), DefaultContextTokens),
 		ExtraBody:       readExtraBody(),
 	}, true
@@ -333,8 +343,14 @@ func baseRequest(cfg llm.Config, messages []llm.ChatMessage) goopenai.ChatComple
 	}
 }
 
-// postCompletion 发一次流式请求并把分片拼成最终结果。**两个调用方共用**，
-// 这样「超时怎么报、非 2xx 怎么报」只有一份实现。
+// postCompletion 发一次流式请求并把分片拼成最终结果，**断流时按 StreamRetries 重试**。
+// 两个调用方共用，这样「超时怎么报、非 2xx 怎么报、断流怎么重试」只有一份实现。
+//
+// ## 整体超时跨所有重试，不重置
+//
+// 120s 那条是「这一轮回复」的硬上限：重试也在同一个预算里，不各自计时。断流重试的
+// 意义是「把被掐断的流读完」，不是「把总时长翻几倍」——每次重试都重置整体预算的话，
+// 一个真挂死的服务能把一轮问答拖成 N×120s。
 func postCompletion(
 	ctx context.Context,
 	client *goopenai.Client,
@@ -344,14 +360,57 @@ func postCompletion(
 	reasoningOut io.Writer,
 ) (llm.ChatResult, error) {
 	overallDur := time.Duration(cfg.TimeoutMs) * time.Millisecond
-	idleDur := time.Duration(cfg.StreamTimeoutMs) * time.Millisecond
-
 	overallErr := errors.New("模型调用整体超时")
-	idleErr := errors.New("模型断流")
 
-	// 整体：从发请求起一次性计时，不重置
+	// 整体：从发请求起一次性计时，跨所有重试，不重置
 	overallCtx, cancelOverall := context.WithTimeoutCause(ctx, overallDur, overallErr)
 	defer cancelOverall()
+
+	// 0 次重试 = 只试一次；负值不可能（ReadConfig 用 nonNegativeInt），这里也夹一下
+	maxAttempts := cfg.StreamRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	retries := 0
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result, err, retryable := streamOnce(overallCtx, ctx, client, cfg, request, host, reasoningOut, overallErr)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !retryable || attempt == maxAttempts {
+			break
+		}
+		retries = attempt
+		config.Log().Warn(config.TypeLLM, "模型断流，重试", config.Fields(ctx, config.Context{
+			"attempt": attempt, "maxAttempts": maxAttempts, "error": err.Error(),
+		}))
+	}
+
+	if retries > 0 {
+		return llm.ChatResult{}, fmt.Errorf("%w（断流已重试 %d 次）", lastErr, retries)
+	}
+	return llm.ChatResult{}, lastErr
+}
+
+// streamOnce 发一次流式请求并读完。**retryable 表示这次失败是「断流」、值得重试**。
+//
+// overallCtx 由 postCompletion 建立、跨所有重试；parentCtx 是最初的调用方 ctx，
+// 用来判「用户是不是已经要走」。
+func streamOnce(
+	overallCtx context.Context,
+	parentCtx context.Context,
+	client *goopenai.Client,
+	cfg llm.Config,
+	request goopenai.ChatCompletionRequest,
+	host string,
+	reasoningOut io.Writer,
+	overallErr error,
+) (llm.ChatResult, error, bool) {
+	idleDur := time.Duration(cfg.StreamTimeoutMs) * time.Millisecond
+	idleErr := errors.New("模型断流")
 
 	// 断流：每次收到数据就重置。已触发过就不管了——ctx 已取消，Reset 只是白设一次
 	streamCtx, cancelIdle := context.WithCancelCause(overallCtx)
@@ -361,7 +420,11 @@ func postCompletion(
 
 	stream, err := client.CreateChatCompletionStream(streamCtx, request)
 	if err != nil {
-		return llm.ChatResult{}, wrapRequestError(streamCtx, err, cfg, host, overallErr, idleErr)
+		cause := context.Cause(streamCtx)
+		// 流还没建立就拿到的错（HTTP 4xx/5xx、地址错、连不上）多半重试无用；
+		// 只有「服务端接了连接却一直不吐数据」这种断流才值得再试
+		retryable := idleFired(cause, idleErr) && retryableBreak(parentCtx, cause, overallErr)
+		return llm.ChatResult{}, wrapRequestError(streamCtx, err, cfg, host, overallErr, idleErr), retryable
 	}
 	defer func() { _ = stream.Close() }()
 
@@ -374,7 +437,7 @@ func postCompletion(
 	// 账号与会话号由 ctx 带过来（见 `internal/config/scope.go`）：
 	// 这一层看不见渠道，不绑在 ctx 上的话就只有一条「谁调的模型」都查不出来的日志。
 	startedAt := time.Now()
-	config.Log().Info(config.TypeLLM, "提交模型请求", config.Fields(ctx, config.Context{
+	config.Log().Info(config.TypeLLM, "提交模型请求", config.Fields(parentCtx, config.Context{
 		"model": cfg.Model, "host": host, "stream": true,
 		"messages": len(request.Messages), "tools": len(request.Tools),
 		"timeoutMs": cfg.TimeoutMs, "streamTimeoutMs": cfg.StreamTimeoutMs,
@@ -399,7 +462,10 @@ func postCompletion(
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			return llm.ChatResult{}, wrapRequestError(streamCtx, err, cfg, host, overallErr, idleErr)
+			cause := context.Cause(streamCtx)
+			// 读数途中被掐断，正是断流重试要覆盖的
+			return llm.ChatResult{}, wrapRequestError(streamCtx, err, cfg, host, overallErr, idleErr),
+				retryableBreak(parentCtx, cause, overallErr)
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -465,19 +531,36 @@ func postCompletion(
 	//
 	// **推理只记截断后的开头**：它可能有几千字，全量落盘会把日志撑爆。
 	// 完整的推理在控制台（`LLM_SHOW_REASONING=0` 可关）与 transcript 里。
-	config.Log().Debug(config.TypeRSN, "模型的推理", config.Fields(ctx, config.Context{
+	config.Log().Debug(config.TypeRSN, "模型的推理", config.Fields(parentCtx, config.Context{
 		"chars": len([]rune(reasoning.String())),
 		"text":  snippetRunes(reasoning.String(), reasoningLogChars),
 	}))
 
 	answer := strings.TrimSpace(content.String())
-	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(ctx, config.Context{
+	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(parentCtx, config.Context{
 		"chars": len([]rune(answer)), "toolCalls": len(calls),
 		"reasoningChars": len([]rune(reasoning.String())),
 		"ms":             time.Since(startedAt).Milliseconds(),
 	}))
 
-	return llm.ChatResult{Content: answer, ToolCalls: calls}, nil
+	return llm.ChatResult{Content: answer, ToolCalls: calls}, nil, false
+}
+
+// idleFired cause 是不是断流超时。
+func idleFired(cause, idleErr error) bool {
+	return cause != nil && errors.Is(cause, idleErr)
+}
+
+// retryableBreak 这次断流能不能再试：调用方还在、整体预算还没尽才行。
+//
+// **整体超时与主动取消都不重试**：前者预算已尽（overallCtx 已取消，再试只会立刻
+// 失败），后者是用户要走（Ctrl-C / 消息过期）。其余（断流超时、读数途中的传输错误）
+// 都算可重试的断流。
+func retryableBreak(parentCtx context.Context, cause, overallErr error) bool {
+	if parentCtx.Err() != nil || errors.Is(cause, overallErr) {
+		return false
+	}
+	return true
 }
 
 // reasoningLogChars 推理在日志里最多记多少字。
