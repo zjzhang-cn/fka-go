@@ -29,7 +29,8 @@
   "exclude_files": [
     "*.backup.*",
     "*.bak",
-    ".coverage"
+    ".coverage",
+    "test.png"
   ],
   "exclude_exts": [],
   "curation_exclude": [],
