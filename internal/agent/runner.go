@@ -59,6 +59,9 @@ type RunnerInput struct {
 	Question string
 	// QuotedText 被引用那条的正文
 	QuotedText string
+	// Images 本轮问题附带的图片（CLI 的 `@图片` 引用）。**只在这一轮发给模型**，
+	// 不落进会话历史——见 llm.ChatMessage.ImageAttachments。
+	Images []llm.ImageAttachment
 	// Reply 以 Bot 的身份回话（发文件）。**逐条消息给**——「能发给谁」取决这条
 	// 消息的会话与回复令牌，那是消息层的事实。工具层不该知道。
 	Reply tools.Reply

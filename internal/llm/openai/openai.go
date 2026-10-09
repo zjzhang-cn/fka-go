@@ -667,6 +667,29 @@ func toAPIMessages(messages []llm.ChatMessage) []goopenai.ChatCompletionMessage 
 
 	for _, message := range messages {
 		switch {
+		// 带图片的 user 消息：content 必须是**内容块数组**（文本块 + image_url 块）。
+		// Content 与 MultiContent 不能同时给（SDK 会返 ErrContentFieldsMisused 并序列化失败），
+		// 所以文本也做成一个 text 块。缺图的普通消息仍走下面的字符串 content，线格式不变。
+		case message.Role == llm.RoleUser && len(message.ImageAttachments) > 0:
+			parts := make([]goopenai.ChatMessagePart, 0, len(message.ImageAttachments)+1)
+			if message.Content != "" {
+				parts = append(parts, goopenai.ChatMessagePart{
+					Type: goopenai.ChatMessagePartTypeText, Text: message.Content,
+				})
+			}
+			for _, image := range message.ImageAttachments {
+				parts = append(parts, goopenai.ChatMessagePart{
+					Type: goopenai.ChatMessagePartTypeImageURL,
+					ImageURL: &goopenai.ChatMessageImageURL{
+						URL: image.DataURI, Detail: goopenai.ImageURLDetailAuto,
+					},
+				})
+			}
+			out = append(out, goopenai.ChatCompletionMessage{
+				Role:         goopenai.ChatMessageRoleUser,
+				MultiContent: parts,
+			})
+
 		case message.Role == llm.RoleAssistant && len(message.ToolCalls) > 0:
 			calls := make([]goopenai.ToolCall, 0, len(message.ToolCalls))
 			for _, call := range message.ToolCalls {

@@ -166,7 +166,9 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	messages := make([]llm.ChatMessage, 0, len(kept.Messages)+8)
 	messages = append(messages, llm.ChatMessage{Role: llm.RoleSystem, Content: system})
 	messages = append(messages, kept.Messages...)
-	messages = append(messages, llm.ChatMessage{Role: llm.RoleUser, Content: question})
+	messages = append(messages, llm.ChatMessage{
+		Role: llm.RoleUser, Content: question, ImageAttachments: input.Images,
+	})
 
 	// 本回合新产生的消息从本轮 user 起。收尾时原样落进会话文件——**含 assistant 的
 	// toolCalls 与工具结果**，下一轮才能逐字重放这一整段前缀
@@ -193,7 +195,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 		"historyKept":    len(kept.Messages), "historyDropped": kept.Dropped,
 		"toolDefs": len(toolDefs), "messages": len(messages),
 		"contextBudget": budget, "fixedTokens": fixed,
-		"question": input.Question,
+		"question": input.Question, "images": len(input.Images),
 	}))
 
 	usedTools := make([]string, 0, 8)

@@ -144,7 +144,8 @@ fka 自己不带任何能力：本事全靠 mcp.json 里的 MCP server 与 <安�
 LLM_TOOL_EFFECTS 默认只放行 read；MCP 工具一律是 external 类，要用得显式加上。
 
 参数**写在子命令前后都认**（fka --log-level debug serve 也行），认不出的以 2 退出。
-问题里可用 @路径 引用本地文件（正文附在问题末尾）；路径含空格或中文时写 @"路径"。
+问题里可用 @路径 引用本地文件：文本附正文、图片作为附件发给模型、其它二进制只附类型与大小。
+路径含空格或中文时写 @"路径"。
 颜色只在真终端上开；管道、重定向、NO_COLOR、TERM=dumb 都自动关，也可用 --no-color 强制关
 （FKA_COLOR=always/never 强制开/关）。
 `)

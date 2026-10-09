@@ -111,6 +111,22 @@ type ChatMessage struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	// ToolCallID 在 RoleTool 时：回答的是哪次调用
 	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	// ImageAttachments 本轮随这条 user 消息发给模型的图片。
+	//
+	// **json:"-"，刻意不落盘**：图片是 base64 的 data URI，写进
+	// `data/history/*.jsonl` 会把历史撑爆，而且每轮都要重放一遍。它只活在**当前
+	// 这一轮请求**里——「历史上有的逐字重放」这条不变量管的是盘上那几个字段，
+	// 而这里从不出现在盘上。代价是下一轮追问「那张图」时图已经不在上下文里。
+	ImageAttachments []ImageAttachment `json:"-"`
+}
+
+// ImageAttachment 一张随 user 消息发送的图片。
+type ImageAttachment struct {
+	// Name 给人看的名字（提示与日志用），不进请求体
+	Name string
+	// DataURI 形如 data:image/png;base64,...；也接受 http(s) 链接
+	DataURI string
 }
 
 // ChatResult 一次带工具的调用结果：要么说话，要么要工具，要么两者都有。

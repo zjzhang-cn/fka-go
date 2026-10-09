@@ -35,11 +35,12 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 	principal := flagOrEnv(parsed, principalFlag, principalEnv, "cli")
 	session := sessionID(parsed)
 
-	// `@路径` 的引用在这里展开：问题原文保留，文件正文追加在末尾（见 fileref.go）。
+	// `@路径` 的引用在这里展开：文本正文追加在末尾，图片作为本轮附件。
 	// 提示写 stderr——stdout 只该有答案。
-	question, attached := expandFileRefs(question, os.Stderr)
-	if len(attached) > 0 {
-		fmt.Fprintf(os.Stderr, "引用文件：%s\n", strings.Join(attached, "、"))
+	expanded := expandFileRefs(question, os.Stderr)
+	question = expanded.text
+	if len(expanded.names) > 0 {
+		fmt.Fprintf(os.Stderr, "引用文件：%s\n", strings.Join(expanded.names, "、"))
 	}
 
 	application := build()
@@ -83,6 +84,7 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		SessionID:   session,
 		PrincipalID: principal,
 		Question:    question,
+		Images:      expanded.images,
 	})
 	if err != nil {
 		// 模型的错如实报，**不静默降级**——与原实现同一条理由：

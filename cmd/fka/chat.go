@@ -293,11 +293,12 @@ func (r *chatREPL) command(ctx context.Context, line string) (done bool, code in
 // 顺序是硬要求：**先停转圈，再写角色标签，最后写回答**。标签与回答分处两个
 // writer（ui / out），转圈还占着 ui 那一行时写标签会叠字。
 func (r *chatREPL) ask(ctx context.Context, question string) {
-	// `@路径` 的引用在这里展开：文件正文追加在问题末尾，另起一行提示引了哪些。
-	// 展开放在转圈之前——读文件是本地的、快的，不必占着「思考中」那一行。
-	question, attached := expandFileRefs(question, r.ui)
-	if len(attached) > 0 {
-		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 引用文件："+strings.Join(attached, "、")))
+	// `@路径` 的引用在这里展开：文本正文追加在问题末尾，图片作为本轮附件；另起一行
+	// 提示引了哪些。展开放在转圈之前——读文件是本地的、快的，不必占着「思考中」那一行。
+	expanded := expandFileRefs(question, r.ui)
+	question = expanded.text
+	if len(expanded.names) > 0 {
+		fmt.Fprintf(r.ui, "%s\n", r.pal.tool("· 引用文件："+strings.Join(expanded.names, "、")))
 	}
 
 	stop := startSpinner(r.ui, r.pal, r.spinner)
@@ -306,6 +307,7 @@ func (r *chatREPL) ask(ctx context.Context, question string) {
 		SessionID:   r.session,
 		PrincipalID: r.principal,
 		Question:    question,
+		Images:      expanded.images,
 	})
 	stop()
 
@@ -393,7 +395,8 @@ func (r *chatREPL) help() {
 		"/quit     退出（Ctrl-D 同效）",
 		"",
 		"直接输入问题就是问一轮；本会话的每一轮都带着上一轮的上下文。",
-		"问题里可用 @路径 引用本地文件（正文附在问题末尾）；含空格或中文写 @\"路径\"。",
+		"问题里可用 @路径 引用本地文件：文本附正文、图片作为附件发给模型、其它二进制只附类型与大小。",
+		"含空格或中文写 @\"路径\"。图片只在本轮发送，下一轮追问请重新引用。",
 		"回答写 stdout，提示与标签写 stderr——重定向时那份文件是一串干净的回答。",
 	}
 	for _, line := range lines {
