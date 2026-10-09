@@ -5,7 +5,18 @@
 
 `bin/fka-bash` 是一个**独立进程**（stdio），由主程序从 `mcp.json` 当子进程拉起。崩了不影响主程序。
 
-它提供一个工具 `run`：在沙盒里执行一条 shell 命令，返回退出码与 stdout/stderr。
+它提供两个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `run` | 在沙盒里执行一条 shell 命令，返回退出码与 stdout/stderr |
+| `read` | 读沙盒里的一个文件，**经 MCP 内容块**把内容交给模型：文本给 `type:"text"` 块（32 KiB 上限、超出截断）、图片给带 base64 的 `type:"image"` 块、音频给带 base64 的 `type:"audio"` 块、其它二进制只给类型与大小 |
+
+`read` 与 CLI 的 `@引用` 是**同一套语义**（文本 / 图片 / 二进制三类、同样的上限），
+区别是数据走 **MCP 通道**而不是 agent 读本地路径。图片必须作为独立的 `type:"image"`
+内容节点返回（带 base64），模型才看得见图。因此把内容块换到 HTTP MCP 传输后面
+（同一个工具、同一份 `CallToolResult`）不用改一行：内容块是协议层的，不绑定传输。
+路径与 `run` 的 cwd 共用同一套词法 + 符号链接越界检查。
 
 ## 沙盒用 Bubblewrap 做真实隔离
 
@@ -96,12 +107,14 @@ stdout 是 JSON-RPC 的通道。**任何** `fmt.Println` 都会插进协议流�
 mcp/bash/
 ├── boundary_test.go       边界测试：不许依赖树外的包；server 必须是 main 包
 ├── main.go                启动（沙盒路径/模式/策略解析）
-├── server.go              run 工具的声明与实现
-├── sandbox.go             沙盒核心：cwd 限制、超时、输出上限、命令策略
+├── server.go              run / read 工具的声明与实现
+├── sandbox.go             沙盒核心：cwd/path 限制、超时、输出上限、命令策略
+├── read.go                read 工具：把沙盒文件按类别经 MCP 内容块交给模型
 ├── proc_unix.go           进程组（Unix）：超时杀整棵进程树
 ├── proc_windows.go        进程组的 Windows 退化实现
 ├── sandbox_test.go        cwd/超时/输出/策略用例（direct 档）
 ├── sandbox_bwrap_test.go  bwrap 参数顺序与真实隔离用例
-├── server_test.go         工具参数与结果文本用例
+├── server_test.go         run 工具参数与结果文本用例
+├── read_test.go           read 工具分类与越界用例
 └── internal/log/          stdio 子进程用的 logger（自给自足的刻意副本）
 ```

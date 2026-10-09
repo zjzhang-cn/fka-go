@@ -307,7 +307,7 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@echo "$(BOLD)── 5. 记忆 server 的端到端：记一条、跨进程查回来、越权查不到 ──$(RESET)"
 	@$(MAKE) --no-print-directory smoke-memory
 	@echo
-	@echo "$(BOLD)── 6. 沙盒 bash 的端到端：跑得动、越界被拒、只读根挡得住写 ──$(RESET)"
+	@echo "$(BOLD)── 6. 沙盒 bash 的端到端：跑得动、越界被拒、只读根挡写、文件经 MCP 读回 ──$(RESET)"
 	@$(MAKE) --no-print-directory smoke-bash
 
 # JSON-RPC 报文。stdio 传输**按行分帧**，所以一行一条。
@@ -324,6 +324,7 @@ mem_search_other = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name
 bash_run    = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd -P && printf sandbox-ok"}}}
 bash_escape = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd","cwd":"../.."}}}
 bash_ro     = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run","arguments":{"command":"printf x > /etc/leak-fka-smoke 2>/dev/null || echo write-blocked"}}}
+bash_read   = {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read","arguments":{"path":"note.txt"}}}
 
 # smoke-memory 记忆 server 的**端到端**闸门：A 进程记、B 进程查回来、再验权限边界。
 #
@@ -399,8 +400,11 @@ smoke-bash: build
 		echo "$(BOLD)✗$(RESET) 没装 bubblewrap，bash 沙盒起不来。装：apt install bubblewrap"; \
 		exit 1; \
 	fi
-	@rm -rf $(smoke_dir)/bash; mkdir -p $(smoke_dir)/bash
-	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(bash_run)' '$(bash_escape)' '$(bash_ro)'; sleep 2; } \
+	@rm -rf $(smoke_dir)/bash; mkdir -p $(smoke_dir)/bash/root
+	@# 先在宿主上种一个文件给 read 读。**不在同一条流里 run 写完再 read**：SDK 并发
+	@# 处理请求，两条挨着发会赛跑（read 可能先跑到），而 read 本身的行为不该赌这个时序。
+	@printf 'file-content' > $(smoke_dir)/bash/root/note.txt
+	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(bash_run)' '$(bash_escape)' '$(bash_ro)' '$(bash_read)'; sleep 2; } \
 		| $(FKA_BASH) --root $(smoke_dir)/bash/root \
 		> $(smoke_dir)/bash/out.json 2> $(smoke_dir)/bash/out.err
 	@if grep '"id":2' $(smoke_dir)/bash/out.json | grep -q "sandbox-ok"; then \
@@ -420,6 +424,12 @@ smoke-bash: build
 	else \
 		echo "$(BOLD)✗$(RESET) 往 /etc 写没被挡住——沙盒没生效："; \
 		grep '"id":4' $(smoke_dir)/bash/out.json; exit 1; \
+	fi
+	@if grep '"id":5' $(smoke_dir)/bash/out.json | grep -q "file-content"; then \
+		echo "$(BOLD)✓$(RESET) read 经 MCP 内容块把沙盒文件读回给了模型"; \
+	else \
+		echo "$(BOLD)✗$(RESET) read 没把沙盒文件读回来："; \
+		grep '"id":5' $(smoke_dir)/bash/out.json; exit 1; \
 	fi
 	@if [ "$$(head -c 1 $(smoke_dir)/bash/out.json)" = "{" ]; then \
 		echo "$(BOLD)✓$(RESET) stdout 只有 JSON-RPC 帧，日志没混进来"; \
@@ -454,7 +464,7 @@ smoke-wiring: build
 	@FKA_HOME=$(smoke_home) LLM_TOOL_EFFECTS=read,external \
 		$(smoke_home)/bin/fka tools > $(smoke_home)/out.txt 2>&1 || true
 	@cat $(smoke_home)/out.txt
-	@for want in skills__load skills__list mcp__memory__search_memories mcp__memory__remember_memory mcp__bash__run; do \
+	@for want in skills__load skills__list mcp__memory__search_memories mcp__memory__remember_memory mcp__bash__run mcp__bash__read; do \
 		if grep -q "$$want" $(smoke_home)/out.txt; then \
 			echo "$(BOLD)✓$(RESET) $$want"; \
 		else \

@@ -208,23 +208,61 @@ var defaultDeny = map[string]bool{
 // 两道检查：**词法**（`..` 直接拼出去就拒）与**符号链接**（沙盒里一个指向外面的
 // 软链不能被当成合法子目录）。目录不存在就在沙盒内建出来。
 func (s *Sandbox) ResolveDir(raw string) (string, error) {
+	candidate, err := s.resolveWithin(raw, "cwd")
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(candidate, 0o755); err != nil {
+		return "", fmt.Errorf("创建沙盒工作目录失败：%w", err)
+	}
+	return candidate, nil
+}
+
+// ResolveFile 把 path 参数解成一个沙盒内的**普通文件**路径，供 read 工具用。
+//
+// 与 ResolveDir 共用同一套越界检查（词法 + 符号链接），只多两条：目标必须存在、
+// 必须是普通文件（目录 / 设备 / 管道都拒）。
+func (s *Sandbox) ResolveFile(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", errors.New("path 不能为空")
+	}
+	candidate, err := s.resolveWithin(raw, "path")
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", fmt.Errorf("读不到这个文件：%w", err)
+	}
+	if info.IsDir() {
+		return "", errors.New("这是一个目录，不是文件")
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("不是普通文件")
+	}
+	return candidate, nil
+}
+
+// resolveWithin 把沙盒内的相对路径解成绝对路径，并做**词法 + 符号链接**两道越界
+// 检查。label 只用于错误文案（cwd / path）。
+//
+// **空路径是合法的 cwd**（表示沙盒根本身），所以这里不判空；read 侧的 path 不允许
+// 为空，由 ResolveFile 自己先拒。
+func (s *Sandbox) resolveWithin(raw, label string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("cwd 只能是沙盒内的相对路径，不能是绝对路径：%q", raw)
+		return "", fmt.Errorf("%s 只能是沙盒内的相对路径，不能是绝对路径：%q", label, raw)
 	}
 	candidate := filepath.Join(s.Root, filepath.FromSlash(trimmed))
 	if !within(s.Root, candidate) {
-		return "", fmt.Errorf("cwd 越出了沙盒（%q）：只允许沙盒根下的相对子目录", raw)
+		return "", fmt.Errorf("%s 越出了沙盒（%q）：只允许沙盒根下的相对路径", label, raw)
 	}
 	resolved, err := resolveExisting(candidate)
 	if err != nil {
 		return "", err
 	}
 	if !within(s.rootReal, resolved) {
-		return "", fmt.Errorf("cwd 经符号链接越出了沙盒（%q）：只允许沙盒根下的相对子目录", raw)
-	}
-	if err := os.MkdirAll(candidate, 0o755); err != nil {
-		return "", fmt.Errorf("创建沙盒工作目录失败：%w", err)
+		return "", fmt.Errorf("%s 经符号链接越出了沙盒（%q）：只允许沙盒根下的相对路径", label, raw)
 	}
 	return candidate, nil
 }
