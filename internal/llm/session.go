@@ -27,19 +27,24 @@ func SessionHistoryEnabled() bool {
 // HistoryDir 会话历史目录。与 .env / socket 同一条理由：**按安装根解析，不按 cwd**。
 func HistoryDir() string { return config.DataPath("history") }
 
-// SessionPath 一个会话的历史文件：<账号>_<会话>.jsonl。账号段可空（单账号部署）。
+// SessionPath 一个会话的历史文件：<会话>.jsonl。**只按会话 id 取名**。
 //
-// 会话与账号都来自外部，**因此要压成能安全当文件名的形式**（见 safeSegment）。
-func SessionPath(sessionID string, accountID string) string {
-	name := historyFileName(sessionID, accountID)
-	return filepath.Join(HistoryDir(), name)
+// 会话 id 是**全局唯一**的——渠道那一侧来自 `channels.SessionKeyOf`，形状是
+// `渠道:账号:会话`，账号已经含在里面。再单独前缀账号只会写出
+// `web_web_web_room1.jsonl` 这种把同一段写三遍的名字，所以不前缀。
+//
+// 会话 id 来自外部，**因此要压成能安全当文件名的形式**（见 safeSegment）。
+func SessionPath(sessionID string) string {
+	return filepath.Join(HistoryDir(), historyFileName(sessionID))
 }
 
 // safeSegment 把一个标识压成能安全当文件名的形式：非法字符换 _，并限制长度。
 //
 // 与 ids.IsSafeWxid **刻意不同**：这里允许出现非法字符（外部标识可能带奇怪字符，
-// 报错中断历史不如压一下），但压出来的名字仍然可能撞车——所以再截到 40 字符，
-// 剩下的区分度靠调用方给的 accountID 前缀。
+// 报错中断历史不如压一下），但压出来的名字仍然可能撞车——所以再截到 40 字符。
+//
+// 渠道会话的形状是 `渠道:账号:会话`，截断**从尾部**砍，所以 40 字符里先保住
+// 渠道与账号，只有超长的会话段会被切。CLI 会话（`cli-<uuid>`，正好 40）不受影响。
 func safeSegment(value string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		switch {
@@ -59,10 +64,7 @@ func safeSegment(value string) string {
 	return cleaned
 }
 
-func historyFileName(sessionID, accountID string) string {
-	if accountID != "" {
-		return safeSegment(accountID) + "_" + safeSegment(sessionID) + ".jsonl"
-	}
+func historyFileName(sessionID string) string {
 	return safeSegment(sessionID) + ".jsonl"
 }
 
@@ -98,19 +100,19 @@ func (s *sessionHistory) lockFor(path string) *sync.Mutex {
 	return lock
 }
 
-func (s *sessionHistory) resolve(sessionID, accountID string) string {
+func (s *sessionHistory) resolve(sessionID string) string {
 	if s.dir == "" {
 		return ""
 	}
-	return filepath.Join(s.dir, historyFileName(sessionID, accountID))
+	return filepath.Join(s.dir, historyFileName(sessionID))
 }
 
 // Load 读回完整的会话前缀。
 //
 // **system 消息被排除**：提示词每轮重建，存下来只会让文件与实际发给模型的内容不一致。
 // 坏行跳过（半行 JSON 来自进程被 kill），坏文件不删——先跳过，让用户看到日志再说。
-func (s *sessionHistory) Load(sessionID, accountID string) []ChatMessage {
-	path := s.resolve(sessionID, accountID)
+func (s *sessionHistory) Load(sessionID string) []ChatMessage {
+	path := s.resolve(sessionID)
 	if path == "" {
 		return nil
 	}
@@ -119,7 +121,7 @@ func (s *sessionHistory) Load(sessionID, accountID string) []ChatMessage {
 	if err != nil {
 		if !os.IsNotExist(err) {
 			config.Log().Warn(config.TypeHIST, "会话历史读取失败，按无历史处理", config.Context{
-				"account": accountID, "session": sessionID, "error": err.Error(),
+				"session": sessionID, "error": err.Error(),
 			})
 		}
 		return nil
@@ -148,7 +150,7 @@ func (s *sessionHistory) Load(sessionID, accountID string) []ChatMessage {
 
 	if err := scanner.Err(); err != nil {
 		config.Log().Warn(config.TypeHIST, "会话历史读取中断，已返回读到的部分", config.Context{
-			"account": accountID, "session": sessionID, "error": err.Error(),
+			"session": sessionID, "error": err.Error(),
 		})
 	}
 	return out
@@ -158,8 +160,8 @@ func (s *sessionHistory) Load(sessionID, accountID string) []ChatMessage {
 //
 // **空消息不写**：写进去会在下一轮变成一条空的 user/assistant 记录，白占预算也误导模型。
 // I/O 失败只记日志——**绝不能因为存历史失败而影响这一轮的回答**。
-func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMessage) {
-	path := s.resolve(sessionID, accountID)
+func (s *sessionHistory) Append(sessionID string, messages []ChatMessage) {
+	path := s.resolve(sessionID)
 	if path == "" || len(messages) == 0 {
 		return
 	}
@@ -188,7 +190,7 @@ func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMess
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		config.Log().Warn(config.TypeHIST, "会话历史目录建不出来，本轮历史未持久化", config.Context{
-			"account": accountID, "session": sessionID, "error": err.Error(),
+			"session": sessionID, "error": err.Error(),
 		})
 		return
 	}
@@ -196,7 +198,7 @@ func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMess
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		config.Log().Warn(config.TypeHIST, "会话历史追加失败（不影响回答）", config.Context{
-			"account": accountID, "session": sessionID, "error": err.Error(),
+			"session": sessionID, "error": err.Error(),
 		})
 		return
 	}
@@ -204,7 +206,7 @@ func (s *sessionHistory) Append(sessionID, accountID string, messages []ChatMess
 
 	if _, err := file.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
 		config.Log().Warn(config.TypeHIST, "会话历史写入失败（不影响回答）", config.Context{
-			"account": accountID, "session": sessionID, "error": err.Error(),
+			"session": sessionID, "error": err.Error(),
 		})
 	}
 }

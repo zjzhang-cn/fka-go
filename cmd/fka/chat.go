@@ -222,7 +222,7 @@ func (r *chatREPL) loop(ctx context.Context) int {
 // ——「我上一句哪去了」是 chat 最常被问的问题，答案就在那两行里。
 func (r *chatREPL) banner() {
 	fmt.Fprintf(r.ui, "%s %s\n", r.pal.assistant("fka chat"), r.pal.dim("多轮工具循环问答"))
-	fmt.Fprintf(r.ui, "%s\n", r.pal.dim("会话 "+r.session+"　历史 "+llm.SessionPath(r.session, "")))
+	fmt.Fprintf(r.ui, "%s\n", r.pal.dim("会话 "+r.session+"　历史 "+llm.SessionPath(r.session)))
 	fmt.Fprintf(r.ui, "%s\n", r.pal.dim("/help 看命令，/new 重开一个会话，Ctrl-D 退出。"))
 	fmt.Fprintln(r.ui)
 }
@@ -275,7 +275,7 @@ func (r *chatREPL) command(ctx context.Context, line string) (done bool, code in
 		fmt.Fprintf(r.ui, "%s %s\n", r.pal.assistant("新会话"), r.pal.dim(r.session))
 		return false, exitOK
 	case "/session":
-		fmt.Fprintf(r.ui, "%s\n", r.pal.dim("会话 "+r.session+"　历史 "+llm.SessionPath(r.session, "")))
+		fmt.Fprintf(r.ui, "%s\n", r.pal.dim("会话 "+r.session+"　历史 "+llm.SessionPath(r.session)))
 		return false, exitOK
 	case "/tools":
 		r.showTools(ctx)

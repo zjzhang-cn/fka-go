@@ -547,7 +547,7 @@ func TestRun_标注给用户的附件经渠道发出(t *testing.T) {
 	reply := &fakeReply{}
 
 	if _, err := runner.Run(context.Background(), RunnerInput{
-		SessionID: "s", AccountID: "a", Question: "生成报告", Reply: reply,
+		SessionID: "s", Question: "生成报告", Reply: reply,
 	}); err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}
@@ -578,7 +578,7 @@ func TestRun_未放行send时不投递(t *testing.T) {
 
 	reply := &fakeReply{}
 	if _, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
-		SessionID: "s", AccountID: "a", Question: "q", Reply: reply,
+		SessionID: "s", Question: "q", Reply: reply,
 	}); err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}

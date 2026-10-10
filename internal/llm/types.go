@@ -169,8 +169,8 @@ type CompressionResult struct {
 // **两个方向都永不返错**——调用点在长驻的消息处理链里，返错只会逼每个调用点写一遍
 // 「记日志然后忽略」。失败在这里就地记下并降级（读失败当空、追加失败丢弃）。
 type SessionHistoryStore interface {
-	Load(sessionID string, accountID string) []ChatMessage
-	Append(sessionID string, accountID string, messages []ChatMessage)
+	Load(sessionID string) []ChatMessage
+	Append(sessionID string, messages []ChatMessage)
 }
 
 // Provider 一种模型服务实现。

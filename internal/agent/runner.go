@@ -44,10 +44,9 @@ import (
 // 身份之外的东西（存储根、管理员）也由工厂注入 tools.Context：**它们是部署事实，
 // 不是每条消息的事实**。
 type RunnerInput struct {
-	// SessionID 会话标识
+	// SessionID 会话标识。**全局唯一**（渠道那一侧是 `渠道:账号:会话`）——
+	// 会话历史文件名只按它取，所以账号不必再单独传
 	SessionID string
-	// AccountID 渠道内的账号 id。**只用于会话日志的文件名**
-	AccountID string
 	// PrincipalID 提问者。**MCP 服务器据此过滤**
 	//
 	// ⚠️ 已接受的风险，见 tools.Context.PrincipalID 的说明：文档与记忆走 MCP 之后，

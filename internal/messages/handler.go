@@ -122,7 +122,6 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	// ── 跑一轮 ─────────────────────────────────────────────
 	result, err := h.Runner.Run(ctx, agent.RunnerInput{
 		SessionID:   channels.SessionKeyOf(&message),
-		AccountID:   message.AccountID,
 		PrincipalID: message.PrincipalID,
 		TurnID:      message.MessageID,
 		Question:    question,

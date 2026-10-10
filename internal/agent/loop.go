@@ -155,7 +155,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 
 	// 历史前缀：会话文件里那份，逐字原样（含工具调用与工具结果）。
 	// 存储关掉时（SESSION_HISTORY=0）就没有历史，这一轮从零开始。
-	prior := llm.LoadHistoryPrefix(r.sessionHistory, input.SessionID, input.AccountID)
+	prior := llm.LoadHistoryPrefix(r.sessionHistory, input.SessionID)
 
 	// 本轮 user 消息**只算一次**：预算与实际发出的必须是同一份文本。
 	// 预算按 input.Question 算、发出时再走一遍 userContent（拼上引用正文）的话，
@@ -187,7 +187,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	turnStart := len(messages) - 1
 	persistTurn := func() {
 		if r.sessionHistory != nil {
-			r.sessionHistory.Append(input.SessionID, input.AccountID, persistable(messages[turnStart:]))
+			r.sessionHistory.Append(input.SessionID, persistable(messages[turnStart:]))
 		}
 	}
 

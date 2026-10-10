@@ -147,12 +147,12 @@ type memStore struct {
 	appends [][]ChatMessage
 }
 
-func (m *memStore) Load(sessionID, accountID string) []ChatMessage {
+func (m *memStore) Load(sessionID string) []ChatMessage {
 	m.loads++
 	return m.stored
 }
 
-func (m *memStore) Append(sessionID, accountID string, messages []ChatMessage) {
+func (m *memStore) Append(sessionID string, messages []ChatMessage) {
 	m.appends = append(m.appends, append([]ChatMessage(nil), messages...))
 }
 
@@ -168,7 +168,7 @@ func TestLoadHistoryPrefix_读回文件里那份(t *testing.T) {
 		{Role: RoleAssistant, Content: "文件里的答案"},
 	}}
 
-	got := LoadHistoryPrefix(store, "s", "acct-1")
+	got := LoadHistoryPrefix(store, "s")
 	if len(got) != 2 || got[0].Content != "文件里的问题" {
 		t.Errorf("该原样读回会话文件里那份：%+v", got)
 	}
@@ -177,10 +177,10 @@ func TestLoadHistoryPrefix_读回文件里那份(t *testing.T) {
 // TestLoadHistoryPrefix_没存储就没有历史 SESSION_HISTORY=0 时这一轮从零开始，
 // **不返错**（历史是锦上添花，不是这一轮回答的前提）。
 func TestLoadHistoryPrefix_没存储就没有历史(t *testing.T) {
-	if got := LoadHistoryPrefix(nil, "s", "acct-1"); got != nil {
+	if got := LoadHistoryPrefix(nil, "s"); got != nil {
 		t.Errorf("没有存储时该是什么都没有：%+v", got)
 	}
-	if got := LoadHistoryPrefix(&memStore{}, "", "acct-1"); got != nil {
+	if got := LoadHistoryPrefix(&memStore{}, ""); got != nil {
 		t.Errorf("没有会话 id 时也该是什么都没有：%+v", got)
 	}
 }

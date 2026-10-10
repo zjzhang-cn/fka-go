@@ -149,9 +149,9 @@ func cloneMessages(messages []ChatMessage) []ChatMessage {
 // （「`ChatMessages` 有它时优先于 `Messages`」——代码从不读它）。
 //
 // 现在它就是「读文件」这一件事。**这不是功能删减**：不能到达的代码不是功能。
-func LoadHistoryPrefix(store SessionHistoryStore, sessionID, accountID string) []ChatMessage {
+func LoadHistoryPrefix(store SessionHistoryStore, sessionID string) []ChatMessage {
 	if store == nil || sessionID == "" {
 		return nil
 	}
-	return store.Load(sessionID, accountID)
+	return store.Load(sessionID)
 }
