@@ -127,3 +127,27 @@ func TestRun工具_策略拒绝是IsError(t *testing.T) {
 		t.Errorf("该说清是被禁用列表拦下：%s", body)
 	}
 }
+
+// TestRun说明_按是否允许pip动态生成 钉住两件事：装包那句随参数变化；无论哪一支，
+// 都要提到能用 python/node 跑脚本、以及解释器缺失时是 command not found。
+func TestRun说明_按是否允许pip动态生成(t *testing.T) {
+	off := runDescription(false)
+	if !strings.Contains(off, "装不了包") {
+		t.Errorf("不允许 pip 时该说装不了包：%s", off)
+	}
+	on := runDescription(true)
+	if !strings.Contains(on, "pip install <包>") {
+		t.Errorf("允许 pip 时该给出可装包的说明：%s", on)
+	}
+	if off == on {
+		t.Error("两个分支的说明不该一样")
+	}
+
+	for _, s := range []string{off, on} {
+		for _, want := range []string{"python3", "node", "command not found"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("run 工具说明里少了 %q：%s", want, s)
+			}
+		}
+	}
+}

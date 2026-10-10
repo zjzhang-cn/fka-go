@@ -137,6 +137,8 @@ func run(args []string) int {
 		Bwrap:        firstNonEmpty(flagValue(args, "--bwrap"), os.Getenv("BASH_BWRAP")),
 		BwrapArgs:    strings.Fields(os.Getenv("BASH_BWRAP_ARGS")),
 		ShareNetwork: shareNetwork(args),
+		// 声明允许 pip/npm 联网装包（只影响 run 工具给模型的说明）
+		AllowPip: allowPip(args),
 		// 自装工具链的只读绑定（node/python/…）
 		ReadOnlyExtra: sandboxReadOnlyExtra(args),
 	}
@@ -302,6 +304,7 @@ func printUsage() {
   --mode bwrap|direct          沙盒引擎（默认 bwrap；direct 只固定 cwd，不隔离）
   --bwrap PATH                 Bubblewrap 路径（默认从 PATH 找）
   --share-net                  保留宿主网络（默认独立网络命名空间）
+  --allow-pip                  声明允许 pip/npm 联网装包（只改 run 给模型的说明）
   --allow A,B                  命令白名单（非空即白名单模式）
   --deny A,B                   追加命令黑名单（内置那份不能清空）
   --ro-bind P1:P2              额外**只读**绑定宿主目录（自装工具链，见下）
@@ -315,7 +318,7 @@ func printUsage() {
 
 环境变量：
   BASH_SANDBOX_ROOT / BASH_SANDBOX_MODE / BASH_BWRAP / BASH_BWRAP_ARGS /
-  BASH_SHARE_NET / BASH_ALLOW / BASH_DENY / BASH_RO_BINDS /
+  BASH_SHARE_NET / BASH_ALLOW_PIP / BASH_ALLOW / BASH_DENY / BASH_RO_BINDS /
   BASH_MCP_TRANSPORT / BASH_MCP_ADDR
 
 stdout 是 JSON-RPC 通道：server 运行期间一个字节都不能往 stdout 打。
@@ -355,6 +358,17 @@ func sandboxAllow(args []string) []string {
 
 func sandboxDeny(args []string) []string {
 	return append(splitList(flagValue(args, "--deny")), splitList(os.Getenv("BASH_DENY"))...)
+}
+
+// allowPip 是否允许 pip/npm 联网装包：`--allow-pip` 参数 或 `BASH_ALLOW_PIP`。
+// **只影响 run 工具的说明**——真正能不能联网是 ShareNetwork/代理决定的。
+func allowPip(args []string) bool {
+	for _, arg := range args {
+		if arg == "--allow-pip" {
+			return true
+		}
+	}
+	return truthy(os.Getenv("BASH_ALLOW_PIP"))
 }
 
 // sandboxReadOnlyExtra 额外只读绑定的宿主目录：`--ro-bind` 参数 + `BASH_RO_BINDS`

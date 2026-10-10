@@ -69,6 +69,9 @@ type Options struct {
 	BwrapArgs []string
 	// ShareNetwork 为 true 时保留宿主网络；默认 false = 起独立网络命名空间。
 	ShareNetwork bool
+	// AllowPip 声明本次部署允许 pip/npm 联网装包。**只影响 run 工具的说明**（告诉
+	// 模型能不能试着装包）——真正能不能联网取决于 ShareNetwork 与代理，那是运维的事。
+	AllowPip bool
 	// ReadOnlyExtra 额外**只读**绑定的宿主目录，与内置白名单（/usr /bin /lib …）合并。
 	//
 	// 用途：自装的工具链不在 `/usr` 里——node 常在 `/opt`、conda/python 在 `~`、

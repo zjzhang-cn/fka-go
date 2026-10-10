@@ -36,6 +36,23 @@ const (
 	ToolExport = "export"
 )
 
+// runDescription 生成 run 工具的说明。**按部署能力动态拼**：能不能 pip/npm 联网装包
+// 取决于这次部署（网络与代理），所以那句不能写死。提成函数也让用例能钉住它必须提到的
+// 几件事（脚本执行、装包能力、解释器可能不在）。
+func runDescription(allowPip bool) string {
+	packages := "注意：沙盒**默认无外网**，`pip install` / `npm install` 装不了包——只能用环境里已经装好的库。"
+	if allowPip {
+		packages = "本部署允许联网装包：需要时可以用 `pip install <包>` 或 `npm install <包>`（走部署配置好的网络/代理）。"
+	}
+	return "在一个受限沙盒里执行一条 shell 命令，返回退出码与输出。" +
+		"命令的工作目录固定在沙盒根或其相对子目录内；有超时与输出上限；" +
+		"危险命令可能被策略拒绝。这是**护栏不是越狱墙**——不要用它去碰系统。" +
+		"\n\n需要写逻辑（算数、处理数据、生成文件）时，可以用沙盒里的 python3 或 node 跑脚本：" +
+		"先把脚本落盘（如 `printf … > x.py` 或 `cat > x.py <<'PY' … PY`），再 `python3 x.py` / `node x.js`。" +
+		packages +
+		"若解释器不存在，表现是 `command not found`（这套安装没把它挂进沙盒），换回 shell 或别的办法，别反复重试。"
+}
+
 // metaPrincipalKey agent 经 MCP `_meta` 传来的调用方身份键。
 //
 // **必须与 agent 侧 internal/tools/mcp 的同名常量逐字一致**——bash 自给自足
@@ -62,10 +79,7 @@ func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
 	s := &bashServer{opts: opts, execLog: execLog, sandboxes: map[string]*Sandbox{}}
 
 	mcpServer.AddTool(mcp.NewTool(ToolRun,
-		mcp.WithDescription(
-			"在一个受限沙盒里执行一条 shell 命令，返回退出码与输出。"+
-				"命令的工作目录固定在沙盒根或其相对子目录内；有超时与输出上限；"+
-				"危险命令可能被策略拒绝。这是**护栏不是越狱墙**——不要用它去碰系统。"),
+		mcp.WithDescription(runDescription(opts.AllowPip)),
 		mcp.WithString("command",
 			mcp.Description("要执行的 shell 命令（会交给 bash -c）。"),
 			mcp.Required(),
