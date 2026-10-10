@@ -37,6 +37,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
@@ -147,7 +148,10 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	if err != nil {
 		return RunResult{}, err
 	}
-	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), r.tools.PromptSections(tc))
+	// 段落只算一次：技能目录每次都要扫磁盘，拼 system 与记日志用的必须是同一份。
+	// 日期段放在最后——它是这一轮唯一随时间变化的内容。
+	sections := append(r.tools.PromptSections(tc), prompts.DateSection(time.Now()))
+	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), sections)
 
 	// 历史前缀：会话文件里那份，逐字原样（含工具调用与工具结果）。
 	// 存储关掉时（SESSION_HISTORY=0）就没有历史，这一轮从零开始。
@@ -199,7 +203,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 看到两条意思相近的记录反而不知道该信哪条。
 	config.Log().Debug(config.TypePRM, "提示词已拼接", config.Fields(ctx, config.Context{
 		"session": input.SessionID, "systemChars": len([]rune(system)),
-		"promptSections": len(r.tools.PromptSections(tc)),
+		"promptSections": len(sections),
 		"historyKept":    len(kept.Messages), "historyDropped": kept.Dropped,
 		"toolDefs": len(toolDefs), "messages": len(messages),
 		"contextBudget": budget, "fixedTokens": fixed,
