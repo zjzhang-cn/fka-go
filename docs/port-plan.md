@@ -10,6 +10,10 @@
 **一个工具调用 agent，加一个微信渠道。** 它**不带任何内置能力，也不拥有任何数据**——
 能力只有两条来源：`<安装根>/mcp.json` 里的 MCP server，和 `<安装根>/skills/` 下的 skill。
 
+> **唯一的例外是 `internal/tools/reply`**：它不是能力，是**输出通道**——把「往当前
+> 会话回话」（文字 / 文件 / 图片）也交给模型调度。effect 都是 `send`、默认关中；
+> 发文件只认发送根内的相对路径，四条越界检查在 `reply.resolve`。见 `decisions.md` 第 17 条。
+
 > **文档 / NAS / 向量那条线已经不在这里了。** `1fae643`（agent 侧不再有任何存储）与
 > `0fb673b`（记忆 server 自给自足）把 `internal/{nas,store,ids,domain,searchterms,mcpboot}`
 > 与整个 `mcp/docs` **搬了出去**。所以本仓库里：

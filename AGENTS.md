@@ -9,6 +9,13 @@ Go 版 agent 工具循环 + 一个微信渠道。**它自己不带任何内置�
 能力只有两条来源：`<安装根>/mcp.json` 里的 MCP server，和 `<安装根>/skills/` 下的 skill。
 整个 module 只有 5 个直接依赖，全部纯 Go。
 
+**唯一的例外是 `internal/tools/reply`**：它**不是能力，是输出通道**——把「往当前会话
+回话」（文字 / 文件 / 图片）也做成工具交给模型，好让它能先发说明再发文件。它不拥有
+数据、不出网、不拉进程，所以没破坏上面那条原则。三个工具的 effect 都是 `send`，
+**默认关着**（`LLM_TOOL_EFFECTS` 默认只有 `read`）；发文件只认**发送根**内的相对路径
+（默认 `<安装根>/sandbox`，即 `fka-bash` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
+逃逸、非普通文件、超上限都在 `reply.resolve` 里拒掉。见 `docs/decisions.md` 第 17 条。
+
 ## 闸门与命令
 
 ```bash
