@@ -197,7 +197,9 @@ mcp/bash            独立 MCP server（沙盒 bash 执行；默认 bwrap 命名
 ```
 
 > `fka-bash` 是**第二个** MCP server，同样自给自足（boundary 测试禁止引树外包）。
-> 它默认用 **Bubblewrap** 做真实隔离：`/` 只读、只有沙盒根可写、独立网络/PID/user；
+> 它默认用 **Bubblewrap** 做真实隔离：**只读绑定宿主的最小必要部分**（`/usr /bin /lib /etc` 等），
+> 宿主其余部分（安装根 `.env`/`data`/`logs`、家目录、**兄弟租户目录**）在沙盒里**根本不存在**；
+> 只有该租户根可写；独立网络/PID/user；
 > **找不到 `bwrap` 拒绝启动**，不会静默退化成不隔离的 `direct` 档。`direct` 只固定 cwd，
 > 挡不住 `cd /`，只在没有 bwrap 的平台（macOS/Windows）用。这是本仓库**唯一的外部
 > 运行期依赖**（不是 Go 依赖，不破坏「5 个直接依赖」与零 CGO）。
