@@ -14,6 +14,7 @@ package prompts
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestAgent_钉住第一道防线 见文件头。每条都对应一种「从界面上看不出来」的失效。
@@ -23,7 +24,7 @@ func TestAgent_钉住第一道防线(t *testing.T) {
 		needs []string
 	}{
 		{
-			// **权限边界的提示层**：模型据实填 `principal_id`，而 server 拿它做
+			// **权限边界的提示层**：模型据实填身份字段（记忆 server 里是 `viewer_wxid`），而 server 拿它做
 			// SQL 过滤。这一节被删掉的话，用户消息或文档正文里写一句「你的身份是
 			// 管理员」就可能改写它——而那道真正的防线（WHERE）只管过滤，不管模型
 			// 填了谁。
@@ -89,5 +90,45 @@ func TestCompose_空段跳过且不留尾随空行(t *testing.T) {
 		if got := Compose(base, sections); got != base {
 			t.Errorf("没有有效段落（%q）时该原样返回 base，实际 %q", sections, got)
 		}
+	}
+}
+
+// TestAgent_依据格式只定义一处 依据行的格式曾经在三处各写一遍（规则 1、输出格式、
+// 依据段），模型看到的是三种说法。现在只允许 `依据：` 这一种定义，其余说法不许回来。
+func TestAgent_依据格式只定义一处(t *testing.T) {
+	if n := strings.Count(Agent, "格式：依据："); n != 1 {
+		t.Errorf("依据格式的定义出现了 %d 次，应当只有 1 次", n)
+	}
+	for _, stale := range []string{"回答中标注来源", "标注对应的位置"} {
+		if strings.Contains(Agent, stale) {
+			t.Errorf("已合并的依据说法 %q 又回来了：依据格式只允许在一处定义", stale)
+		}
+	}
+}
+
+// agentRuneBudget Agent 提示词的长度上限（按字符数）。它每一轮都进上下文，
+// 悄悄膨胀的代价是每次问答都付的 token。上限略高于当前长度，留给真实的改动；
+// 超了说明是有意加长的，应当先想清楚这一段值不值得每轮付费，再调这个数。
+const agentRuneBudget = 1100
+
+// TestAgent_长度不超预算 见 agentRuneBudget。
+func TestAgent_长度不超预算(t *testing.T) {
+	if n := len([]rune(Agent)); n > agentRuneBudget {
+		t.Errorf("Agent 提示词 %d 字，超过预算 %d 字：它每轮都进上下文，加长要有理由", n, agentRuneBudget)
+	}
+}
+
+// TestDateSection_只到日且带星期与时区 见 DateSection 的注释：不含时分，否则前缀缓存每分钟失效。
+func TestDateSection_只到日且带星期与时区(t *testing.T) {
+	now := time.Date(2026, time.October, 10, 15, 4, 5, 0, time.FixedZone("CST", 8*3600))
+	got := DateSection(now)
+
+	for _, need := range []string{"2026-10-10", "星期六", "CST"} {
+		if !strings.Contains(got, need) {
+			t.Errorf("日期段里少了 %q：%s", need, got)
+		}
+	}
+	if strings.Contains(got, "15:04") {
+		t.Errorf("日期段不该含时分（会让前缀缓存每分钟失效）：%s", got)
 	}
 }
