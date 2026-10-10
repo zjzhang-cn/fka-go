@@ -38,6 +38,7 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/prompts"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 	"github.com/zjzhang-cn/fka-go/internal/tools/mcp"
+	"github.com/zjzhang-cn/fka-go/internal/tools/reply"
 	"github.com/zjzhang-cn/fka-go/internal/tools/skills"
 )
 
@@ -114,13 +115,17 @@ func Build(ctx context.Context, opts Options) *App {
 
 	// ── 工具 ──────────────────────────────────────────────
 	//
-	// **只有两条能力来源：MCP 与技能。** 这个 agent 刻意不带任何内置能力——
-	// 文档、记忆、检索全在 MCP server 里，它自己不拥有任何数据。所以这里注册
-	// 的两个源就是它的全部「本事」。
+	// **能力只有两条来源：MCP 与技能。** 这个 agent 刻意不带任何内置能力——
+	// 文档、记忆、检索全在 MCP server 里，它自己不拥有任何数据。
+	//
+	// 唯一的例外是 `reply`：它**不是能力，是输出通道**——把「往当前会话回话」
+	// （文字 / 文件 / 图片）也交给模型调度，好让它能先发说明再发文件。它不拥有
+	// 数据、不出网、不拉进程，所以没有破坏那条原则。见该包的头注释。
 	app.Policy = tools.ReadToolPolicy()
 	app.Tools = tools.NewRegistry(nil, app.Policy)
 	app.SkillsDir = skills.ResolveDirs()
 	app.Tools.Use(skills.NewSource(app.SkillsDir))
+	app.Tools.Use(reply.NewSource(reply.Options{}))
 	app.registerMcp()
 
 	// ── 模型 ──────────────────────────────────────────────
