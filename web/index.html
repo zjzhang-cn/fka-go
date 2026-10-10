@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fka 网页客户端</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <strong>fka</strong>
+    <span id="status" class="status offline">未连接</span>
+    <div class="controls">
+      <input id="conversation" type="text" autocomplete="off" spellcheck="false" title="会话 id，可自定义；不同 id 是不同对话">
+      <input id="token" type="password" autocomplete="off" placeholder="访问令牌" title="服务器 WEB_CHANNEL_TOKEN">
+      <button id="connect" type="button">连接</button>
+    </div>
+  </header>
+
+  <main id="log" aria-live="polite"></main>
+
+  <form id="composer">
+    <textarea id="text" rows="2" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button id="send" type="submit">发送</button>
+  </form>
+
+  <script src="/app.js"></script>
+</body>
+</html>
