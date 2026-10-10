@@ -7,6 +7,7 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/channels/ilink"
+	"github.com/zjzhang-cn/fka-go/internal/channels/web"
 )
 
 // runServe 常驻：接渠道、收消息、跑问答。
@@ -41,5 +42,9 @@ func runServe(ctx context.Context, parsed cliArgs) int {
 //
 // 接缝（`internal/channels`）不认识任何实现，**这里是装配根唯一认识它们的地方**。
 func channelProviders() []channels.Provider {
-	return []channels.Provider{ilink.NewProvider()}
+	return []channels.Provider{
+		ilink.NewProvider(),
+		// 网页渠道：设了 WEB_CHANNEL_ADDR 才产出实例（默认不接）
+		web.NewProvider(),
+	}
 }
