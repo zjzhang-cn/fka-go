@@ -75,8 +75,14 @@ type Logger struct {
 	fileName string
 }
 
-// Logger 进程单例。
-var logger = newLogger(LogDir())
+// 进程单例**惰性**创建（第一次 Log() 时才建）。
+//
+// 以前这里是 `var logger = newLogger(LogDir())`：副作用发生在 import 的那一刻，
+// 与 internal/config 修掉的是同一个问题——谁 import 了这个包，谁就会建目录、开文件。
+var (
+	loggerMu sync.Mutex
+	logger   *Logger
+)
 
 // LogDir 日志目录。FKA_LOG_DIR 优先，否则安装根下 logs/，再否则临时目录。
 //
@@ -100,8 +106,16 @@ func newLogger(dir string) *Logger {
 	return l
 }
 
-// Log 返回进程级 logger。
-func Log() *Logger { return logger }
+// Log 返回进程级 logger。第一次调用时才建。
+func Log() *Logger {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+
+	if logger == nil {
+		logger = newLogger(LogDir())
+	}
+	return logger
+}
 
 func (l *Logger) init() {
 	_ = os.MkdirAll(l.dir, 0o755)

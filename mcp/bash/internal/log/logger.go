@@ -77,8 +77,12 @@ type Logger struct {
 	fileName string
 }
 
-// logger 进程单例。
-var logger = newLogger(LogDir())
+// 进程单例**惰性**创建（第一次 Log() 时才建）。理由同 mcp/memory/internal/log：
+// import 的那一刻不应有任何目录或文件副作用。
+var (
+	loggerMu sync.Mutex
+	logger   *Logger
+)
 
 // LogDir 日志目录。FKA_LOG_DIR 优先，否则安装根下 logs/，再否则临时目录。
 //
@@ -103,7 +107,15 @@ func newLogger(dir string) *Logger {
 }
 
 // Log 返回进程级 logger。
-func Log() *Logger { return logger }
+func Log() *Logger {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+
+	if logger == nil {
+		logger = newLogger(LogDir())
+	}
+	return logger
+}
 
 func (l *Logger) init() {
 	_ = os.MkdirAll(l.dir, 0o755)
