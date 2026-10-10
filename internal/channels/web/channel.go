@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/zjzhang-cn/fka-go/internal/channels"
@@ -17,14 +18,14 @@ import (
 // 没有上限就是让远端决定我们分配多少内存。
 const maxOutMediaBytes int64 = 64 << 20
 
-// Channel 一个网页渠道实例。**单账号**：一个实例服务所有浏览器会话，按
-// ConversationID 隔离。
+// Channel 一个网页渠道实例。**单账号、多用户**：一个实例服务所有浏览器会话，
+// 按 `PrincipalID` 区分用户、按 `ConversationID` 区分会话。
 type Channel struct {
 	accountID string
 	addr      string
-	token     string
+	// users token → PrincipalID。认证与身份都由它决定（见 server.go 的 principalFor）
+	users     map[string]string
 	staticDir string
-	principal string
 
 	hub   *hub
 	blobs *blobStore
@@ -35,17 +36,25 @@ type Channel struct {
 	onMessage func(channels.InboundMessage)
 }
 
-func newChannel(accountID, addr, token, staticDir, principal string) *Channel {
+func newChannel(accountID, addr string, users map[string]string, staticDir string) *Channel {
 	return &Channel{
 		accountID: accountID,
 		addr:      addr,
-		token:     token,
+		users:     users,
 		staticDir: staticDir,
-		principal: principal,
 		hub:       newHub(),
 		blobs:     newBlobStore(),
 		status:    channels.StatusOffline,
 	}
+}
+
+// sessionConversation 内部会话键：`<PrincipalID>:<原始会话>`。
+//
+// **必须纳入 principal**：否则两个用户各自取同一个 conversation id（比如都叫
+// `room1`）会落进同一条会话键——历史、记忆、SSE 房间全部串在一起，且不报错。
+// 客户端只看到自己的原始 conversation，命名空间只在这一层加。
+func sessionConversation(principal, conversation string) string {
+	return principal + ":" + conversation
 }
 
 // ── Identity ────────────────────────────────────────────
@@ -88,9 +97,13 @@ func (c *Channel) Senders() channels.Senders {
 }
 
 // sendText 把一段文字推给该会话的浏览器。
+//
+// ConversationID 到这里已经是**内部会话键**（`<principal>:<原始会话>`，见
+// sessionConversation）——它来自本渠道产出的 InboundMessage，不由客户端直接给，
+// 所以这里不按客户端会话 id 的规则校验，只挡空串。
 func (c *Channel) sendText(ctx context.Context, p channels.SendTextParams) (channels.SendResult, error) {
-	if !validConversation(p.Target.ConversationID) {
-		return channels.SendResult{}, fmt.Errorf("会话 id %q 不合法", p.Target.ConversationID)
+	if strings.TrimSpace(p.Target.ConversationID) == "" {
+		return channels.SendResult{}, errors.New("会话为空，不知道发给谁")
 	}
 	c.hub.broadcast(p.Target.ConversationID, "message", map[string]any{"text": p.Text})
 	return channels.SendResult{MessageID: newID()}, nil
@@ -109,8 +122,8 @@ func (c *Channel) sendImage(ctx context.Context, p channels.SendMediaParams) (ch
 }
 
 func (c *Channel) sendMedia(p channels.SendMediaParams, kind string) (channels.SendResult, error) {
-	if !validConversation(p.Target.ConversationID) {
-		return channels.SendResult{}, fmt.Errorf("会话 id %q 不合法", p.Target.ConversationID)
+	if strings.TrimSpace(p.Target.ConversationID) == "" {
+		return channels.SendResult{}, errors.New("会话为空，不知道发给谁")
 	}
 
 	data, err := readMedia(p)

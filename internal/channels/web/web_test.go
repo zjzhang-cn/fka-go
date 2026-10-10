@@ -1,13 +1,13 @@
-// 网页渠道的用例：能力声明、认证、入站产出、SSE 推送、媒体收发、静态兜底。
+// 网页渠道的用例：能力声明、多用户认证、入站产出、SSE 推送、媒体收发、静态兜底。
 //
 // 这一层的判据与接缝一致：**业务层不认识它**。所以这里只测渠道自己的边界——
-// HTTP 面的东西（越权、越界、非法会话 id）与微信渠道那批「静默失效」一一对应。
+// HTTP 面的东西（越权、越界、非法会话 id、跨用户串台）与微信渠道那批「静默失效」
+// 一一对应。
 package web
 
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,9 +22,18 @@ import (
 // 就跟着红——那条约束（默认不叫 web）由它自己的用例钉。
 const testAccount = "acct"
 
+// testUsers 两个用户：secret → web:alice，bobtok → web:bob。
+func testUsers() map[string]string {
+	return map[string]string{"secret": "web:alice", "bobtok": "web:bob"}
+}
+
 func testChannel(t *testing.T) *Channel {
 	t.Helper()
-	return newChannel(testAccount, "127.0.0.1:0", "secret", "", "web:test")
+	return newChannel(testAccount, "127.0.0.1:0", testUsers(), "")
+}
+
+func cookie(token string) *http.Cookie {
+	return &http.Cookie{Name: cookieName, Value: token}
 }
 
 // ── Provider ────────────────────────────────────────────
@@ -39,18 +48,21 @@ func TestProvider_未配置不产实例(t *testing.T) {
 	}
 }
 
-// TestProvider_有地址没令牌要拒 不经认证把 agent 放到 HTTP 上是结构性风险。
-func TestProvider_有地址没令牌要拒(t *testing.T) {
+// TestProvider_有地址没用户要拒 不经认证把 agent 放到 HTTP 上是结构性风险；
+// 配了地址却一个用户都没有，同样拒绝启用。
+func TestProvider_有地址没用户要拒(t *testing.T) {
+	t.Setenv("FKA_HOME", t.TempDir())
+	t.Setenv(EnvToken, "")
 	p := &Provider{Addr: "127.0.0.1:0"}
 	if _, err := p.Create(context.Background()); err == nil {
-		t.Fatal("配了地址却没令牌，该拒绝启用")
+		t.Fatal("配了地址却没配用户，该拒绝启用")
 	}
 }
 
 // TestProvider_启用产一个实例且能力自洽 一个实例、Text 收发、File/Image 仅发、
 // 主动推送为真；能力声明与发送器必须对得上（ValidateChannel）。
 func TestProvider_启用产一个实例且能力自洽(t *testing.T) {
-	p := &Provider{Addr: "127.0.0.1:0", Token: "t"}
+	p := &Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: "u"}}}
 	chans, err := p.Create(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +82,33 @@ func TestProvider_启用产一个实例且能力自洽(t *testing.T) {
 	}
 	if !caps.ProactivePush {
 		t.Error("SSE 能主动推，ProactivePush 该为真")
+	}
+}
+
+// TestProvider_身份加命名空间 用户表里写裸名，落到 PrincipalID 要带 web: 前缀。
+func TestProvider_身份加命名空间(t *testing.T) {
+	p := &Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: "alice"}}}
+	users, err := p.loadUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := users["t"]; got != "web:alice" {
+		t.Errorf("身份该补成 web:alice，实际 %q", got)
+	}
+
+	// 已经是 web: 前缀的原样保留（兼容旧配置）
+	p2 := &Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: "web:default"}}}
+	users2, _ := p2.loadUsers()
+	if got := users2["t"]; got != "web:default" {
+		t.Errorf("已命名的身份不该再加前缀，实际 %q", got)
+	}
+}
+
+// TestProvider_用户表缺字段报错 静默跳过会让「我明明配了这个人」变成无头案。
+func TestProvider_用户表缺字段报错(t *testing.T) {
+	p := &Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: ""}}}
+	if _, err := p.Create(context.Background()); err == nil {
+		t.Fatal("缺 user 该报错")
 	}
 }
 
@@ -133,9 +172,9 @@ func Test登录_令牌对错(t *testing.T) {
 		t.Fatalf("对令牌该 200，实际 %d", good.StatusCode)
 	}
 	var found *http.Cookie
-	for _, cookie := range good.Cookies() {
-		if cookie.Name == cookieName {
-			found = cookie
+	for _, ck := range good.Cookies() {
+		if ck.Name == cookieName {
+			found = ck
 		}
 	}
 	if found == nil || !found.HttpOnly {
@@ -146,7 +185,7 @@ func Test登录_令牌对错(t *testing.T) {
 // ── 入站 ────────────────────────────────────────────────
 
 // Test入站产出InboundMessage POST /messages 产出的形状要能被接缝与业务层直接用：
-// 身份、会话、时间戳、文本 part 一个都不能少。
+// 身份（含命名空间）、内部会话键、时间戳、文本 part 一个都不能少。
 func Test入站产出InboundMessage(t *testing.T) {
 	c := testChannel(t)
 	var got channels.InboundMessage
@@ -157,7 +196,7 @@ func Test入站产出InboundMessage(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", ts.URL+"/messages",
 		strings.NewReader(`{"conversation":"room-1","text":"你好"}`))
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: "secret"})
+	req.AddCookie(cookie("secret"))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -171,17 +210,47 @@ func Test入站产出InboundMessage(t *testing.T) {
 	if got.ChannelID != ID || got.AccountID != testAccount {
 		t.Errorf("渠道/账号不对：%+v", got)
 	}
-	if got.PrincipalID != "web:test" {
-		t.Errorf("身份该是配置的 principal：%q", got.PrincipalID)
+	if got.PrincipalID != "web:alice" {
+		t.Errorf("身份该是 token 对应的 principal：%q", got.PrincipalID)
 	}
-	if got.ConversationID != "room-1" {
-		t.Errorf("会话不对：%q", got.ConversationID)
+	if want := sessionConversation("web:alice", "room-1"); got.ConversationID != want {
+		t.Errorf("内部会话键该是 %q，实际 %q", want, got.ConversationID)
 	}
 	if got.Text() != "你好" {
 		t.Errorf("正文不对：%q", got.Text())
 	}
 	if got.MessageID == "" || got.Timestamp == 0 {
 		t.Errorf("消息 id / 时间戳不能空：%+v", got)
+	}
+}
+
+// Test多用户_同名会话不串 两个用户各自取同一个 conversation id，内部会话键必须
+// 分开——否则历史、记忆、SSE 房间全串在一起，且不报错。
+func Test多用户_同名会话不串(t *testing.T) {
+	c := testChannel(t)
+	var seen []channels.InboundMessage
+	c.onMessage = func(m channels.InboundMessage) { seen = append(seen, m) }
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	post := func(token string) {
+		req, _ := http.NewRequest("POST", ts.URL+"/messages",
+			strings.NewReader(`{"conversation":"room","text":"hi"}`))
+		req.AddCookie(cookie(token))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post("secret") // web:alice
+	post("bobtok") // web:bob
+
+	if len(seen) != 2 {
+		t.Fatalf("该收到两条，实际 %d", len(seen))
+	}
+	if seen[0].ConversationID == seen[1].ConversationID {
+		t.Fatalf("两个用户的同名会话不该落同一个内部键：%q", seen[0].ConversationID)
 	}
 }
 
@@ -195,7 +264,7 @@ func Test入站_非法会话id被拒(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", ts.URL+"/messages",
 		strings.NewReader(`{"conversation":"../x","text":"hi"}`))
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: "secret"})
+	req.AddCookie(cookie("secret"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +287,7 @@ func TestSSE_收到答复(t *testing.T) {
 	defer ts.Close()
 
 	req, _ := http.NewRequest("GET", ts.URL+"/events?conversation=conv", nil)
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: "secret"})
+	req.AddCookie(cookie("secret"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -236,11 +305,12 @@ func TestSSE_收到答复(t *testing.T) {
 		t.Fatalf("第一帧该是 ready，实际 %q", event)
 	}
 
-	// 推一条文字。**连接已在 hub 里注册**，但注册发生在服务端；这里给它一点时间。
+	// 推一条文字到同一个用户的内部会话键。
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		_, _ = c.sendText(context.Background(), channels.SendTextParams{
-			Target: channels.SendTarget{ConversationID: "conv"}, Text: "答案在这",
+			Target: channels.SendTarget{ConversationID: sessionConversation("web:alice", "conv")},
+			Text:   "答案在这",
 		})
 	}()
 
@@ -296,7 +366,7 @@ func Test出站媒体_暂存并可下载(t *testing.T) {
 	defer ts.Close()
 
 	result, err := c.sendImage(context.Background(), channels.SendMediaParams{
-		Target:   channels.SendTarget{ConversationID: "conv"},
+		Target:   channels.SendTarget{ConversationID: sessionConversation("web:alice", "conv")},
 		Data:     []byte("PNGDATA"),
 		FileName: "pic.png",
 		MimeType: "image/png",
@@ -309,7 +379,7 @@ func Test出站媒体_暂存并可下载(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest("GET", ts.URL+"/files/"+result.MessageID, nil)
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: "secret"})
+	req.AddCookie(cookie("secret"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -349,7 +419,7 @@ func Test出站媒体_下载要认证(t *testing.T) {
 
 // Test静态目录不存在给说明 配错目录时要一眼看得出，而不是 500。
 func Test静态目录不存在给说明(t *testing.T) {
-	c := newChannel(testAccount, "127.0.0.1:0", "secret", "/nonexistent/"+newID(), "web:test")
+	c := newChannel(testAccount, "127.0.0.1:0", testUsers(), "/nonexistent/"+newID())
 	ts := httptest.NewServer(c.routes())
 	defer ts.Close()
 
@@ -403,7 +473,6 @@ func TestEmitter_不重复发答案(t *testing.T) {
 	c := testChannel(t)
 	ctx := config.Bind(context.Background(), config.Context{"conversation": "conv"})
 
-	// 订阅该会话，直接推 Answer 不该产生任何帧
 	client := c.hub.join("conv")
 	defer c.hub.leave("conv", client)
 
@@ -419,12 +488,9 @@ func TestEmitter_不重复发答案(t *testing.T) {
 		// 符合预期
 	}
 
-	// 推理增量该推
 	emitter.Reasoning("想一下")
 	select {
 	case frame := <-client.ch:
-		var event string
-		_ = json.Unmarshal([]byte(strings.TrimPrefix(strings.Split(string(frame), "\n")[0], "event: ")), &event)
 		if !strings.Contains(string(frame), "reasoning") {
 			t.Fatalf("该推 reasoning 帧：%s", frame)
 		}
@@ -438,7 +504,7 @@ func TestEmitter_不重复发答案(t *testing.T) {
 func TestProvider_账号可配且默认不叫web(t *testing.T) {
 	t.Setenv(EnvAccount, "")
 
-	p := &Provider{Addr: "127.0.0.1:0", Token: "t"}
+	p := &Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: "u"}}}
 	chans, err := p.Create(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -456,9 +522,8 @@ func TestProvider_账号可配且默认不叫web(t *testing.T) {
 		t.Error("空选择器该解析成默认账号")
 	}
 
-	// 环境变量覆盖
 	t.Setenv(EnvAccount, "home")
-	chans, err = (&Provider{Addr: "127.0.0.1:0", Token: "t"}).Create(context.Background())
+	chans, err = (&Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: "u"}}}).Create(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,8 +531,7 @@ func TestProvider_账号可配且默认不叫web(t *testing.T) {
 		t.Errorf("环境变量该覆盖账号名，实际 %q", got)
 	}
 
-	// 显式字段压过环境变量
-	chans, err = (&Provider{Addr: "127.0.0.1:0", Token: "t", Account: "explicit"}).Create(context.Background())
+	chans, err = (&Provider{Addr: "127.0.0.1:0", Users: []User{{Token: "t", User: "u"}}, Account: "explicit"}).Create(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

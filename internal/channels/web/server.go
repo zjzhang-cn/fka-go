@@ -40,22 +40,35 @@ func (c *Channel) routes() http.Handler {
 
 // ── 认证 ────────────────────────────────────────────────
 
-// authorized 三种携带方式：Bearer 头（非浏览器客户端）、cookie（浏览器）。
+// principalOf 用 token 反查 PrincipalID。**遍历整张表做常量时间比较**：
+// 表很小，且避免「命中即返回」泄露前缀。空 token 直接不认。
+func (c *Channel) principalOf(token string) (string, bool) {
+	if token == "" {
+		return "", false
+	}
+	principal := ""
+	found := false
+	for known, name := range c.users {
+		if tokenEqual(token, known) {
+			principal, found = name, true
+		}
+	}
+	return principal, found
+}
+
+// principalFor 认证并取出这条请求的 PrincipalID。两种携带方式：Bearer 头
+// （非浏览器客户端）、cookie（浏览器）。
 //
 // 为什么 browser 走 cookie：`EventSource` 不能带自定义头，`<img>`/`<a>` 也不能——
 // 只有 cookie 能让 SSE、媒体、POST 三处统一认证，且令牌不进 URL、不进日志。
-func (c *Channel) authorized(r *http.Request) bool {
+func (c *Channel) principalFor(r *http.Request) (string, bool) {
 	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
-		if tokenEqual(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")), c.token) {
-			return true
-		}
+		return c.principalOf(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
 	}
 	if cookie, err := r.Cookie(cookieName); err == nil {
-		if tokenEqual(cookie.Value, c.token) {
-			return true
-		}
+		return c.principalOf(cookie.Value)
 	}
-	return false
+	return "", false
 }
 
 // tokenEqual 常量时间比较，避免按字符提前返回泄露令牌长度。
@@ -63,13 +76,18 @@ func tokenEqual(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
-func (c *Channel) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+// authHandler 认证后的处理器。**principally 参数是这条请求的 PrincipalID**——
+// 认证与取身份是同一步，所以由这里传给下游，而不是让每个 handler 再查一遍。
+type authHandler func(http.ResponseWriter, *http.Request, string)
+
+func (c *Channel) requireAuth(next authHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !c.authorized(r) {
+		principal, ok := c.principalFor(r)
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未认证"})
 			return
 		}
-		next(w, r)
+		next(w, r, principal)
 	}
 }
 
@@ -82,16 +100,18 @@ func (c *Channel) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体不是合法 JSON"})
 		return
 	}
-	if !tokenEqual(body.Token, c.token) {
+	token := strings.TrimSpace(body.Token)
+	if _, ok := c.principalOf(token); !ok {
 		config.Log().Warn(config.TypeCHAN, "网页渠道登录失败", config.Context{
 			"addr": c.addr, "remote": r.RemoteAddr,
 		})
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "令牌不对"})
 		return
 	}
+	// cookie 里放 token 本身；服务端再反查 principal。HttpOnly 让 JS 读不到它。
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
-		Value:    c.token,
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
@@ -103,7 +123,7 @@ func (c *Channel) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleMessages 浏览器发一条文字。**产出一条 InboundMessage 交给接缝**——
 // 之后的一切（分发、问答、回话）与微信渠道走完全相同的路径。
-func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request) {
+func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, principal string) {
 	var body struct {
 		Conversation string `json:"conversation"`
 		Text         string `json:"text"`
@@ -130,13 +150,14 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	onMessage(channels.InboundMessage{
-		ChannelID:      ID,
-		AccountID:      c.accountID,
-		MessageID:      newID(),
-		SenderID:       c.principal,
-		PrincipalID:    c.principal,
-		RecipientID:    c.accountID,
-		ConversationID: body.Conversation,
+		ChannelID:   ID,
+		AccountID:   c.accountID,
+		MessageID:   newID(),
+		SenderID:    principal,
+		PrincipalID: principal,
+		RecipientID: c.accountID,
+		// 内部会话键纳入 principal：两个用户各取同名 conversation 也不会串（见 sessionConversation）
+		ConversationID: sessionConversation(principal, body.Conversation),
 		Parts:          []channels.Part{channels.TextPart(body.Text)},
 		Timestamp:      nowMillis(),
 	})
@@ -147,12 +168,14 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request) {
 // ── SSE ─────────────────────────────────────────────────
 
 // handleEvents 一条 SSE 长连接。客户端按会话订阅，服务端把答复与过程事件推来。
-func (c *Channel) handleEvents(w http.ResponseWriter, r *http.Request) {
-	conversation := r.URL.Query().Get("conversation")
-	if !validConversation(conversation) {
+func (c *Channel) handleEvents(w http.ResponseWriter, r *http.Request, principal string) {
+	raw := r.URL.Query().Get("conversation")
+	if !validConversation(raw) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "会话 id 不合法"})
 		return
 	}
+	// 原始 conversation 只用于校验与回显；路由用纳入 principal 的内部键
+	conversation := sessionConversation(principal, raw)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "这个连接不支持流式"})
@@ -165,7 +188,7 @@ func (c *Channel) handleEvents(w http.ResponseWriter, r *http.Request) {
 	header.Set("Connection", "keep-alive")
 	header.Set("X-Accel-Buffering", "no") // 让 nginx 之类别缓冲
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(sseFrame("ready", map[string]any{"conversation": conversation, "account": c.accountID}))
+	_, _ = w.Write(sseFrame("ready", map[string]any{"conversation": raw, "account": c.accountID}))
 	flusher.Flush()
 
 	client := c.hub.join(conversation)
@@ -198,7 +221,7 @@ func (c *Channel) handleEvents(w http.ResponseWriter, r *http.Request) {
 // ── 出站媒体 ─────────────────────────────────────────────
 
 // handleFiles 下载一份出站媒体。
-func (c *Channel) handleFiles(w http.ResponseWriter, r *http.Request) {
+func (c *Channel) handleFiles(w http.ResponseWriter, r *http.Request, _ string) {
 	id := r.PathValue("id")
 	item, ok := c.blobs.get(id)
 	if !ok {
