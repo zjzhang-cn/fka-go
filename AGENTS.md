@@ -201,6 +201,11 @@ mcp/bash            独立 MCP server（沙盒 bash 执行；默认 bwrap 命名
 > **找不到 `bwrap` 拒绝启动**，不会静默退化成不隔离的 `direct` 档。`direct` 只固定 cwd，
 > 挡不住 `cd /`，只在没有 bwrap 的平台（macOS/Windows）用。这是本仓库**唯一的外部
 > 运行期依赖**（不是 Go 依赖，不破坏「5 个直接依赖」与零 CGO）。
+>
+> **多租户：每个 `PrincipalID` 一个沙盒子目录。** agent 把调用方身份经 MCP 标准
+> `_meta`（`fka/principal`）注入每次工具调用——**模型改不了**；server 按身份把根切成
+> `<基根>/<safe(principal)>`，run/read/export 全在这一层里。**缺身份 fail-closed**
+> （拒绝执行，不落共享目录）。见 `docs/decisions.md` 第 20 条。
 
 <!-- aoci:begin -->
 ## AOCI 仓库认知
