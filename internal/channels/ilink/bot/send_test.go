@@ -892,3 +892,53 @@ func Test下载_超大响应要拒(t *testing.T) {
 		t.Errorf("该说清是大小超限（而不是解密失败）：%v", err)
 	}
 }
+
+// Test发文件字节_与路径同一路 远端沙盒的文件以字节到达，走的是与本地路径完全相同的
+// 上传 → 引用，只是字节不从磁盘读。这条钉住「Data 分支没有另起一条协议」。
+func Test发文件字节_与路径同一路(t *testing.T) {
+	var paths []string
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/ilink/bot/getuploadurl":
+			_, _ = w.Write([]byte(`{"upload_param":"p","upload_full_url":"` + server.URL + `/upload"}`))
+		case "/upload":
+			w.Header().Set("x-encrypted-param", "e")
+			w.WriteHeader(http.StatusOK)
+		case "/ilink/bot/sendmessage":
+			_, _ = w.Write([]byte(`{"message_id":"1"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	s := NewSender(WeixinAccount{BaseURL: server.URL, BotToken: "t"}, server.Client())
+	if _, err := s.SendFileBytes(context.Background(), "to-user", "ctx-1", "报告.pdf", []byte("PDF 内容")); err != nil {
+		t.Fatalf("发文件字节失败：%v", err)
+	}
+
+	want := []string{"/ilink/bot/getuploadurl", "/upload", "/ilink/bot/sendmessage"}
+	if len(paths) != len(want) {
+		t.Fatalf("该走 %v，实际走了 %v", want, paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Errorf("第 %d 步 = %q，期望 %q", i+1, paths[i], want[i])
+		}
+	}
+}
+
+// Test发文件字节_超限要拒 字节方式的超限检查在内存里做（不再经过 readCapped）。
+func Test发文件字节_超限要拒(t *testing.T) {
+	original := maxSendBytes
+	maxSendBytes = 8
+	t.Cleanup(func() { maxSendBytes = original })
+
+	s := NewSender(WeixinAccount{BaseURL: "https://example.invalid", BotToken: "t"}, nil)
+	if _, err := s.SendFileBytes(context.Background(), "to-user", "ctx-1", "big.bin", make([]byte, 9)); err == nil {
+		t.Fatal("超过上限的字节该被拒")
+	}
+}

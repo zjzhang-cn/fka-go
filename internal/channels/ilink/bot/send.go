@@ -361,6 +361,27 @@ func (s *sender) SendFile(ctx context.Context, toUserID, contextToken, localPath
 	if fileName == "" {
 		fileName = filepath.Base(localPath)
 	}
+	return s.sendFileData(ctx, toUserID, contextToken, fileName, data)
+}
+
+// SendFileBytes 发送**已在内存里**的文件字节。
+//
+// 远端沙盒（SSE 的 MCP server）的文件没有本地路径，只能以字节到达；与 SendFile 走同一
+// 条上传 → 引用，区别只是字节从哪来。
+func (s *sender) SendFileBytes(ctx context.Context, toUserID, contextToken, fileName string, data []byte) (SendResult, error) {
+	if err := checkSendPreconditions(toUserID, contextToken, "文件"); err != nil {
+		return SendResult{}, err
+	}
+	if fileName == "" {
+		fileName = "文件"
+	}
+	return s.sendFileData(ctx, toUserID, contextToken, fileName, data)
+}
+
+func (s *sender) sendFileData(ctx context.Context, toUserID, contextToken, fileName string, data []byte) (SendResult, error) {
+	if int64(len(data)) > maxSendBytes {
+		return SendResult{}, fmt.Errorf("文件 %d 字节，超过上限 %d 字节", len(data), maxSendBytes)
+	}
 
 	// 官方：file_item.len 是十进制字符串。md5 **不在 file_item 里**，
 	// 它只用于 getuploadurl 的 rawfilemd5
@@ -393,6 +414,24 @@ func (s *sender) SendImage(ctx context.Context, toUserID, contextToken, localPat
 	}
 	if fileName == "" {
 		fileName = filepath.Base(localPath)
+	}
+	return s.sendImageData(ctx, toUserID, contextToken, fileName, data)
+}
+
+// SendImageBytes 发送**已在内存里**的图片字节，见 SendFileBytes。
+func (s *sender) SendImageBytes(ctx context.Context, toUserID, contextToken, fileName string, data []byte) (SendResult, error) {
+	if err := checkSendPreconditions(toUserID, contextToken, "图片"); err != nil {
+		return SendResult{}, err
+	}
+	if fileName == "" {
+		fileName = "图片"
+	}
+	return s.sendImageData(ctx, toUserID, contextToken, fileName, data)
+}
+
+func (s *sender) sendImageData(ctx context.Context, toUserID, contextToken, fileName string, data []byte) (SendResult, error) {
+	if int64(len(data)) > maxSendBytes {
+		return SendResult{}, fmt.Errorf("图片 %d 字节，超过上限 %d 字节", len(data), maxSendBytes)
 	}
 
 	uploaded, err := UploadMedia(ctx, s.client, toUserID, data, UploadMediaImage, mediaTimeout)

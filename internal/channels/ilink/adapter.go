@@ -504,7 +504,14 @@ func (c *Channel) sendFile(ctx context.Context, params channels.SendMediaParams)
 		return channels.SendResult{}, err
 	}
 
-	result, err := bot.NewSender(account, nil).SendFile(ctx, conversation, token, params.Path, params.FileName)
+	sender := bot.NewSender(account, nil)
+	// Data 非 nil 优先：远端沙盒的文件以字节到达，没有本地路径
+	var result bot.SendResult
+	if params.Data != nil {
+		result, err = sender.SendFileBytes(ctx, conversation, token, params.FileName, params.Data)
+	} else {
+		result, err = sender.SendFile(ctx, conversation, token, params.Path, params.FileName)
+	}
 	if err != nil {
 		return channels.SendResult{}, err
 	}
@@ -521,7 +528,13 @@ func (c *Channel) sendImage(ctx context.Context, params channels.SendMediaParams
 		return channels.SendResult{}, err
 	}
 
-	result, err := bot.NewSender(account, nil).SendImage(ctx, conversation, token, params.Path, params.FileName)
+	sender := bot.NewSender(account, nil)
+	var result bot.SendResult
+	if params.Data != nil {
+		result, err = sender.SendImageBytes(ctx, conversation, token, params.FileName, params.Data)
+	} else {
+		result, err = sender.SendImage(ctx, conversation, token, params.Path, params.FileName)
+	}
 	if err != nil {
 		return channels.SendResult{}, err
 	}

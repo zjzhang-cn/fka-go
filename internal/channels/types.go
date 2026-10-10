@@ -254,11 +254,21 @@ type SendTextParams struct {
 	Text   string
 }
 
-// SendMediaParams 发媒体。Path 是**本地**路径——出站方向由系统提供字节。
+// SendMediaParams 发媒体。
+//
+// **两种给字节的方式**：本地路径（Path）或直接字节（Data）。二者都给时以 Data 为准。
+//
+// Data 是为**远端沙盒**留的：SSE 访问的 MCP server 在别的机器上，文件没有本地路径，
+// 只能以字节穿过 MCP 到达 agent，再交给这里。stdio 的本机文件仍走 Path，省一次读。
 type SendMediaParams struct {
-	Target   SendTarget
-	Path     string
+	Target SendTarget
+	// Path 本地路径。**Data 为空时**按它读文件
+	Path string
+	// Data 直接给出的字节。**非 nil 优先**——给了它就不再读 Path
+	Data []byte
+	// FileName 收件人看到的文件名
 	FileName string
+	// MimeType 类型。Path 方式可为空（渠道自行判断）
 	MimeType string
 }
 
