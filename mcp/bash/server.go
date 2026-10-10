@@ -14,7 +14,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -26,8 +29,9 @@ import (
 
 // 工具名。**刻意不带前缀**——前缀由上层注册表加（`mcp__bash__`）。
 const (
-	ToolRun  = "run"
-	ToolRead = "read"
+	ToolRun    = "run"
+	ToolRead   = "read"
+	ToolExport = "export"
 )
 
 // bashServer 工具实现。**只有本目录内的 main 与测试用得到**。
@@ -68,6 +72,17 @@ func register(mcpServer *server.MCPServer, sandbox *Sandbox, execLog *ExecLog) {
 			mcp.Required(),
 		),
 	), s.handleRead)
+
+	mcpServer.AddTool(mcp.NewTool(ToolExport,
+		mcp.WithDescription(
+			"把一个沙盒文件**发给用户**（不是发给模型）。返回的是一段标注了 audience=user "+
+				"的资源，agent 会经用户所在的渠道把它送出去。要「把结果文件给用户」时用它；"+
+				"只是想自己看内容用 read。路径必须是沙盒根下的相对路径，越界会被拒。"),
+		mcp.WithString("path",
+			mcp.Description("沙盒根下的相对文件路径。"),
+			mcp.Required(),
+		),
+	), s.handleExport)
 }
 
 func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -168,6 +183,63 @@ func (s *bashServer) handleRead(ctx context.Context, request mcp.CallToolRequest
 		}
 		return text(b.String()), nil
 	}
+}
+
+// ExportMaxBytes export 单文件上限。比 read 大得多（那是给模型看的），但仍有上限：
+// 整份文件要先读进内存、再 base64（+33%），字节是模型指名的。
+//
+// **是 var 而不是 const**：用例要把它调小，否则验一次超限得造 32MB 的文件
+// ——与 send.go 的 maxSendBytes 同一条理由。
+var ExportMaxBytes int64 = 32 << 20
+
+// handleExport 把沙盒文件作为**标注给用户**的嵌入资源返回。
+//
+// ## 为什么用内容块而不是路径
+//
+// 与 read 同一条理由：server 可能在别的机器上（HTTP/SSE），文件内容只能以数据穿过
+// MCP 通道。区别是**受众**——read 给模型看，export 给用户收。这个意图用 MCP 标准的
+// `annotations.audience=["user"]` 表达，agent 据此经渠道送出，**不需要认识 bash**。
+func (s *bashServer) handleExport(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	raw := strings.TrimSpace(request.GetString("path", ""))
+	if raw == "" {
+		return fail("path 是必填的：要发给用户的沙盒文件。"), nil
+	}
+
+	path, err := s.sandbox.ResolveFile(raw)
+	if err != nil {
+		return fail(err.Error()), nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fail("读不到这个文件：" + raw), nil
+	}
+	if !info.Mode().IsRegular() {
+		return fail("只能发普通文件：" + raw), nil
+	}
+	if info.Size() > ExportMaxBytes {
+		return fail(fmt.Sprintf("文件 %s 超过上限 %s，未导出", humanBytes(info.Size()), humanBytes(ExportMaxBytes))), nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fail("读取失败：" + err.Error()), nil
+	}
+	mime := http.DetectContentType(data)
+
+	resource := mcp.NewEmbeddedResource(mcp.BlobResourceContents{
+		URI:      "sandbox:///" + strings.TrimPrefix(raw, "/"),
+		MIMEType: mime,
+		Blob:     base64.StdEncoding.EncodeToString(data),
+	})
+	// **意图就在这一行**：受众是用户。agent 只认这个字段，不认它来自 bash。
+	resource.Annotations = &mcp.Annotations{Audience: []mcp.Role{mcp.RoleUser}}
+
+	header := fmt.Sprintf("──── %s（%s，%s）────\n（已交给渠道发给用户）",
+		raw, mime, humanBytes(info.Size()))
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		mcp.NewTextContent(header),
+		resource,
+	}}, nil
 }
 
 // formatResult 把一条命令的结果拼成给模型看的一段话。
