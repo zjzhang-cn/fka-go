@@ -90,7 +90,7 @@ func runLogLevelWiring(t *testing.T, parsed cliArgs) error {
 	if err != nil {
 		return err
 	}
-	useConsoleLevel(level, given)
+	useConsoleLevel(parsed.command, level, given)
 	return nil
 }
 
@@ -107,23 +107,32 @@ func Test参数压过环境变量(t *testing.T) {
 	}
 }
 
-// Test没给参数时落在默认值 **不给参数、环境变量也没有 = 默认值**（Warn）。
+// Test没给参数时落在命令默认值 **不给参数、环境变量也没有 = 命令默认值**：
+// serve 是常驻进程，默认 Info；其余命令跑完就退，默认 Warn。
 //
 // 这条以前写的是「不该动级别」——那是按函数级视角写的，而 `main` 的契约从来是
 // 「落地一个默认值，再让参数覆盖它」。按旧写法，用例会依赖「上一个用例把 override
 // 留成什么」，读起来像在验契约，其实在验残留状态。
-func Test没给参数时落在默认值(t *testing.T) {
+func Test没给参数时落在命令默认值(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "")
 	useTempConsoleLevel(t)
 
 	// 先故意设成别的值：不这样的话「落地默认值」这一步看不出来
 	config.Log().SetConsoleLevel(config.LevelCritical)
-
 	if err := runLogLevelWiring(t, mustParse(t, "serve")); err != nil {
 		t.Fatalf("不该报错：%v", err)
 	}
+	if got := config.Log().ConsoleLevel(); got != config.LevelInfo {
+		t.Errorf("serve 的控制台级别 = %v，期望 %v", got, config.LevelInfo)
+	}
+
+	// 非 serve 命令仍是安静的默认（Warn）
+	config.Log().SetConsoleLevel(config.LevelCritical)
+	if err := runLogLevelWiring(t, mustParse(t, "ask", "问")); err != nil {
+		t.Fatalf("不该报错：%v", err)
+	}
 	if got := config.Log().ConsoleLevel(); got != config.DefaultConsoleLevel {
-		t.Errorf("控制台级别 = %v，期望默认值 %v", got, config.DefaultConsoleLevel)
+		t.Errorf("非 serve 命令的控制台级别 = %v，期望 %v", got, config.DefaultConsoleLevel)
 	}
 }
 
@@ -230,7 +239,7 @@ func Test落地顺序_默认在前覆盖在后(t *testing.T) {
 	}{
 		{"参数给 debug", "error", []string{"serve", "--log-level", "debug"}, config.LevelDebug},
 		{"环境变量给 info", "info", []string{"serve"}, config.LevelInfo},
-		{"两者都没给 → 默认", "", []string{"serve"}, config.DefaultConsoleLevel},
+		{"两者都没给 → serve 默认 info", "", []string{"serve"}, serveConsoleLevel},
 		{"参数压过环境变量", "error", []string{"--log-level=debug", "serve"}, config.LevelDebug},
 		{"参数写在子命令后面", "", []string{"serve", "--log-level", "debug"}, config.LevelDebug},
 	}

@@ -102,7 +102,7 @@ func run(args []string) int {
 	// 症状是 `--log-level debug` 与 `LOG_LEVEL=debug` 双双静默失效。
 	//
 	// 必须早于下面那个 switch：首个入站消息可能在任何子命令的代码跑起来之前就记日志。
-	useConsoleLevel(level, levelGiven)
+	useConsoleLevel(parsed.command, level, levelGiven)
 
 	switch parsed.command {
 	case "ask":

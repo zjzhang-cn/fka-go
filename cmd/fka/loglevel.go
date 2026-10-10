@@ -19,13 +19,32 @@ const logLevelFlag = "--log-level"
 // 两种场景各自需要一个入口。
 const logLevelEnv = "LOG_LEVEL"
 
-// defaultConsoleLevel 不给 --log-level / LOG_LEVEL 时的控制台级别。
+// defaultConsoleLevel 大部分子命令不给 --log-level / LOG_LEVEL 时的控制台级别。
 //
 // **值只有一处出处**：`config.DefaultConsoleLevel`（那边是 Warn）。
 // 这里刻意不再写字面量——两处各写一份时，改一处只会影响一半路径，
 // 而漏掉的那半条路正好是 `fka tools --json`：日志插进 JSON 前面，
 // 退出码却仍是 0，调用方只看到「解析失败」，看不出是日志干的。
 const defaultConsoleLevel = config.DefaultConsoleLevel
+
+// serveConsoleLevel `serve` 子命令的控制台默认级别。
+//
+// serve 是**常驻进程**，前台就是要看「它起来没有、在收什么」——压到 Warn 会让
+// 「网页渠道已启动 / 收到消息 / 已作答」这些唯一能证明它在干活的行全都不见，
+// 而部署的人只会以为它没起来。其余子命令的 stdout 是给人/脚本消费的结果，
+// 保持 Warn 少噪音。两套默认各管各的，靠 `consoleLevelFor` 分派。
+const serveConsoleLevel = config.LevelInfo
+
+// consoleLevelFor 按子命令取控制台默认级别。
+//
+// 只有 `serve` 不同：它是长驻服务，INFO 是它的正常前台噪音下限；其余命令跑完就退，
+// 控制台保持安静。**`--log-level` / `LOG_LEVEL` 仍然压过这里的任何一个。**
+func consoleLevelFor(command string) config.Level {
+	if command == "serve" {
+		return serveConsoleLevel
+	}
+	return defaultConsoleLevel
+}
 
 // logLevels 合法取值。**印在用法错误里**——
 // 让人去翻文档确认「verbose 行不行」比直接列出来更烦。
@@ -94,8 +113,8 @@ func resolveLogLevel(parsed cliArgs) (config.Level, bool, error) {
 // 写反的后果不是报错，而是「参数静默失效」：控制台一行不多，而日志文件里什么都有
 // （文件那边**始终全量**，见 `Logger.write` 的既有约定），于是看起来像「这条链路
 // 没问题，只是没日志可看」。凡是要定级别的地方，都该照这个顺序写。
-func useConsoleLevel(level config.Level, given bool) {
-	config.Log().SetConsoleLevel(defaultConsoleLevel)
+func useConsoleLevel(command string, level config.Level, given bool) {
+	config.Log().SetConsoleLevel(consoleLevelFor(command))
 	if given {
 		config.Log().SetConsoleLevel(level)
 	}
@@ -103,6 +122,6 @@ func useConsoleLevel(level config.Level, given bool) {
 
 // printLogLevelUsage 在用法里说明这个参数。
 func printLogLevelUsage(out *os.File) {
-	fmt.Fprintf(out, "  %s <%s>   控制台日志级别（不给则 %s，不给参数时默认 %s）\n",
-		logLevelFlag, strings.Join(logLevels, "|"), logLevelEnv, defaultConsoleLevel)
+	fmt.Fprintf(out, "  %s <%s>   控制台日志级别（不给则 %s；serve 默认 %s，其余默认 %s）\n",
+		logLevelFlag, strings.Join(logLevels, "|"), logLevelEnv, serveConsoleLevel, defaultConsoleLevel)
 }
