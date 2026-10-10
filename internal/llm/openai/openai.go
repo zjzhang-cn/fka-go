@@ -350,11 +350,14 @@ func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 }
 
 func baseRequest(cfg llm.Config, messages []llm.ChatMessage) goopenai.ChatCompletionRequest {
+	// **不设 `max_tokens`**：留 0，SDK 的 `omitempty` 会把它整个省掉，由服务端按模型
+	// 自己的上限来。曾经写死 `MaxAnswerTokens=800`，而推理模型的 reasoning 也计入这个
+	// 额度——推理一长（几千字）就在吐出正文或工具调用**之前**被截断，收尾帧是
+	// `finish_reason=length`，正文为空，报成「既没回答也没调用工具」。
 	return goopenai.ChatCompletionRequest{
 		Model:       cfg.Model,
 		Messages:    toAPIMessages(messages),
 		Temperature: Temperature,
-		MaxTokens:   llm.MaxAnswerTokens,
 		// 只要工具就发流式：没有它拿不到增量，也就没有「每收一块重置断流预算」
 		Stream: true,
 	}
@@ -471,6 +474,9 @@ func streamOnce(
 		toolCalls    = map[int]*llm.ToolCall{}
 		order        []int
 		sawReason    bool
+		// finishReason 服务端给的结束原因。**`length` 表示被 max_tokens 截断**——
+		// 推理模型长思考时会撞上它，而那时正文/工具调用可能一个都没有。
+		finishReason goopenai.FinishReason
 	)
 
 	for {
@@ -490,6 +496,9 @@ func streamOnce(
 		}
 		if len(chunk.Choices) == 0 {
 			continue
+		}
+		if fr := chunk.Choices[0].FinishReason; fr != "" {
+			finishReason = fr
 		}
 		delta := chunk.Choices[0].Delta
 
@@ -563,6 +572,20 @@ func streamOnce(
 		"reasoningChars": len([]rune(reasoningBuf.String())),
 		"ms":             time.Since(startedAt).Milliseconds(),
 	}))
+
+	// 被 max_tokens 截断：推理模型长思考时会撞上它。**必须单独认出来**，否则正文为
+	// 空会被上层报成含糊的「既没回答也没调用工具」，看起来像「模型偶尔不回」。
+	// 不重试——同样的额度再试一次还是会被截断，该改的是配置。
+	if finishReason == goopenai.FinishReasonLength {
+		config.Log().Warn(config.TypeLLM, "模型输出被长度截断（finish_reason=length）", config.Fields(parentCtx, config.Context{
+			"chars":          len([]rune(answer)),
+			"reasoningChars": len([]rune(reasoningBuf.String())), "toolCalls": len(calls),
+		}))
+		if answer == "" && len(calls) == 0 {
+			return llm.ChatResult{}, fmt.Errorf(
+				"模型输出被长度限制截断（finish_reason=length）：推理可能占满了服务端额度，可试降低/关掉推理（LLM_EXTRA_BODY_JSON='{}'）"), false
+		}
+	}
 
 	return llm.ChatResult{Content: answer, ToolCalls: calls}, nil, false
 }
