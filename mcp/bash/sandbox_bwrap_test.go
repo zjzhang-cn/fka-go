@@ -133,3 +133,53 @@ func TestBwrap_写边界是真的(t *testing.T) {
 		t.Error("往 /etc 写该失败（只读根绑定）")
 	}
 }
+
+// TestBwrap_读不到宿主与兄弟目录 最小根（不再 `--ro-bind / /`）：宿主其余部分
+// 在沙盒里**根本不存在**——安装根里的 .env/data/logs、别的租户目录都读不到。
+//
+// 这是多租户下最要紧的一条：以前整盘只读暴露，一个被注入的会话能 `cat <安装根>/.env`
+// 拿走 LLM key 与微信 token。
+func TestBwrap_读不到宿主与兄弟目录(t *testing.T) {
+	bwrapUsable(t)
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "other", "secret.txt"), []byte("SIBLING-CONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, ".env"), []byte("SECRETKEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	self := filepath.Join(base, "self")
+	if err := os.MkdirAll(self, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewSandbox(Options{Root: self, Mode: ModeBwrap})
+	if err != nil {
+		t.Fatalf("建沙盒失败：%v", err)
+	}
+
+	sibling := filepath.Join(base, "other", "secret.txt")
+	res, err := s.Run(context.Background(), RunRequest{
+		Command: "cat '" + sibling + "' 2>/dev/null || echo DENIED",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Stdout, "SIBLING-CONTENT") {
+		t.Errorf("租户读到了兄弟目录的文件：%q", res.Stdout)
+	}
+
+	env := filepath.Join(base, ".env")
+	res2, err := s.Run(context.Background(), RunRequest{
+		Command: "cat '" + env + "' 2>/dev/null || echo NO-ENV",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res2.Stdout, "SECRETKEY") {
+		t.Errorf("租户读到了安装根的 .env：%q", res2.Stdout)
+	}
+}

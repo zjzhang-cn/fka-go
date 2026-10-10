@@ -369,6 +369,13 @@ func (s *Sandbox) invocation(dir, command string) (string, []string) {
 	return s.Bwrap, s.bwrapArgs(dir, command)
 }
 
+// hostReadOnlyDirs 沙盒里**只读**绑定的宿主目录白名单：命令运行真正需要的部分
+// （可执行文件、动态库、基础配置）。**不再绑整个 `/`**——见 bwrapArgs 的注释。
+// 只绑存在的那些：不同发行版的目录树不一样（`/lib32` 之类并非都有）。
+var hostReadOnlyDirs = []string{
+	"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc",
+}
+
 // bwrapArgs 拼 Bubblewrap 的参数。**顺序不能乱**：`--bind <root> <root>` 必须排在
 // `--ro-bind / /` 与 `--tmpfs /tmp` **之后**，否则沙盒根会被随后挂上的只读根或
 // tmpfs 盖住（沙盒根常落在 /tmp 下，先 bind 后 tmpfs 会让它消失、--chdir 直接失败）。
@@ -381,9 +388,20 @@ func (s *Sandbox) bwrapArgs(dir, command string) []string {
 	if s.ShareNetwork {
 		args = append(args, "--share-net")
 	}
-	// 只读全盘 → 一个可写的 /tmp → 新 proc/dev，最后才把沙盒根绑成可写
+	// **只读绑定宿主的最小必要部分，而不是整个 `/`。**
+	//
+	// 以前是 `--ro-bind / /`：把宿主整盘只读映射进来，于是租户能读 `<安装根>/.env`
+	// （LLM / 微信凭证）、`data/*.sqlite`（记忆原文，绕过 SQL 权限过滤）、`logs/*`、
+	// `mcp.json`，以及**别的租户的目录**。单租户时这是可接受的取舍，多租户下就是
+	// 凭证泄漏——所以改成白名单：只给命令需要的可执行文件与库；宿主其余部分（家目录、
+	// 安装根、兄弟租户）在沙盒里**根本不存在**。
+	for _, hostDir := range hostReadOnlyDirs {
+		if _, err := os.Stat(hostDir); err == nil {
+			args = append(args, "--ro-bind", hostDir, hostDir)
+		}
+	}
+	// 一个可写的 /tmp → 新 proc/dev，最后才把沙盒根绑成可写
 	args = append(args,
-		"--ro-bind", "/", "/",
 		"--tmpfs", "/tmp",
 		"--proc", "/proc",
 		"--dev", "/dev",
