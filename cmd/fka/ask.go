@@ -44,7 +44,7 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		fmt.Fprintf(os.Stderr, "引用文件：%s\n", strings.Join(expanded.names, "、"))
 	}
 
-	application := build()
+	application := build(ctx)
 	defer application.Close()
 
 	application.WarmMcp(ctx)
@@ -167,7 +167,7 @@ func sessionID(parsed cliArgs) string {
 
 // runTools 列出模型现在能看到的工具，以及被挡下的那些与原因。
 func runTools(ctx context.Context, parsed cliArgs) int {
-	application := build()
+	application := build(ctx)
 	defer application.Close()
 
 	application.WarmMcp(ctx)

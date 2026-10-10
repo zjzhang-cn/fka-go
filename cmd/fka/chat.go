@@ -84,7 +84,7 @@ type chatToolLister interface {
 // 说清缺什么）。不一致的话会出现「ask 报得出原因、chat 只回一句没接上」这种
 // 同一个环境两种诊断的分叉。
 func runChat(ctx context.Context, parsed cliArgs) int {
-	application := build()
+	application := build(ctx)
 	defer application.Close()
 
 	application.WarmMcp(ctx)

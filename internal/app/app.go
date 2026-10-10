@@ -102,7 +102,9 @@ type Options struct {
 // Build 装配。**每一步的错误都在这里就地降级，绝不整体返错**——理由与原实现
 // 一样：可选能力缺失（没配模型、没有 MCP、没装技能）不该让服务起不来，只该让
 // 对应的能力缺席。
-func Build(opts Options) *App {
+// ctx 只用于装配期的渠道创建（provider.Create），不用于之后的运行期：运行期的取消
+// 由 Serve/StopAll 自己的 ctx 管。
+func Build(ctx context.Context, opts Options) *App {
 	if !opts.SkipEnv {
 		// **必须在读任何环境变量之前**：默认路径与 .env 都按安装根解析
 		config.LoadEnv()
@@ -126,7 +128,7 @@ func Build(opts Options) *App {
 
 	// ── 渠道 ──────────────────────────────────────────────
 	app.Channels = channels.NewService()
-	app.registerChannels(opts.ChannelProviders)
+	app.registerChannels(ctx, opts.ChannelProviders)
 
 	// ── 会话历史 ──────────────────────────────────────────
 	app.History = llm.NewDefaultSessionHistory()
@@ -264,13 +266,12 @@ func (a *App) registerMcp() {
 //
 // 逐个注册、逐个记错。**唯一的例外是同一个 provider 自己起不来**——那通常是配置
 // 写错了（比如 .env 里没有账号），此时继续跑只会让人以为「配了但没生效」。
-func (a *App) registerChannels(providers []channels.Provider) {
+func (a *App) registerChannels(ctx context.Context, providers []channels.Provider) {
 	if len(providers) == 0 {
 		config.Log().Info(config.TypeSYS, "未配置任何渠道，只跑无头问答", config.Context{})
 		return
 	}
 
-	ctx := context.Background()
 	for _, provider := range providers {
 		if _, err := a.Channels.Register(ctx, provider); err != nil {
 			config.Log().Error(config.TypeSYS, "渠道起不来，已跳过", config.Context{

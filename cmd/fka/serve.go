@@ -17,7 +17,7 @@ import (
 // 而**顺序是硬要求**：必须先订阅再开收，反过来会有一个丢消息的窗口（渠道一开收就
 // 可能来消息，那时还没有订阅者）。这个顺序由 app.Serve 保证。
 func runServe(ctx context.Context, parsed cliArgs) int {
-	application := build(channelProviders()...)
+	application := build(ctx, channelProviders()...)
 	defer application.Close()
 
 	// MCP 预热放在起渠道**之前**：渠道一开收就可能来消息，而那时模型还没连上，

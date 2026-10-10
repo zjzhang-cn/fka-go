@@ -123,8 +123,8 @@ func run(args []string) int {
 }
 
 // build 装配一份 app。**每个子命令自己装**——CLI 不常驻，装一次就扔。
-func build(providers ...channels.Provider) *app.App {
-	return app.Build(app.Options{ChannelProviders: providers})
+func build(ctx context.Context, providers ...channels.Provider) *app.App {
+	return app.Build(ctx, app.Options{ChannelProviders: providers})
 }
 
 func printUsage() {
