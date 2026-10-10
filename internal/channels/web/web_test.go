@@ -18,9 +18,13 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
+// testAccount 测试用的账号名。**不复用 defaultAccount**：用例不该因为默认值改了
+// 就跟着红——那条约束（默认不叫 web）由它自己的用例钉。
+const testAccount = "acct"
+
 func testChannel(t *testing.T) *Channel {
 	t.Helper()
-	return newChannel(AccountID, "127.0.0.1:0", "secret", "", "web:test")
+	return newChannel(testAccount, "127.0.0.1:0", "secret", "", "web:test")
 }
 
 // ── Provider ────────────────────────────────────────────
@@ -164,7 +168,7 @@ func Test入站产出InboundMessage(t *testing.T) {
 		t.Fatalf("该 202，实际 %d", resp.StatusCode)
 	}
 
-	if got.ChannelID != ID || got.AccountID != AccountID {
+	if got.ChannelID != ID || got.AccountID != testAccount {
 		t.Errorf("渠道/账号不对：%+v", got)
 	}
 	if got.PrincipalID != "web:test" {
@@ -345,7 +349,7 @@ func Test出站媒体_下载要认证(t *testing.T) {
 
 // Test静态目录不存在给说明 配错目录时要一眼看得出，而不是 500。
 func Test静态目录不存在给说明(t *testing.T) {
-	c := newChannel(AccountID, "127.0.0.1:0", "secret", "/nonexistent/"+newID(), "web:test")
+	c := newChannel(testAccount, "127.0.0.1:0", "secret", "/nonexistent/"+newID(), "web:test")
 	ts := httptest.NewServer(c.routes())
 	defer ts.Close()
 
@@ -426,5 +430,48 @@ func TestEmitter_不重复发答案(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("推理增量没推出来")
+	}
+}
+
+// TestProvider_账号可配且默认不叫web 账号名进会话键、进而进历史文件名，所以要能改；
+// 默认刻意不与渠道种类同名。
+func TestProvider_账号可配且默认不叫web(t *testing.T) {
+	t.Setenv(EnvAccount, "")
+
+	p := &Provider{Addr: "127.0.0.1:0", Token: "t"}
+	chans, err := p.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chans[0].AccountID(); got != defaultAccount {
+		t.Errorf("默认账号该是 %q，实际 %q", defaultAccount, got)
+	}
+	if defaultAccount == ID {
+		t.Error("默认账号名不该与渠道种类同名")
+	}
+	if _, ok := p.ResolveAccount(defaultAccount); !ok {
+		t.Error("默认账号名该能被解析")
+	}
+	if _, ok := p.ResolveAccount(""); !ok {
+		t.Error("空选择器该解析成默认账号")
+	}
+
+	// 环境变量覆盖
+	t.Setenv(EnvAccount, "home")
+	chans, err = (&Provider{Addr: "127.0.0.1:0", Token: "t"}).Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chans[0].AccountID(); got != "home" {
+		t.Errorf("环境变量该覆盖账号名，实际 %q", got)
+	}
+
+	// 显式字段压过环境变量
+	chans, err = (&Provider{Addr: "127.0.0.1:0", Token: "t", Account: "explicit"}).Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chans[0].AccountID(); got != "explicit" {
+		t.Errorf("显式字段该压过环境变量，实际 %q", got)
 	}
 }

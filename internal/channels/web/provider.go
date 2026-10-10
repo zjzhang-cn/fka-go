@@ -40,10 +40,14 @@ const (
 	ID = "web"
 	// Label 人类可读名称
 	Label = "网页"
-	// AccountID 这个渠道只有一个账号——由此带来一个要写明的代价：接缝按账号分片，
-	// 所以**所有 web 会话串行执行**。要多用户并发得改成「一个用户一个账号实例」。
-	AccountID = "web"
 )
+
+// defaultAccount 这个渠道默认的账号标识。**刻意不叫 "web"**：账号是跨渠道的选择器，
+// 与渠道种类同名只会让人分不清说的是种类还是账号。用 WEB_CHANNEL_ACCOUNT 覆盖。
+//
+// 单账号渠道——由此带来一个要写明的代价：接缝按账号分片，所以**所有网页会话
+// 串行执行**。要多用户并发得改成「一个用户一个账号实例」。
+const defaultAccount = "default"
 
 // 环境变量。
 const (
@@ -57,6 +61,9 @@ const (
 	// EnvPrincipal 这个渠道的用户身份（写进 PrincipalID）。空 = `web:default`。
 	// 单账号单身份；多用户要靠每个用户一个 token/身份，见决策记录。
 	EnvPrincipal = "WEB_CHANNEL_PRINCIPAL"
+	// EnvAccount 账号标识。空 = defaultAccount（`default`）。它进会话键，
+	// 因此也决定会话历史的文件名——改它等于换一套历史。
+	EnvAccount = "WEB_CHANNEL_ACCOUNT"
 )
 
 // defaultPrincipal 未配置时的全局身份。**带命名空间前缀**——PrincipalID 必须
@@ -73,6 +80,8 @@ type Provider struct {
 	StaticDir string
 	// Principal 覆盖身份。空 = 读 EnvPrincipal，再回落 defaultPrincipal
 	Principal string
+	// Account 覆盖账号标识。空 = 读 EnvAccount，再回落 defaultAccount
+	Account string
 }
 
 // NewProvider 造 provider。
@@ -106,20 +115,25 @@ func (p *Provider) Create(ctx context.Context) ([]channels.Channel, error) {
 
 	principal := firstNonEmpty(p.Principal, os.Getenv(EnvPrincipal), defaultPrincipal)
 
-	return []channels.Channel{newChannel(AccountID, addr, token, staticDir, principal)}, nil
+	return []channels.Channel{newChannel(p.accountName(), addr, token, staticDir, principal)}, nil
 }
 
-// ResolveAccount 解析账号选择器。单账号渠道：只有空串与 "web" 有效。
+// accountName 账号标识：显式字段 > 环境变量 > 默认。它进会话键与历史文件名。
+func (p *Provider) accountName() string {
+	return firstNonEmpty(p.Account, os.Getenv(EnvAccount), defaultAccount)
+}
+
+// ResolveAccount 解析账号选择器。单账号渠道：只有空串与配置的账号名有效。
 func (p *Provider) ResolveAccount(selector string) (string, bool) {
-	switch strings.TrimSpace(selector) {
-	case "", AccountID:
-		return AccountID, true
+	account := p.accountName()
+	if trimmed := strings.TrimSpace(selector); trimmed == "" || trimmed == account {
+		return account, true
 	}
 	return "", false
 }
 
 // DescribeAccounts 可选账号的一句话。
-func (p *Provider) DescribeAccounts() string { return AccountID }
+func (p *Provider) DescribeAccounts() string { return p.accountName() }
 
 // Ops 没有登录/状态这类运维操作。
 func (p *Provider) Ops() channels.Ops { return nil }
