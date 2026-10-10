@@ -89,10 +89,11 @@ main {
 .note.tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .note.error { color: #d0463b; }
 
-/* 推理只显示最近 5 行：超过的部分往上滚出（JS 每来一块把它滚到底）。 */
+/* 推理块与工具 / 应答块一致：整段显示、不截断、不自己滚动。左侧一道细线
+   把它和工具 / 错误提示区分开。 */
 .note.reasoning {
-  max-height: calc(5 * 1.5em);
-  overflow: hidden;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
 }
 
 .media { max-width: min(46rem, 82%); }

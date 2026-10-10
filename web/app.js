@@ -128,9 +128,8 @@
     source.addEventListener("reasoning", function (ev) {
       var data = JSON.parse(ev.data);
       if (!reasoningLine) reasoningLine = addNote("reasoning", "");
+      // 推理块**不设限高、不自己滚动**——像工具 / 应答块一样整段向下长，留在原地。
       reasoningLine.textContent += data.text || "";
-      // 限高 5 行（见 style.css），滚到底让**最新**的推理可见
-      reasoningLine.scrollTop = reasoningLine.scrollHeight;
       scroll();
     });
     source.addEventListener("tool", function (ev) {
