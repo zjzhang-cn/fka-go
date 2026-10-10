@@ -46,8 +46,18 @@ type mcpContent struct {
 	Name string
 	// Resource 是嵌入式资源（type=resource）
 	Resource mcpResource
+	// Annotations 该块的标准注解。**只取 audience**——它表达「这段内容给谁」，
+	// 是 server 与 agent 之间唯一的意图通道（见 docs/decisions.md 的「字节端到端」）
+	Annotations *mcpAnnotations
 	// Raw 该块的原始 JSON。未知类型时原样交给模型
 	Raw string
+}
+
+// mcpAnnotations MCP 内容块的标准注解。这里只解 audience，其余忽略。
+//
+// 取值是 MCP 规范定义的 `Role`：`user` / `assistant`，可同时出现。
+type mcpAnnotations struct {
+	Audience []string `json:"audience,omitempty"`
 }
 
 // connection 基于 mark3labs 客户端的一条连接。
@@ -279,6 +289,8 @@ func (c *connection) CallTool(ctx context.Context, name string, args map[string]
 				// 图片块**另立门户**：文字里只留一行「[图片 …]」占位，真正的字节
 				// 从这里带出去，由 agent 以一条 user 消息附件发给模型。
 				Images: imagesFromContent(decoded),
+				// audience 含 user 的块另行带出，由循环经渠道发给用户。
+				Deliver: attachmentsFromContent(decoded),
 			}, nil
 		})
 }

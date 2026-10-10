@@ -103,7 +103,12 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 		return tools.FailResult("MCP 工具调用失败：%s", err.Error()), nil
 	}
 
-	return tools.Result{OK: result.OK, Content: result.Content, Images: result.Images}, nil
+	return tools.Result{
+		OK:      result.OK,
+		Content: result.Content,
+		Images:  result.Images,
+		Deliver: result.Deliver,
+	}, nil
 }
 
 // PromptSection 不产出额外段落。

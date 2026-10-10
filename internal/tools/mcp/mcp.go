@@ -24,11 +24,13 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
+	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
 
 // ToolInfo 一件 MCP 工具。InputSchema 是 JSON Schema，直接当作 Spec.Parameters。
@@ -42,8 +44,11 @@ type ToolInfo struct {
 type CallResult struct {
 	OK      bool
 	Content string
-	// Images 结果里的 image 内容块，已转成 data URI 附件。空 = 没有图片。
+	// Images 结果里**给模型**的 image 内容块，已转成 data URI 附件。空 = 没有图片。
 	Images []llm.ImageAttachment
+	// Deliver 结果里**标注给用户**的内容块（audience 含 user）的原始字节。
+	// 由循环经渠道发给用户，不进模型上下文。
+	Deliver []tools.Attachment
 }
 
 // Connection 一条连上的 MCP 连接。
@@ -169,6 +174,10 @@ func imagesFromContent(content []mcpContent) []llm.ImageAttachment {
 	var images []llm.ImageAttachment
 	total := 0
 	for _, block := range content {
+		// 标注给用户的块走 Deliver，不给模型——受众是 server 声明的
+		if audienceForUser(block) {
+			continue
+		}
 		data, mime := "", ""
 		switch block.Type {
 		case "image":
@@ -194,6 +203,73 @@ func imagesFromContent(content []mcpContent) []llm.ImageAttachment {
 		})
 	}
 	return images
+}
+
+// audienceForUser 该内容块是否标注「给用户」。没写 audience 的按**给模型**算——
+// 这与现状一致：现有 server 不写注解，行为不变。
+func audienceForUser(block mcpContent) bool {
+	if block.Annotations == nil {
+		return false
+	}
+	for _, role := range block.Annotations.Audience {
+		if strings.EqualFold(strings.TrimSpace(role), "user") {
+			return true
+		}
+	}
+	return false
+}
+
+// maxToolDeliverBytes 一次工具结果里「给用户」的附件总量上限。
+//
+// 与图片上限分开：交付不进上下文，可以大一些；但字节要先解 base64、渠道再加密，
+// 峰值是数倍。32 MiB 是这个倍数的折中——渠道侧另外还有 64 MiB 的硬上限。
+const maxToolDeliverBytes = 32 << 20
+
+// attachmentsFromContent 把标注给用户的块解成原始字节附件，交给循环发往渠道。
+//
+// **不认来源、只认 audience**：任何 MCP server（stdio 或 SSE）返回带
+// `annotations.audience=["user"]` 的 image / audio / resource blob，都会被交付；
+// agent 不知道它来自哪台服务器。这是「沙盒与 agent 协议解耦」的落点。
+func attachmentsFromContent(content []mcpContent) []tools.Attachment {
+	var out []tools.Attachment
+	total := 0
+
+	for _, block := range content {
+		if !audienceForUser(block) {
+			continue
+		}
+		encoded, mime, name := "", "", ""
+		switch block.Type {
+		case "image":
+			encoded, mime = block.Data, block.MimeType
+		case "audio":
+			encoded, mime = block.Data, block.MimeType
+		case "resource":
+			encoded, mime = block.Resource.Blob, block.Resource.MimeType
+			if block.Resource.URI != "" {
+				name = path.Base(block.Resource.URI)
+			}
+		}
+		if encoded == "" {
+			continue
+		}
+
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			config.Log().Warn(config.TypeTOOL, "MCP 结果里给用户的附件 base64 解不开，已跳过",
+				config.Context{"mime": mime})
+			continue
+		}
+		if total+len(raw) > maxToolDeliverBytes {
+			config.Log().Warn(config.TypeTOOL, "MCP 结果里给用户的附件超过上限，已跳过",
+				config.Context{"mime": mime, "bytes": len(raw), "limit": maxToolDeliverBytes})
+			continue
+		}
+		total += len(raw)
+		out = append(out, tools.Attachment{Name: name, MimeType: mime, Data: raw})
+	}
+
+	return out
 }
 
 func itoa(n int) string {

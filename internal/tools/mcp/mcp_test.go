@@ -346,3 +346,49 @@ func contains(haystack, needle string) bool {
 
 // homeForTest 取安装根（测试里只用来验证「相对路径按安装根解析」）。
 func homeForTest() string { return config.Home() }
+
+// TestAttachmentsFromContent_只认audience给用户的块 audience=user 的块解成字节
+// 附件交给渠道；没注解或只给 assistant 的块不进 Deliver——这是「只认协议字段、
+// 不认来源」的落点。
+func TestAttachmentsFromContent_只认audience给用户的块(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString([]byte("pdf-bytes"))
+
+	blocks := []mcpContent{
+		{Type: "text", Text: "说明"},
+		{Type: "resource", Resource: mcpResource{URI: "sandbox:///报告.pdf", MimeType: "application/pdf", Blob: payload},
+			Annotations: &mcpAnnotations{Audience: []string{"user"}}},
+		// 没注解 → 按给模型算，不进 Deliver
+		{Type: "resource", Resource: mcpResource{URI: "x.pdf", MimeType: "application/pdf", Blob: payload}},
+		// 只给 assistant → 也不进
+		{Type: "image", MimeType: "image/png", Data: payload,
+			Annotations: &mcpAnnotations{Audience: []string{"assistant"}}},
+	}
+
+	got := attachmentsFromContent(blocks)
+	if len(got) != 1 {
+		t.Fatalf("该只抽出 1 个给用户的附件，实际 %d：%+v", len(got), got)
+	}
+	if got[0].Name != "报告.pdf" || got[0].MimeType != "application/pdf" {
+		t.Errorf("附件的名字/类型不对：%+v", got[0])
+	}
+	if string(got[0].Data) != "pdf-bytes" {
+		t.Errorf("字节没解出来：%q", got[0].Data)
+	}
+}
+
+// Test给用户的图片不走模型 同一块 audience=user 的图片，进 Deliver 就不进 Images
+// ——受众是 server 声明的，agent 不重复投递。
+func Test给用户的图片不走模型(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+	blocks := []mcpContent{{
+		Type: "image", MimeType: "image/png", Data: payload,
+		Annotations: &mcpAnnotations{Audience: []string{"user"}},
+	}}
+
+	if n := len(imagesFromContent(blocks)); n != 0 {
+		t.Errorf("给用户的图不该进 Images，实际 %d", n)
+	}
+	if n := len(attachmentsFromContent(blocks)); n != 1 {
+		t.Errorf("该抽出 1 个附件，实际 %d", n)
+	}
+}
