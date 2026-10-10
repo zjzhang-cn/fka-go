@@ -1,5 +1,7 @@
 # 构建产物。**go.sum 必须入库**——lock 依赖树才能保证每个人装出同一份依赖
 bin/
+# scripts/setup.sh --home ./sbin 装出来的另一份安装根
+sbin/
 dist/
 /fka
 /fka-*

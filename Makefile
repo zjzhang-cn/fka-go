@@ -129,6 +129,14 @@ docker-bash: ## 交叉编译 fka-bash(linux/amd64,arm64) 并构建沙盒镜像
 	docker build -f mcp/bash/Dockerfile -t $(DOCKER_IMAGE) .
 	@echo "$(BOLD)✓$(RESET) $(DOCKER_IMAGE)"
 
+# ── 一键配置 ────────────────────────────────────────────
+#
+# 把仓库装成一个能跑的安装根：二进制 + mcp.json + .env + web 前端 + 两个 Node MCP
+# server + 沙盒容器。参数透传，例如 `make setup ARGS="--home /srv/fka --no-docker"`。
+.PHONY: setup
+setup: ## 一键配置安装根（scripts/setup.sh，ARGS 透传）
+	@scripts/setup.sh $(ARGS)
+
 .PHONY: version
 version: ## 版本信息（进二进制的那份）
 	@echo "version    $(VERSION)"
