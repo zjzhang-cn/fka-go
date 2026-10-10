@@ -309,7 +309,8 @@ cut -d' ' -f2,3,4         logs/*.log           # 级别 / 账号 / 哪一段
 往下每层自动合并（`config.Bind` / `config.Fields`），**不靠各处手抄**。
 
 控制台级别用 `--log-level` 或 `LOG_LEVEL` 定（`debug`/`info`/`warn`/`error`/`critical`）；
-**认不出来直接以 2 退出**，不静默退回默认。CLI 默认把级别压到 `warn`。
+**认不出来直接以 2 退出**，不静默退回默认。默认级别按命令分：`serve` 是 `info`
+（常驻进程，前台要看启动与收消息），其余命令是 `warn`。
 
 **MCP server 的日志一律走 stderr**：`mcp.json` 给了 `env` 时子进程拿不到
 `LOG_LEVEL`，级别会落回 debug——而它的 stdout 是 JSON-RPC 通道，一行日志就可能
