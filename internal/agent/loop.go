@@ -264,10 +264,13 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 			if emitter != nil {
 				emitter.Tool(event)
 			}
+			// 标注给用户的附件经渠道发出去，并把结果补一句告诉模型——它得知道
+			// 文件到底发没发，否则会以为自己没做到而重试
+			content := outcome.Content + r.deliverAttachments(ctx, tc, outcome.Deliver)
 			messages = append(messages, llm.ChatMessage{
 				Role:       llm.RoleTool,
 				ToolCallID: call.ID,
-				Content:    outcome.Content,
+				Content:    content,
 			})
 			toolImages = append(toolImages, outcome.Images...)
 		}
@@ -347,6 +350,45 @@ func (r *Runner) forcedAnswer(
 //
 // role=tool 装不下图片。调用方把它们攒起来，在整轮 tool 消息之后另起一条 user 消息
 // 发送（见 Run）。
+// deliverAttachments 把工具结果里**标注给用户**的附件经渠道发出去，返回一句追加到
+// tool 消息末尾的说明（没有附件时返回空串）。
+//
+// 三道闸：有附件、放行了 send、当前会话可回话。任一不满足都**不报错**，只把那件事
+// 写进给模型的说明里——模型据此能换一种方式（改走最终答案）而不是干等。
+func (r *Runner) deliverAttachments(ctx context.Context, tc tools.Context, items []tools.Attachment) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if !r.allowSend {
+		return fmt.Sprintf("\n（有 %d 个附件要发给用户，但当前未启用发送能力，未送出）", len(items))
+	}
+	if tc.Reply == nil {
+		return fmt.Sprintf("\n（有 %d 个附件要发给用户，但当前会话不可回话，未送出）", len(items))
+	}
+
+	sent, failed := 0, 0
+	for _, item := range items {
+		var err error
+		if strings.HasPrefix(item.MimeType, "image/") {
+			err = tc.Reply.ImageBytes(ctx, item.Name, item.MimeType, item.Data)
+		} else {
+			err = tc.Reply.FileBytes(ctx, item.Name, item.MimeType, item.Data)
+		}
+		if err != nil {
+			failed++
+			config.Log().Warn(config.TypeTOOL, "把工具附件发给用户失败",
+				config.Fields(ctx, config.Context{"name": item.Name, "error": err.Error()}))
+			continue
+		}
+		sent++
+	}
+
+	if failed == 0 {
+		return fmt.Sprintf("\n（已通过渠道把 %d 个附件发给用户）", sent)
+	}
+	return fmt.Sprintf("\n（%d 个附件已发给用户，%d 个发送失败）", sent, failed)
+}
+
 func (r *Runner) runToolCall(ctx context.Context, call llm.ToolCall, tc tools.Context) tools.Result {
 	args, ok := ParseToolArguments(call.Arguments)
 	if !ok {

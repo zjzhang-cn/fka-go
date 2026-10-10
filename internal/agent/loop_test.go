@@ -23,6 +23,8 @@ type fakeSource struct {
 	complaints map[string]string
 	// images 工具名 → 随结果返回的图片（模拟 MCP 的 image 内容块）
 	images map[string][]llm.ImageAttachment
+	// deliver 工具名 → 随结果返回的、标注给用户的附件（模拟 audience=user）
+	deliver map[string][]tools.Attachment
 	// calls 记录被调过的（工具名, 参数）
 	calls  []recorded
 	closed bool
@@ -50,7 +52,26 @@ func (f *fakeSource) Call(ctx context.Context, name string, args map[string]any,
 		result = tools.FailResult("%s", complaint)
 	}
 	result.Images = f.images[name]
+	result.Deliver = f.deliver[name]
 	return result, nil
+}
+
+// fakeReply 记录经它发出的东西。只关心「发没发、发的是什么」。
+type fakeReply struct {
+	files  []string
+	images []string
+}
+
+func (f *fakeReply) Text(context.Context, string) error          { return nil }
+func (f *fakeReply) File(context.Context, string, string) error  { return nil }
+func (f *fakeReply) Image(context.Context, string, string) error { return nil }
+func (f *fakeReply) FileBytes(_ context.Context, name, _ string, _ []byte) error {
+	f.files = append(f.files, name)
+	return nil
+}
+func (f *fakeReply) ImageBytes(_ context.Context, name, _ string, _ []byte) error {
+	f.images = append(f.images, name)
+	return nil
 }
 
 func (f *fakeSource) PromptSection(tc tools.Context) (string, error) { return "", nil }
@@ -491,5 +512,81 @@ func TestRun_工具声明原样进模型(t *testing.T) {
 	encoded, _ := json.Marshal(sentDefs[0].Parameters)
 	if !strings.Contains(string(encoded), "\"q\"") {
 		t.Errorf("工具参数没透传：%s", encoded)
+	}
+}
+
+// toolMessageContent 找第二轮请求里那条 tool 消息的正文。找不到返回空串。
+func toolMessageContent(seen [][]llm.ChatMessage) string {
+	if len(seen) < 2 {
+		return ""
+	}
+	for _, message := range seen[1] {
+		if message.Role == llm.RoleTool {
+			return message.Content
+		}
+	}
+	return ""
+}
+
+// TestRun_标注给用户的附件经渠道发出 工具结果里 audience=user 的附件由循环投递，
+// 且**在给模型的 tool 消息里留下一句「发了几个」**——否则模型会以为没做到而重试。
+func TestRun_标注给用户的附件经渠道发出(t *testing.T) {
+	source := &fakeSource{
+		specs:   []tools.Spec{searchSpec()},
+		replies: map[string]string{"search": "导出完成"},
+		deliver: map[string][]tools.Attachment{"search": {
+			{Name: "报告.pdf", MimeType: "application/pdf", Data: []byte("pdf")},
+			{Name: "图.png", MimeType: "image/png", Data: []byte("png")},
+		}},
+	}
+	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
+	chat, seen := scriptedChat(t, "fake__search", `{"q":"x"}`, "好了")
+
+	runner := newTestRunner(chat, registry)
+	runner.allowSend = true
+	reply := &fakeReply{}
+
+	if _, err := runner.Run(context.Background(), RunnerInput{
+		SessionID: "s", AccountID: "a", Question: "生成报告", Reply: reply,
+	}); err != nil {
+		t.Fatalf("Run 返错：%v", err)
+	}
+
+	if len(reply.files) != 1 || reply.files[0] != "报告.pdf" {
+		t.Errorf("文件附件没走 FileBytes：%v", reply.files)
+	}
+	if len(reply.images) != 1 || reply.images[0] != "图.png" {
+		t.Errorf("图片附件该走 ImageBytes（mime 是 image/）：%v", reply.images)
+	}
+	if body := toolMessageContent(*seen); !strings.Contains(body, "发给用户") {
+		t.Errorf("tool 消息里该有一句投递结果：%q", body)
+	}
+}
+
+// TestRun_未放行send时不投递 MCP 工具都是 external，不放行 send 就不该有任何附件
+// 被送出去——这道闸拦的是「任意被配置的 server 让 agent 往用户发东西」。
+func TestRun_未放行send时不投递(t *testing.T) {
+	source := &fakeSource{
+		specs:   []tools.Spec{searchSpec()},
+		replies: map[string]string{"search": "ok"},
+		deliver: map[string][]tools.Attachment{"search": {
+			{Name: "a.txt", MimeType: "text/plain", Data: []byte("x")},
+		}},
+	}
+	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
+	chat, seen := scriptedChat(t, "fake__search", `{"q":"x"}`, "好了")
+
+	reply := &fakeReply{}
+	if _, err := newTestRunner(chat, registry).Run(context.Background(), RunnerInput{
+		SessionID: "s", AccountID: "a", Question: "q", Reply: reply,
+	}); err != nil {
+		t.Fatalf("Run 返错：%v", err)
+	}
+
+	if len(reply.files)+len(reply.images) != 0 {
+		t.Errorf("未放行 send 时不该投递，实际 files=%v images=%v", reply.files, reply.images)
+	}
+	if body := toolMessageContent(*seen); !strings.Contains(body, "未启用发送能力") {
+		t.Errorf("该告诉模型为什么没发：%q", body)
 	}
 }

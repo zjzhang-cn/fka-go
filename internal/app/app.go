@@ -154,6 +154,9 @@ func Build(ctx context.Context, opts Options) *App {
 			Host:            llmopenai.HostOf(app.llmConfig.BaseURL),
 			TimeoutMs:       app.llmConfig.TimeoutMs,
 			StreamTimeoutMs: app.llmConfig.StreamTimeoutMs,
+			// 工具结果里标注给用户的附件是否投递，与 reply 工具同一道闸：
+			// 没放行 send 就不送——MCP 工具都是 external，不加这道闸任何 server 都能发
+			AllowSend: app.Policy.Allows(tools.EffectSend),
 		})
 		if !app.Agent.Enabled() {
 			config.Log().Info(config.TypeSYS, "LLM_TOOLS 已关闭，问答不走工具循环", config.Context{})

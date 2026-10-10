@@ -91,6 +91,9 @@ type Runner struct {
 	chat           llm.ChatClient
 	tools          tools.Service
 	sessionHistory llm.SessionHistoryStore
+	// allowSend 是否放行了 send 能力。工具结果里标注给用户的附件**只有它为真才投递**
+	// ——MCP 工具都是 external，不给这道闸，任何被配置的 server 都能让 agent 往用户发东西
+	allowSend bool
 	// enabled LLM_TOOLS=off 时整块缺席——那时没有 agent，直接走单次问答
 	enabled bool
 }
@@ -123,6 +126,7 @@ func NewRunner(
 		chat:            chat,
 		tools:           registry,
 		sessionHistory:  opts.SessionHistory,
+		allowSend:       opts.AllowSend,
 		enabled:         true,
 	}
 }
@@ -140,6 +144,9 @@ type RunnerOptions struct {
 	StreamTimeoutMs int
 	// SessionHistory 会话历史存储。nil = 不持久化
 	SessionHistory llm.SessionHistoryStore
+	// AllowSend 是否放行 send 能力（LLM_TOOL_EFFECTS 含 send）。工具结果里标注给
+	// 用户的附件只有它为真才投递——见 Runner.allowSend
+	AllowSend bool
 }
 
 // ErrNoRunner 工具循环缺席（LLM_TOOLS=off，或压根没接上模型）时 Run 返它。
