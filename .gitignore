@@ -24,6 +24,14 @@ logs/
 sandbox/
 .smoke/
 
+# Node —— mcp_sqlite / mcp_time 这类 Node MCP server。
+# **package-lock.json 要入库**：与 go.sum 同理，锁住依赖树才装得出同一份。
+# chinook.db 是 mcp_sqlite 的示例数据（server 默认识它），**入库不忽略**。
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
 # 编辑器与系统
 .DS_Store
 .idea/
