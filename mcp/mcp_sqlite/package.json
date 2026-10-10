@@ -1,0 +1,16 @@
+{
+  "name": "mcp_sqlite",
+  "version": "1.0.0",
+  "description": "Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具分三类：",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0"
+  }
+}
