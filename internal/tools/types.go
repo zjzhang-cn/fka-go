@@ -120,15 +120,21 @@ type Context struct {
 	Extra map[string]any
 }
 
-// Reply 以 Bot 的身份回话的能力（目前只有发文件）。
+// Reply 以 Bot 的身份回话的能力：发文字、发文件、发图片。
 //
 // 由消息层逐条提供（从渠道的发送器里取），因为「能发给谁」取决于当前这条消息的
 // 会话与回复令牌——工具拿不到、也不该猜到这些。
 //
-// **两个方法都收 ctx**：发文件要走网络（上传），而「谁在发」这一轮的取消信号在
+// **每个方法都收 ctx**：发文件要走网络（上传），而「谁在发」这一轮的取消信号在
 // 工具的 ctx 上。实现里换成 `context.Background()` 的话，停机时这一发就断不掉
 // （而且从签名上完全看不出来）。
+//
+// **它是「输出通道」，不是一项外部能力**：真正的能力（查资料、记忆、执行）只从
+// MCP 与 skill 进来；这里只是把「回话」这件事也交给模型调度，好让它能先发一段
+// 说明再发文件。落点的唯一内置工具源是 `internal/tools/reply`。
 type Reply interface {
+	// Text 往当前会话发一段文字。与最终答案走同一条发送器
+	Text(ctx context.Context, text string) error
 	// File 把一个本地文件发给当前会话。FileName 缺省时用路径里的文件名
 	File(ctx context.Context, path string, fileName string) error
 	// Image 把一张图片发给当前会话。渠道发不了图片时**调用方退回 File**——

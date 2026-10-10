@@ -513,6 +513,31 @@ func Test工具能往当前会话发文件(t *testing.T) {
 	}
 }
 
+// Test工具能往当前会话发文字 与发文件同一条链路，但走渠道的文本发送器——
+// 模型因此能先发一段说明、再发文件，而不是只有最终答案那一条出口。
+func Test工具能往当前会话发文字(t *testing.T) {
+	f := newFixture(t, "答案在这")
+
+	f.tool.sendFile = func(ctx context.Context, reply tools.Reply) error {
+		if reply == nil {
+			return errors.New("这一轮没有回话能力")
+		}
+		return reply.Text(ctx, "先发这句")
+	}
+
+	f.deliver(t, textMessage("说话"))
+
+	var got []string
+	for _, item := range f.channel.sentTexts() {
+		got = append(got, item.text)
+	}
+	joined := strings.Join(got, "|")
+	// 工具那句 + 最终答案那句，两条都在
+	if !strings.Contains(joined, "先发这句") || !strings.Contains(joined, "答案在这") {
+		t.Fatalf("工具文字与最终答案该都发出去，实际 %v", got)
+	}
+}
+
 // Test渠道发不了图片就退成文件 **发成文件比发不出去强**——假渠道声明了
 // Image.Send=false，所以只该有文件、没有图片。
 func Test渠道发不了图片就退成文件(t *testing.T) {

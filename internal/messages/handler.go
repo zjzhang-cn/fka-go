@@ -277,6 +277,23 @@ func newChannelReply(channel channels.Channel, message channels.InboundMessage) 
 	return &channelReply{channel: channel, message: message}
 }
 
+// Text 往当前会话发一段文字。与最终答案共用渠道的文本发送器（`reply` 那条路），
+// 所以「渠道压根不发文字」与「发失败」在这一层的表现一致。
+func (r *channelReply) Text(ctx context.Context, text string) error {
+	senders := r.channel.Senders()
+	if !senders.HasText() {
+		return fmt.Errorf("渠道 %s 发不了文字", r.channel.ID())
+	}
+	_, err := senders.Text(ctx, channels.SendTextParams{
+		Target: channels.SendTarget{
+			ConversationID: r.message.ConversationID,
+			ReplyToken:     r.message.ReplyToken,
+		},
+		Text: text,
+	})
+	return err
+}
+
 func (r *channelReply) File(ctx context.Context, path string, fileName string) error {
 	return r.send(ctx, channels.KindFile, path, fileName, "")
 }
