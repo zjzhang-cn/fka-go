@@ -140,8 +140,10 @@ Go 的 `internal` 规则只管「树内不许外泄」，**管不了「树外不
   CLI 的 stdout 是给人看的结果，刻意把日志级别压到 Warn（`cmd/fka/main.go`）。
 - 退出码是契约：`0` 成功 / `1` 预期内失败 / `2` 用法错。`fka serve` 在没接上渠道时**必须**
   明确报错并以 1 退出，不能安静地收不到消息（`make smoke` 就在钉这条）。
-- 提交信息用 conventional commits + 中文主题：`feat(skills): …` / `fix(ilink): …` / `build: …`。
-  `docs/dev-log.md` 约定「写日志先于提交，一个完整功能一次提交」。
+- **提交一律分段提交**：每个逻辑单元一次提交，**不要把所有改动塞进一个提交**。提交信息用
+  conventional commits + 中文主题（`feat(skills): …` / `fix(ilink): …` / `docs: …`）。
+  每段提交前**单独验证**（该段能编译、相关测试过），全部完成后在 HEAD 上跑 `make verify`。
+  （`docs/dev-log.md` 里「一个完整功能一次提交」是历史写法，以本条为准。）
 
 ## 装配点唯一
 
