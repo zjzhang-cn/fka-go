@@ -392,9 +392,9 @@ func TestSeam_解析目标(t *testing.T) {
 	})
 }
 
-// TestSeam_跨渠道撞账号在注册时就拒 键是 channel:account，所以 ilink:1 与 tg:1
-// 查不出重复——但会话历史文件名是 `<账号>_<会话>.jsonl`，两者会写进同一个文件。
-// 所以**账号标识必须跨渠道全局唯一**，检查放在注册期而不是解析期。
+// TestSeam_跨渠道撞账号在注册时就拒 账号是跨渠道的选择器（`--account` 不给渠道时
+// 按它找），ilink:1 与 tg:1 会让查找有歧义。所以**账号标识必须跨渠道全局唯一**，
+// 检查放在注册期而不是解析期。
 func TestSeam_跨渠道撞账号在注册时就拒(t *testing.T) {
 	service := NewService()
 	ctx := context.Background()

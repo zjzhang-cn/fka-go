@@ -68,7 +68,7 @@ type Service struct {
 	// instances 全部渠道**实例**，键是 channel:account
 	instances map[string]Channel
 	// accounts 账号标识 → 渠道种类。**账号标识必须跨渠道全局唯一**——
-	// 会话历史文件是 `<账号>_<会话>.jsonl`，撞号会让两个渠道的话写进同一个文件
+	// 它是跨渠道的选择器（`--account` 不给渠道时按它找），撞号会让那个查找有歧义
 	accounts map[string]string
 	// order 实例的稳定顺序（注册顺序），供 Instances 返回
 	order []string
@@ -217,9 +217,9 @@ func (s *Service) Attach(channel Channel) error {
 // 检查分两处，缺一不可：
 //
 //  1. `(渠道种类, 账号)` 相同 —— 同一个渠道里的同一个账号，重复就是重复；
-//  2. **账号标识跨渠道撞号** —— 键是 channel:account，所以 `ilink:1` 与 `tg:1`
-//     上面那一条查不出来，但会话历史文件名是 `<账号>_<会话>.jsonl`，两者会写进
-//     **同一个文件**。症状是「A 渠道的对话出现在 B 渠道的上下文里」，且不报错。
+//  2. **账号标识跨渠道撞号** —— 账号是**跨渠道的选择器**：`--account` 不给渠道时
+//     按它找，而 `ilink:1` 与 `tg:1` 会让那个查找有歧义（`pickChannel` 只能报
+//     「重名」）。注册期就拒，比等到解析期才发现更早、更明确。
 //
 // 拆出来是为了让 `Register` 能在**草稿**上跑同一套检查（要么全部生效，要么全不生效）。
 func (s *Service) attachLocked(channel Channel) error {
