@@ -16,6 +16,12 @@ Go 版 agent 工具循环 + 一个微信渠道。**它自己不带任何内置�
 （默认 `<安装根>/sandbox`，即 `fka-bash` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
 逃逸、非普通文件、超上限都在 `reply.resolve` 里拒掉。见 `docs/decisions.md` 第 17 条。
 
+**远端沙盒（SSE）的文件走另一条路：字节端到端。** 沙盒用 MCP 标准内容块返回字节，
+`annotations.audience=["user"]` 表示「给用户」；agent **只认这个字段、不认来源**，由
+循环经渠道投递（`mcp/bash` 的 `export` 工具是第一个这么做的）。投递与 reply 同一道
+`send` 闸门。这条把沙盒与 agent 的耦合从「共享一块磁盘」降成「遵守同一个 MCP 字段」——
+见 `docs/decisions.md` 第 18 条。
+
 ## 闸门与命令
 
 ```bash

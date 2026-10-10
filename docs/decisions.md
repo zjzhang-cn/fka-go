@@ -334,6 +334,39 @@ effect 都是 `send`，**默认关着**；这是整个仓库**唯一的内置工
 
 ---
 
+## 18. 字节端到端：远端沙盒的文件经 MCP 送到渠道
+
+**问题：** 第 17 条的 `reply` 工具收的是**本地路径**，SSE 访问的沙盒在别的机器上，
+文件没有本地路径——`reply__send_file` 在远端沙盒上必然失败。
+
+**决定：** 文件以**字节**贯穿「沙盒 → MCP → agent → 渠道」，本地文件仍走路径。
+
+- 沙盒用 MCP **标准内容块**返回字节：嵌入 `resource` 的 blob（二进制安全）、`image`、
+  `audio`；
+- 意图用 **`annotations.audience=["user"]`** 表达——这是 MCP 规范字段，本义就是「这段
+  内容的预期消费者是谁」；
+- agent **只认这个字段**：audience 含 user 的块由循环经渠道发给用户，其余（图片）仍
+  作为附件喂模型；
+- 渠道出站 `SendMediaParams` 增加 `Data []byte`，iLink 底层 `UploadMedia` 本就收
+  `[]byte`，路径版本只是先读文件再委托。
+
+**为什么这样解耦：** 沙盒与 agent 之间**没有私有约定**——只有 MCP 规范定义的内容类型
+与 audience 字段。agent 不特判来源（不看工具名、不看 server 名），任何 MCP server 返回
+audience=user 的块都能被投递；沙盒也不需要知道渠道、传输、用户。**耦合从「两个进程共享
+一块磁盘」降成「两个进程遵守同一个 MCP 字段」。** 反过来说，agent 里一旦出现
+`if tool == "bash__export"`，这条解耦当场作废——所以它没有。
+
+**新增 bash `export` 工具**（`read` 不动，仍是"给模型看"，不自动外发）。模型要「把文件
+给用户」时用 export；这解决了「模型只是读图却被自动发出去」的错误。
+
+**闸门：** 投递要求 `LLM_TOOL_EFFECTS` 含 `send`（与 reply 同一道闸）。MCP 工具都是
+`external`，不加这道闸，任何被配置的 server 都能让 agent 往用户发东西。
+
+**边界：** export 与 read 同一条路径检查（只读沙盒根内）；大小上限 export 32 MiB、
+agent 侧投递 32 MiB、渠道侧 64 MiB。
+
+---
+
 ## 附：零 CGO 是怎么达成的
 
 盘问时逐个检查过每个模块对 CGO 的需求，最后只剩 SQLite 一个候选，选了纯 Go：
