@@ -222,7 +222,8 @@ type Service interface {
 	ToToolDefs(ctx context.Context, tc Context) ([]llm.ToolDef, error)
 	// Call 执行一次调用。未放行 / 名字错 / 参数非法都转成 OK=false 的一句话
 	Call(ctx context.Context, fullName string, args map[string]any, tc Context) Result
-	// PromptSections 各源要额外写进 system prompt 的段落，按源顺序，已去掉空段
+	// PromptSections 各源要额外写进 system prompt 的段落，按源顺序。段落原样返回，
+	// 去空白与去空段由 prompts.Compose 统一做
 	PromptSections(ctx Context) []string
 	// Close 关闭所有源。由组装根在自己的清理路径里调
 	Close() error

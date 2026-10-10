@@ -254,8 +254,10 @@ func (r *Registry) PromptSections(ctx Context) []string {
 				config.Context{"source": source.ID(), "error": err.Error()})
 			continue
 		}
-		if trimmed := strings.TrimSpace(section); trimmed != "" {
-			sections = append(sections, trimmed)
+		// 空白段不在这里剔除：去空白与去空段统一由 prompts.Compose 负责，
+		// 这里只保证不把空串当成有内容的段落
+		if section != "" {
+			sections = append(sections, section)
 		}
 	}
 
