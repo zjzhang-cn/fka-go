@@ -68,6 +68,20 @@ type Spec struct {
 	Effect     Effect
 }
 
+// Attachment 一段**要送给用户**的字节：文件名、类型、原始数据。
+//
+// 它与 `Images` 的区别是**受众**：Images 是给模型看的（模型把它当图读），
+// Attachment 是给用户的（由循环经渠道发出去）。这个区分来自 MCP 内容块的
+// `annotations.audience`——server 只声明「这是给谁的」，怎么送是 agent 的策略。
+//
+// **原始字节而不是路径**：远端沙盒（SSE 的 MCP server）在别的机器上，文件没有本地
+// 路径，只能以字节穿过 MCP 到达。见 `docs/decisions.md` 里「字节端到端」那条。
+type Attachment struct {
+	Name     string
+	MimeType string
+	Data     []byte
+}
+
 // Result 一次工具调用的结果。
 //
 // OK == false **不是异常**，是要给模型看的一句话（「参数不合法」「没找到」）。
@@ -87,6 +101,11 @@ type Result struct {
 	// 只能装字符串，装不下图片（见 internal/agent 的 runToolCall 与装配点）。
 	// 空 = 这条结果没有图片。
 	Images []llm.ImageAttachment
+	// Deliver 结果里**标注给用户**的附件（MCP 内容块的 audience=user）。
+	//
+	// 与 Images 并列：Images 走「模型看图」，Deliver 走「循环经渠道发给用户」。
+	// 循环是否真的发，取决于是否放行了 send 与新会话是否存在——见 internal/agent。
+	Deliver []Attachment
 }
 
 // OKResult 造一条成功结果。
@@ -140,6 +159,10 @@ type Reply interface {
 	// Image 把一张图片发给当前会话。渠道发不了图片时**调用方退回 File**——
 	// 发成文件比发不出去强
 	Image(ctx context.Context, path string, fileName string) error
+	// FileBytes 发**已在内存里**的文件字节。远端沙盒的文件没有本地路径，只能走这条
+	FileBytes(ctx context.Context, name string, mimeType string, data []byte) error
+	// ImageBytes 发已在内存里的图片字节。渠道发不了图片时**退回 FileBytes**
+	ImageBytes(ctx context.Context, name string, mimeType string, data []byte) error
 }
 
 // Source 一撮工具。实现只需管自己那批，前缀与合并由注册表做。

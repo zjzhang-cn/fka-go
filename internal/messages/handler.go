@@ -298,12 +298,43 @@ func (r *channelReply) File(ctx context.Context, path string, fileName string) e
 	return r.send(ctx, channels.KindFile, path, fileName, "")
 }
 
+// FileBytes 发已在内存里的文件字节。远端沙盒（SSE）的文件走这条——没有本地路径。
+func (r *channelReply) FileBytes(ctx context.Context, name string, mimeType string, data []byte) error {
+	return r.sendBytes(ctx, channels.KindFile, name, mimeType, data)
+}
+
+// ImageBytes 发已在内存里的图片字节。渠道发不了图片就退成文件，与 Image 一致。
+func (r *channelReply) ImageBytes(ctx context.Context, name string, mimeType string, data []byte) error {
+	if r.channel.Capabilities().Image.Send {
+		return r.sendBytes(ctx, channels.KindImage, name, mimeType, data)
+	}
+	return r.sendBytes(ctx, channels.KindFile, name, mimeType, data)
+}
+
 func (r *channelReply) Image(ctx context.Context, path string, fileName string) error {
 	// 渠道发不了图片就退成文件——**发成文件比发不出去强**
 	if r.channel.Capabilities().Image.Send {
 		return r.send(ctx, channels.KindImage, path, fileName, "image/*")
 	}
 	return r.send(ctx, channels.KindFile, path, fileName, "")
+}
+
+// sendBytes 把**字节**交给渠道的发送器。与 send 同一套目标与令牌，只是不落盘。
+func (r *channelReply) sendBytes(ctx context.Context, kind channels.MediaKind, name, mimeType string, data []byte) error {
+	sender, ok := r.channel.Senders().For(kind)
+	if !ok {
+		return fmt.Errorf("渠道 %s 发不了 %s", r.channel.ID(), kind)
+	}
+	_, err := sender(ctx, channels.SendMediaParams{
+		Target: channels.SendTarget{
+			ConversationID: r.message.ConversationID,
+			ReplyToken:     r.message.ReplyToken,
+		},
+		Data:     data,
+		FileName: name,
+		MimeType: mimeType,
+	})
+	return err
 }
 
 // send 把文件交给渠道的发送器。

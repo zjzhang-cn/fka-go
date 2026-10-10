@@ -34,6 +34,14 @@ func (f *fakeReply) Image(ctx context.Context, path, fileName string) error {
 	f.images = append(f.images, path)
 	return nil
 }
+func (f *fakeReply) FileBytes(ctx context.Context, name, mimeType string, data []byte) error {
+	f.files = append(f.files, name)
+	return nil
+}
+func (f *fakeReply) ImageBytes(ctx context.Context, name, mimeType string, data []byte) error {
+	f.images = append(f.images, name)
+	return nil
+}
 
 // newRoot 造一个带一个普通文件的发送根，返回根与那个文件的相对路径。
 func newRoot(t *testing.T) (root, rel string) {
