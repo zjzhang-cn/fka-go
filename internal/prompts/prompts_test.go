@@ -109,7 +109,11 @@ func TestAgent_依据格式只定义一处(t *testing.T) {
 // agentRuneBudget Agent 提示词的长度上限（按字符数）。它每一轮都进上下文，
 // 悄悄膨胀的代价是每次问答都付的 token。上限略高于当前长度，留给真实的改动；
 // 超了说明是有意加长的，应当先想清楚这一段值不值得每轮付费，再调这个数。
-const agentRuneBudget = 1100
+//
+// **2026-10 从 1100 抬到 1800**：加了「创作与程序生成规则（沙箱代码执行特许）」——
+// 让模型在被要求写 Python/PIL 这类程序时可以用预训练知识写代码、经沙盒执行，而不是
+// 被"只能用来源"的规则挡死。这一段是有意加的，换来的是一整类任务的可用性。
+const agentRuneBudget = 1800
 
 // TestAgent_长度不超预算 见 agentRuneBudget。
 func TestAgent_长度不超预算(t *testing.T) {
