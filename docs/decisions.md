@@ -377,10 +377,17 @@ agent 侧投递 32 MiB、渠道侧 64 MiB。
 `POST /messages`。这与接缝一一对应（出站走 Senders、入站产 `InboundMessage`），
 且不引入 WebSocket 那套连接状态管理。
 
-**认证：token → HttpOnly cookie。** `WEB_CHANNEL_TOKEN` 必填，没配就不启用。
-`POST /login` 校验后种一个 HttpOnly cookie：`EventSource` 与 `<img>` 都带不了自定义
-头，只有 cookie 能让 SSE、媒体、POST 三处统一认证，且令牌不进 URL、不进日志。
+**多用户身份：token → PrincipalID，cookie 承载。** 每个用户一个 token，配在用户表
+`<安装根>/web-users.json`（`WEB_CHANNEL_USERS` 可改路径；**含密钥，不入库**）；
+单用户也可只设 `WEB_CHANNEL_TOKEN` + `WEB_CHANNEL_PRINCIPAL` 作为回落。`POST /login`
+用 token 反查 PrincipalID 后种一个 HttpOnly cookie：`EventSource` 与 `<img>` 都带不了
+自定义头，只有 cookie 能让 SSE、媒体、POST 三处统一认证，且令牌不进 URL、不进日志。
 `/messages` 另收 `Authorization: Bearer` 给非浏览器客户端。
+
+身份名的裸值（`alice`）落到 `PrincipalID` 时补成 `web:alice`——命名空间由代码加。
+**内部会话键纳入 principal**（`<principal>:<原始会话>`），所以两个用户各取同名
+conversation id 也不会串历史/记忆/SSE 房间；客户端只看到自己的原始 conversation。
+身份由配置决定，**模型碰不到**（不是工具参数）。
 
 **流式：实现 `EmitterProvider`。** `channels.Emitter` 接口早就存在却无人实现，
 SSE 是它最自然的落点：推理增量与工具调用边发生边推。**最终答案不走 Emitter**——
@@ -400,7 +407,8 @@ SSE 是它最自然的落点：推理增量与工具调用边发生边推。**�
   可改）读，**不用 `go:embed`、不上构建链**。
 
 **开关：** `WEB_CHANNEL_ADDR` 设了才启用（产出 1 个实例）；没设则 0 实例、行为与
-以前一致。`WEB_CHANNEL_PRINCIPAL` 定 `PrincipalID`（默认 `web:default`）。
+以前一致。启用时必须至少配一个用户（用户表，或单用户回落的 `WEB_CHANNEL_TOKEN`），
+否则拒绝启用。
 
 ---
 
