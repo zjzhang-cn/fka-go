@@ -7,7 +7,7 @@
 
 ## 这个仓库是什么
 
-**一个工具调用 agent，加一个微信渠道。** 它**不带任何内置能力，也不拥有任何数据**——
+**一个工具调用 agent，加两个渠道：微信（iLink）与网页（SSE）。** 它**不带任何内置能力，也不拥有任何数据**——
 能力只有两条来源：`<安装根>/mcp.json` 里的 MCP server，和 `<安装根>/skills/` 下的 skill。
 
 > **唯一的例外是 `internal/tools/reply`**：它不是能力，是**输出通道**——把「往当前
@@ -84,6 +84,7 @@ make smoke 的 smoke-bash        # 沙盒 bash 的端到端，**真起 bwrap**
 | **消息层** | `internal/messages` | 17 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号分片、账号间并行**；身份缺失就拒答；**回话带上工具那一步的 ctx**；发不出去只记日志、不发第二条 |
 | **技能源** | `internal/tools/skills` | 21 | **无条件注册**（目录空不藏工具）；极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录时 list 返 `[]` 而 load 说清放哪 |
 | **渠道接缝** | `internal/channels` | 16 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；可选能力靠**类型断言**而不是 `ok=false`；**契约上每个方法都有活着的调用方**（`contract_test.go`） |
+| **网页渠道（SSE）** | `internal/channels/web` | 15 | SSE 收 + POST 发；**token→HttpOnly cookie 认证**（EventSource/`<img>` 带不了头）；会话 id 校验（进 SessionKey/历史文件名）；**实现 EmitterProvider**（流式推 reasoning/tool，**最终答案走 Senders.Text、Answer 置空避免重复**）；出站媒体内存暂存 + `/files/{id}`；静态目录缺失给说明不 500；未配置不产实例、有地址没令牌拒绝启用 |
 | **记忆 server（边界 + 工具层）** | `mcp/memory` | 7 | `mcp/memory/**` 不许 import 树外任何包（编译器管不到，由测试守）；是 `main` 包；只认自己那张表；**参数按声明读**（`limit` 是 number 就得用 `GetInt`）；**别人的 private 不进结果** |
 | **记忆存储 + 迁移** | `mcp/memory/internal/store` | 17 | **认领老库 v0→v1，一行不动**；认领失败**绝不重建**；共用库时只认自己那张表；**库比代码新要拒绝启动**；权限过滤在 WHERE、关键词之间是「且」、`%`/`_` 要转义 |
 | **沙盒 bash server** | `mcp/bash` | 32 | **bwrap 真隔离**：`/` 只读、只有沙盒根可写、独立网络/PID/IPC/UTS/user；**找不到 bwrap 拒绝启动**（不静默降到不隔离）；cwd 词法+符号链接双检；超时杀整进程组；命令首词策略**是护栏不是墙**（`direct` 档只固定 cwd）；**read 工具**与 `@引用` 同语义、经 MCP 内容块把沙盒文件交给模型（文本 text、图片 `type:"image"`、音频 `type:"audio"`、其余二进制元信息，同一套越界检查）；**export 工具**把文件作为 `audience=["user"]` 的嵌入资源返回，agent 只认该字段、经渠道发给用户（字节端到端，远端 SSE 沙盒也成立）；MCP 客户端识别全部内容类型（text/image/audio/resource/resource_link）与 `annotations.audience`，图片随消息发送、其余作文字元信息 |
@@ -164,7 +165,7 @@ make smoke 的 smoke-bash        # 沙盒 bash 的端到端，**真起 bwrap**
 | 1 | **真机验证** | 一个已登录的账号 + `docs/real-machine-test.md`（**先写它**） | 扫码 → 收一条 → 回一条 → 发一个文件。**协议层离线测试覆盖不到的东西** |
 | 2 | ~~**提示词用例**~~ **已完成**（`a92f3cf`） | — | `internal/prompts` 现在钉住「工具参数真实性」「拒答话术」「注入防护」与 `Compose` 的拼装形状 |
 | 3 | **运维端口** | 无 | 状态 / 上下文 / 扫码登录三件事的 CLI 或 HTTP 出口（`Provider.Ops()` 已有，实现还没接）。**`internal/channels/contract_test.go` 的 `pendingConsumers` 里 `Status` 那条记的就是这一项** |
-| 4 | **第二个渠道** | 无 | 加一个 `Provider` 就够，**接缝与业务层不许动**（`internal/channels` 的边界测试会挡住偷懒的实现）。必填的接口已经从 11 个方法收到 8 个，可选能力靠类型断言 |
+| 4 | ~~**第二个渠道**~~ **已完成**（网页/SSE，`internal/channels/web`） | — | 加一个 `Provider` 就够，**接缝与业务层未改一行**。实现了可选能力 `EmitterProvider`（流式回显），认证走 token→HttpOnly cookie，见 `decisions.md` 第 19 条 |
 
 **做第 1 项之前先写 `docs/real-machine-test.md`**：现在 `make real-check` 打印的那个
 文件名背后什么都没有，而「该看到什么」只有真机跑的人知道——**先记下来再跑第二次**。

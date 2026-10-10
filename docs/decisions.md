@@ -367,6 +367,41 @@ agent 侧投递 32 MiB、渠道侧 64 MiB。
 
 ---
 
+## 19. 第二个渠道：网页（SSE）
+
+**决定：** 新增 `internal/channels/web`，浏览器经 **SSE 收、POST 发**。这是
+`port-plan.md` 待办 #4 说的「第二个渠道」——**接缝与业务层一行未改**，只加了一个
+`Provider`，在 `cmd/fka/serve.go:channelProviders()` 里多一行。
+
+**用 SSE + POST，不用 WebSocket：** SSE 只能服务端→客户端，客户端→服务端另给
+`POST /messages`。这与接缝一一对应（出站走 Senders、入站产 `InboundMessage`），
+且不引入 WebSocket 那套连接状态管理。
+
+**认证：token → HttpOnly cookie。** `WEB_CHANNEL_TOKEN` 必填，没配就不启用。
+`POST /login` 校验后种一个 HttpOnly cookie：`EventSource` 与 `<img>` 都带不了自定义
+头，只有 cookie 能让 SSE、媒体、POST 三处统一认证，且令牌不进 URL、不进日志。
+`/messages` 另收 `Authorization: Bearer` 给非浏览器客户端。
+
+**流式：实现 `EmitterProvider`。** `channels.Emitter` 接口早就存在却无人实现，
+SSE 是它最自然的落点：推理增量与工具调用边发生边推。**最终答案不走 Emitter**——
+它经 `Senders.Text` 送出，`Emitter.Answer` 必须置空，否则同一份文本会推两次。
+
+**已接受的取舍：**
+- **单账号**（`AccountID = "web"`）。接缝按账号分片，所以**所有 web 会话串行执行**。
+  要多用户并发得改成「一个用户一个账号实例」，那一步只动 provider。
+- **File/Image 只发不收**（`receive=false`）。业务层没有入站媒体的消费者
+  （收到媒体会如实拒答，见 `internal/messages`），声明能收却没有那条路就是
+  「声明一个跑不了的能力」。等有落点再补 upload。
+- **出站媒体走内存暂存 + `GET /files/{id}`**（10 分钟 TTL、64 MiB 上限），SSE 事件
+  只给相对 URL，不内联 base64。
+- **前端不打包**：`web/` 是仓库里的源码，运行期从 `<安装根>/web`（`WEB_CHANNEL_STATIC`
+  可改）读，**不用 `go:embed`、不上构建链**。
+
+**开关：** `WEB_CHANNEL_ADDR` 设了才启用（产出 1 个实例）；没设则 0 实例、行为与
+以前一致。`WEB_CHANNEL_PRINCIPAL` 定 `PrincipalID`（默认 `web:default`）。
+
+---
+
 ## 附：零 CGO 是怎么达成的
 
 盘问时逐个检查过每个模块对 CGO 的需求，最后只剩 SQLite 一个候选，选了纯 Go：
