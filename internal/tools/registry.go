@@ -25,7 +25,7 @@ const toolResultLogChars = 200
 
 var sourceIDIllegal = regexp.MustCompile(`[^a-z0-9_]`)
 
-// registry 把若干 Source 合成**一张给模型看的工具表**。
+// Registry 把若干 Source 合成**一张给模型看的工具表**。
 //
 // ## 四件事，都只做一次
 //
@@ -42,7 +42,7 @@ var sourceIDIllegal = regexp.MustCompile(`[^a-z0-9_]`)
 // 一次问答开始时就 Tools 一次，整轮用同一张表。中途某个源变了（比如技能被删）
 // 会让「模型看到的名字」与「执行时的名字」对不上——那是最难查的一类错。
 // Use 之后缓存作废，下一次 Tools 重新构建。
-type registry struct {
+type Registry struct {
 	mu      sync.Mutex
 	sources []Source
 	policy  Policy
@@ -60,17 +60,20 @@ type boundTool struct {
 	spec   Spec
 }
 
+// 编译期保证 *Registry 满足 Service（返回具体类型后，这一行替代了原来的返回值约束）。
+var _ Service = (*Registry)(nil)
+
 // NewRegistry 造注册表。policy 决定哪些 effect 的工具会被交给模型——**默认只读**，
 // 与 policy.go 的默认一致：少给一个工具不会出错，多给一个会。
-func NewRegistry(initial []Source, policy Policy) Service {
-	return &registry{
+func NewRegistry(initial []Source, policy Policy) *Registry {
+	return &Registry{
 		sources: append([]Source(nil), initial...),
 		policy:  policy,
 		blocked: map[string]Effect{},
 	}
 }
 
-func (r *registry) Use(source Source) {
+func (r *Registry) Use(source Source) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sources = append(r.sources, source)
@@ -78,13 +81,13 @@ func (r *registry) Use(source Source) {
 	r.built = false
 }
 
-func (r *registry) Sources() []Source {
+func (r *Registry) Sources() []Source {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]Source(nil), r.sources...)
 }
 
-func (r *registry) Tools(ctx context.Context, tc Context) ([]RegisteredTool, error) {
+func (r *Registry) Tools(ctx context.Context, tc Context) ([]RegisteredTool, error) {
 	if err := r.ensure(ctx, tc); err != nil {
 		return nil, err
 	}
@@ -93,7 +96,7 @@ func (r *registry) Tools(ctx context.Context, tc Context) ([]RegisteredTool, err
 	return append([]RegisteredTool(nil), r.ordered...), nil
 }
 
-func (r *registry) ToToolDefs(ctx context.Context, tc Context) ([]llm.ToolDef, error) {
+func (r *Registry) ToToolDefs(ctx context.Context, tc Context) ([]llm.ToolDef, error) {
 	tools, err := r.Tools(ctx, tc)
 	if err != nil {
 		return nil, err
@@ -115,7 +118,7 @@ func (r *registry) ToToolDefs(ctx context.Context, tc Context) ([]llm.ToolDef, e
 // 的代价是一次 tools/list；对 MCP 源那是一次进程内 JSON-RPC 往返，家用规模下
 // 毫秒级，换来的是「技能目录被改动后下一轮立刻生效」——而缓存版要等到重启。
 // 真嫌慢就在这里加 TTL 缓存，**别把快照摊回到调用方**。
-func (r *registry) ensure(ctx context.Context, tc Context) error {
+func (r *Registry) ensure(ctx context.Context, tc Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.built {
@@ -183,7 +186,7 @@ func (r *registry) ensure(ctx context.Context, tc Context) error {
 	return nil
 }
 
-func (r *registry) Call(ctx context.Context, fullName string, args map[string]any, tc Context) Result {
+func (r *Registry) Call(ctx context.Context, fullName string, args map[string]any, tc Context) Result {
 	// 本轮要用的表是**进循环时快照的那张**：中途某个源变了会让「模型看到的名字」
 	// 与「执行时的名字」对不上。快照不存在时（直调注册表的测试）现建。
 	_ = r.ensure(ctx, tc)
@@ -240,7 +243,7 @@ func (r *registry) Call(ctx context.Context, fullName string, args map[string]an
 	return result
 }
 
-func (r *registry) PromptSections(ctx Context) []string {
+func (r *Registry) PromptSections(ctx Context) []string {
 	sections := make([]string, 0, len(r.sources))
 
 	for _, source := range r.Sources() {
@@ -259,7 +262,7 @@ func (r *registry) PromptSections(ctx Context) []string {
 	return sections
 }
 
-func (r *registry) Close() error {
+func (r *Registry) Close() error {
 	for _, source := range r.Sources() {
 		if err := source.Close(); err != nil {
 			config.Log().Warn(config.TypeTOOL, "工具源关闭失败",
