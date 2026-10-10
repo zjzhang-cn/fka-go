@@ -48,7 +48,7 @@ func exportedResource(t *testing.T, result *mcp.CallToolResult) mcp.BlobResource
 func TestExport_返回给用户的资源块(t *testing.T) {
 	s := newTestSandbox(t)
 	writeFile(t, s, "报告.txt", []byte("hello 用户"))
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	result, err := impl.handleExport(context.Background(), callRequest(map[string]any{"path": "报告.txt"}))
 	if err != nil {
@@ -71,7 +71,7 @@ func TestExport_返回给用户的资源块(t *testing.T) {
 // TestExport_越界被拒 发送路径与 read 同一条边界：只认沙盒根下的相对路径。
 func TestExport_越界被拒(t *testing.T) {
 	s := newTestSandbox(t)
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	for _, bad := range []string{"../secret.txt", "/etc/passwd"} {
 		result, err := impl.handleExport(context.Background(), callRequest(map[string]any{"path": bad}))
@@ -90,7 +90,7 @@ func TestExport_目录被拒(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(s.Root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	result, _ := impl.handleExport(context.Background(), callRequest(map[string]any{"path": "sub"}))
 	if !result.IsError {
@@ -102,7 +102,7 @@ func TestExport_目录被拒(t *testing.T) {
 func TestExport_超过上限被拒(t *testing.T) {
 	s := newTestSandbox(t)
 	writeFile(t, s, "big.bin", make([]byte, 64))
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	original := ExportMaxBytes
 	ExportMaxBytes = 16

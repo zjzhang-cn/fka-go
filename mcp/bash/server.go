@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -34,16 +36,30 @@ const (
 	ToolExport = "export"
 )
 
+// metaPrincipalKey agent 经 MCP `_meta` 传来的调用方身份键。
+//
+// **必须与 agent 侧 internal/tools/mcp 的同名常量逐字一致**——bash 自给自足
+// （边界测试不许 import 树内别的包），所以这串字面量在两边各写一份，改动要一起改。
+const metaPrincipalKey = "fka/principal"
+
 // bashServer 工具实现。**只有本目录内的 main 与测试用得到**。
+//
+// ## 多租户：每个 principal 一个沙盒根
+//
+// `opts.Root` 是**基根**；真正跑命令的根是 `<基根>/<safe(principal)>`，按需创建。
+// 身份从 MCP `_meta` 来（agent 注入，模型改不了）——没有身份就 **fail-closed**，
+// 绝不落到共享目录。
 type bashServer struct {
-	sandbox *Sandbox
-	// execLog 执行日志。**可为 nil**（测试里不关心落盘时）：nil 即不记。
+	opts    Options
 	execLog *ExecLog
+
+	mu        sync.Mutex
+	sandboxes map[string]*Sandbox
 }
 
-// register 把工具挂到 MCP server 上。sandbox 已按配置建好。
-func register(mcpServer *server.MCPServer, sandbox *Sandbox, execLog *ExecLog) {
-	s := &bashServer{sandbox: sandbox, execLog: execLog}
+// register 把工具挂到 MCP server 上。`opts.Root` 是基根。
+func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
+	s := &bashServer{opts: opts, execLog: execLog, sandboxes: map[string]*Sandbox{}}
 
 	mcpServer.AddTool(mcp.NewTool(ToolRun,
 		mcp.WithDescription(
@@ -85,6 +101,76 @@ func register(mcpServer *server.MCPServer, sandbox *Sandbox, execLog *ExecLog) {
 	), s.handleExport)
 }
 
+// ── 多租户：身份 → 沙盒 ─────────────────────────────────
+
+// sandboxOf 取出这次调用的沙盒。**fail-closed**：拿不到身份就拒绝，绝不落到共享
+// 目录——那等于「绕过 agent 就全共享」，是多租户下最坏的失败形态。
+func (s *bashServer) sandboxOf(request mcp.CallToolRequest) (*Sandbox, *mcp.CallToolResult) {
+	principal := principalOf(request)
+	if principal == "" {
+		return nil, fail("这次调用没带调用方身份（_meta." + metaPrincipalKey + "），已拒绝执行。")
+	}
+	sb, err := s.sandboxFor(principal)
+	if err != nil {
+		log.Log().Warn("建租户沙盒失败", log.Context{"principal": principal, "error": err.Error()})
+		return nil, fail("建租户沙盒失败：" + err.Error())
+	}
+	return sb, nil
+}
+
+// sandboxFor 取该租户的沙盒，没有就**按需建**（懒创建，缓存起来）。
+func (s *bashServer) sandboxFor(principal string) (*Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sb, ok := s.sandboxes[principal]; ok {
+		return sb, nil
+	}
+	opts := s.opts
+	opts.Root = filepath.Join(s.opts.Root, safeSegment(principal))
+	sb, err := NewSandbox(opts)
+	if err != nil {
+		return nil, err
+	}
+	s.sandboxes[principal] = sb
+	return sb, nil
+}
+
+// principalOf 从 MCP `_meta` 取调用方身份。没有就返回空串。
+func principalOf(request mcp.CallToolRequest) string {
+	if request.Params.Meta == nil {
+		return ""
+	}
+	raw, ok := request.Params.Meta.AdditionalFields[metaPrincipalKey]
+	if !ok {
+		return ""
+	}
+	value, _ := raw.(string)
+	return strings.TrimSpace(value)
+}
+
+// safeSegment 把 principal 压成能安全当目录名的形式：非法字符换 `_`，长度设限。
+//
+// 与 internal/llm 那份同名同规则（那边给历史文件用），但**本包不能 import 它**
+// （自给自足）——所以各写一份，规则要保持一致。
+func safeSegment(value string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			return r
+		default:
+			return '_'
+		}
+	}, value)
+	cleaned = strings.Trim(cleaned, ".")
+	if cleaned == "" {
+		cleaned = "_unknown"
+	}
+	if len(cleaned) > 64 {
+		cleaned = cleaned[:64]
+	}
+	return cleaned
+}
+
 func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	command := strings.TrimSpace(request.GetString("command", ""))
 	if command == "" {
@@ -96,8 +182,14 @@ func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest)
 	// 于是超时参数会永远取默认值，而界面上看不出任何异常（见 mcp/memory 的同款坑）。
 	timeoutSec := request.GetInt("timeout_sec", 0)
 
+	sb, problem := s.sandboxOf(request)
+	if problem != nil {
+		return problem, nil
+	}
+	principal := principalOf(request)
+
 	cwd := request.GetString("cwd", "")
-	result, err := s.sandbox.Run(ctx, RunRequest{
+	result, err := sb.Run(ctx, RunRequest{
 		Command: command,
 		Cwd:     cwd,
 		Timeout: time.Duration(timeoutSec) * time.Second,
@@ -106,11 +198,12 @@ func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest)
 		// 策略拒绝 / cwd 越界 / 启动失败：这是**没能跑起来**，不是命令跑完的退出码。
 		// 也照样记一条执行日志——「模型试过什么但被挡下」正是审计要看的。
 		log.Log().Warn("命令被拒或没能启动", log.Context{"error": err.Error()})
-		s.recordExec(execRecord{Cwd: cwd, Command: command, Error: err.Error()})
+		s.recordExec(execRecord{Principal: principal, Cwd: cwd, Command: command, Error: err.Error()})
 		return fail(err.Error()), nil
 	}
 
 	rec := execRecord{
+		Principal:  principal,
 		Cwd:        cwd,
 		Command:    command,
 		TimedOut:   result.TimedOut,
@@ -149,7 +242,11 @@ func (s *bashServer) handleRead(ctx context.Context, request mcp.CallToolRequest
 		return fail("path 是必填的：要读沙盒里的哪个文件。"), nil
 	}
 
-	file, err := s.sandbox.ReadFile(path)
+	sb, problem := s.sandboxOf(request)
+	if problem != nil {
+		return problem, nil
+	}
+	file, err := sb.ReadFile(path)
 	if err != nil {
 		log.Log().Warn("读沙盒文件失败", log.Context{"error": err.Error()})
 		return fail(err.Error()), nil
@@ -205,7 +302,11 @@ func (s *bashServer) handleExport(ctx context.Context, request mcp.CallToolReque
 		return fail("path 是必填的：要发给用户的沙盒文件。"), nil
 	}
 
-	path, err := s.sandbox.ResolveFile(raw)
+	sb, problem := s.sandboxOf(request)
+	if problem != nil {
+		return problem, nil
+	}
+	path, err := sb.ResolveFile(raw)
 	if err != nil {
 		return fail(err.Error()), nil
 	}

@@ -26,7 +26,7 @@ func writeFile(t *testing.T, s *Sandbox, name string, data []byte) {
 func TestRead_文本返回text内容块(t *testing.T) {
 	s := newTestSandbox(t)
 	writeFile(t, s, "note.txt", []byte("hello sandbox"))
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	result, err := impl.handleRead(context.Background(), callRequest(map[string]any{"path": "note.txt"}))
 	if err != nil {
@@ -60,7 +60,7 @@ func TestRead_图片返回image节点(t *testing.T) {
 	}
 	writeFile(t, s, "pic.png", buf.Bytes())
 
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 	result, err := impl.handleRead(context.Background(), callRequest(map[string]any{"path": "pic.png"}))
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestRead_音频返回audio节点(t *testing.T) {
 	s := newTestSandbox(t)
 	// net/http 的 sniff 认 "ID3" 前缀为 audio/mpeg
 	writeFile(t, s, "song.mp3", []byte("ID3\x03\x00\x00\x00\x00\x00"))
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	result, err := impl.handleRead(context.Background(), callRequest(map[string]any{"path": "song.mp3"}))
 	if err != nil {
@@ -113,7 +113,7 @@ func TestRead_音频返回audio节点(t *testing.T) {
 func TestRead_二进制只回元信息(t *testing.T) {
 	s := newTestSandbox(t)
 	writeFile(t, s, "blob.bin", []byte{0, 1, 2, 3, 0, 4})
-	impl := &bashServer{sandbox: s}
+	impl := newTestServer(s)
 
 	result, err := impl.handleRead(context.Background(), callRequest(map[string]any{"path": "blob.bin"}))
 	if err != nil {
@@ -183,7 +183,7 @@ func TestRead_目录被拒(t *testing.T) {
 
 // TestRead_缺path要拒 没有路径就不知道读什么——回一句给模型看的话。
 func TestRead_缺path要拒(t *testing.T) {
-	impl := &bashServer{sandbox: newTestSandbox(t)}
+	impl := newTestServer(newTestSandbox(t))
 
 	result, err := impl.handleRead(context.Background(), callRequest(map[string]any{}))
 	if err != nil {

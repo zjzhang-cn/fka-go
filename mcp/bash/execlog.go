@@ -40,7 +40,9 @@ const execLogPrefix = "bash-exec-"
 // ExitCode 用指针：被策略拒 / cwd 越界 / 启动失败时命令**根本没跑**，此时
 // exit_code 该整个缺席，而不是伪装成 0。
 type execRecord struct {
-	Time       string `json:"time"`
+	Time string `json:"time"`
+	// Principal 这条命令是哪个租户跑的。**审计要多租户下分得清是谁**。
+	Principal  string `json:"principal,omitempty"`
 	Cwd        string `json:"cwd,omitempty"`
 	Command    string `json:"command"`
 	ExitCode   *int   `json:"exit_code,omitempty"`

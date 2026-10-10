@@ -93,7 +93,7 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 
 	mcpServer := server.NewMCPServer("fka-bash", "0.1.0",
 		server.WithToolCapabilities(true))
-	register(mcpServer, newTestSandbox(t), nil)
+	register(mcpServer, Options{Root: newTestSandbox(t).Root}, nil)
 
 	httpServer := httptest.NewServer(server.NewSSEServer(mcpServer))
 	t.Cleanup(httpServer.Close)
@@ -133,10 +133,12 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 		t.Fatalf("该看到 run 与 read，实际 %v", names)
 	}
 
+	// 多租户下缺身份会被拒，所以调用要带 _meta 身份（与 agent 注入的键一致）
 	result, err := client.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      ToolRun,
 			Arguments: map[string]any{"command": "echo hello-over-sse"},
+			Meta:      mcp.NewMetaFromMap(map[string]any{metaPrincipalKey: testPrincipal}),
 		},
 	})
 	if err != nil {

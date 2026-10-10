@@ -41,10 +41,15 @@
 //	BASH_MCP_TRANSPORT      等价于 --transport
 //	BASH_MCP_ADDR           等价于 --addr
 //
-// ## 默认沙盒根是**自己的**目录
+// ## 默认沙盒根是**自己的**目录，且**每个租户一个子目录**
 //
 // 默认 `<安装根>/sandbox`。命令的 cwd 固定在这棵树里，HOME 与 TMPDIR 也指到这里，
 // 于是 `~`、临时文件都落在沙盒内。
+//
+// **多租户**：agent 把调用方 `PrincipalID` 经 MCP `_meta`（键 `fka/principal`）注入
+// 每次工具调用，server 据此把每个身份的根切成 `<基根>/<safe(principal)>`（按需建）。
+// 身份是 agent 注入的、**模型改不了**；**缺身份 fail-closed**，不落共享目录。
+// 见 server.go 的 sandboxFor / sandboxOf。
 //
 // ## 默认用 Bubblewrap 做真实隔离
 //
@@ -120,7 +125,10 @@ func run(args []string) int {
 	// **不要**在这个进程里往 stdout 打任何东西。stdio 档的信号由 SDK 自己接
 	// （ServeStdio 收到 SIGINT / SIGTERM 会返回 context.Canceled）；HTTP 档没这个
 	// 待遇，信号在 serveHTTP 里单独接。两档都刻意把干净停机返成 context.Canceled。
-	sandbox, err := NewSandbox(Options{
+	// opts.Root 是**基根**；每个 principal 的实际根是 `<基根>/<safe(principal)>`，
+	// 由 server 按需创建（见 server.go 的 sandboxFor）。这里先建一个基沙盒，
+	// 用途是**启动期校验**：bwrap 找不到、根不合法都要当场拒绝启动，而不是等第一条命令。
+	opts := Options{
 		Root:         resolveRoot(args),
 		Allow:        sandboxAllow(args),
 		Deny:         sandboxDeny(args),
@@ -128,7 +136,8 @@ func run(args []string) int {
 		Bwrap:        firstNonEmpty(flagValue(args, "--bwrap"), os.Getenv("BASH_BWRAP")),
 		BwrapArgs:    strings.Fields(os.Getenv("BASH_BWRAP_ARGS")),
 		ShareNetwork: shareNetwork(args),
-	})
+	}
+	sandbox, err := NewSandbox(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bash 沙盒起不来："+err.Error())
 		return 1
@@ -148,7 +157,7 @@ func run(args []string) int {
 
 	mcpServer := server.NewMCPServer("fka-bash", "0.1.0",
 		server.WithToolCapabilities(true))
-	register(mcpServer, sandbox, execLog)
+	register(mcpServer, opts, execLog)
 
 	transport := resolveTransport(args)
 	if transport == "" {

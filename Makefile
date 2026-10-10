@@ -321,10 +321,12 @@ mem_search_owner = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name
 mem_search_other = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_memories","arguments":{"query":"冒烟","viewer_wxid":"wx-other"}}}
 
 # bash 沙盒的 JSON-RPC 报文。工具名是 `run`，前缀由上层注册表加。
-bash_run    = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd -P && printf sandbox-ok"}}}
-bash_escape = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd","cwd":"../.."}}}
-bash_ro     = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run","arguments":{"command":"printf x > /etc/leak-fka-smoke 2>/dev/null || echo write-blocked"}}}
-bash_read   = {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read","arguments":{"path":"note.txt"}}}
+# 多租户：每次调用都带 _meta 身份。**缺身份会被 fail-closed 拒掉**，
+# 而 smoke 是直接喂 JSON-RPC（不经 agent），所以身份得在这几帧里写上。
+bash_run    = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd -P && printf sandbox-ok"},"_meta":{"fka/principal":"smoke"}}}
+bash_escape = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd","cwd":"../.."},"_meta":{"fka/principal":"smoke"}}}
+bash_ro     = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run","arguments":{"command":"printf x > /etc/leak-fka-smoke 2>/dev/null || echo write-blocked"},"_meta":{"fka/principal":"smoke"}}}
+bash_read   = {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read","arguments":{"path":"note.txt"},"_meta":{"fka/principal":"smoke"}}}
 
 # smoke-memory 记忆 server 的**端到端**闸门：A 进程记、B 进程查回来、再验权限边界。
 #
@@ -400,10 +402,11 @@ smoke-bash: build
 		echo "$(BOLD)✗$(RESET) 没装 bubblewrap，bash 沙盒起不来。装：apt install bubblewrap"; \
 		exit 1; \
 	fi
-	@rm -rf $(smoke_dir)/bash; mkdir -p $(smoke_dir)/bash/root
+	@rm -rf $(smoke_dir)/bash; mkdir -p $(smoke_dir)/bash/root/smoke
 	@# 先在宿主上种一个文件给 read 读。**不在同一条流里 run 写完再 read**：SDK 并发
 	@# 处理请求，两条挨着发会赛跑（read 可能先跑到），而 read 本身的行为不该赌这个时序。
-	@printf 'file-content' > $(smoke_dir)/bash/root/note.txt
+	@# 路径是多租户子目录：下面几帧的 _meta 身份是 smoke，根是 <基根>/smoke。
+	@printf 'file-content' > $(smoke_dir)/bash/root/smoke/note.txt
 	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(bash_run)' '$(bash_escape)' '$(bash_ro)' '$(bash_read)'; sleep 2; } \
 		| $(FKA_BASH) --root $(smoke_dir)/bash/root \
 		> $(smoke_dir)/bash/out.json 2> $(smoke_dir)/bash/out.err

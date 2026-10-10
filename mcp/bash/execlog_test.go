@@ -116,7 +116,7 @@ func TestRun_执行后落一条日志(t *testing.T) {
 	requireBash(t)
 
 	dir := t.TempDir()
-	impl := &bashServer{sandbox: newTestSandbox(t), execLog: NewExecLog(dir)}
+	impl := withExecLog(newTestServer(newTestSandbox(t)), NewExecLog(dir))
 	t.Cleanup(func() { _ = impl.execLog.Close() })
 
 	if _, err := impl.handleRun(context.Background(),
@@ -137,7 +137,7 @@ func TestRun_执行后落一条日志(t *testing.T) {
 // 的「模型试过什么但被挡下」。
 func TestRun_被拒也落一条日志(t *testing.T) {
 	dir := t.TempDir()
-	impl := &bashServer{sandbox: newTestSandbox(t), execLog: NewExecLog(dir)}
+	impl := withExecLog(newTestServer(newTestSandbox(t)), NewExecLog(dir))
 	t.Cleanup(func() { _ = impl.execLog.Close() })
 
 	if _, err := impl.handleRun(context.Background(),

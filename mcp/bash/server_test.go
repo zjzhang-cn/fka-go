@@ -12,12 +12,37 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// testPrincipal 测试用的租户身份。多租户下缺身份会被拒，所以默认请求都带它。
+const testPrincipal = "test"
+
 // callRequest 造一个工具调用请求。**数字参数用 float64**：JSON 解出来的数字就是
 // 这个类型，用 `"1"` 去测会把「声明是 number 却按 string 读」那个 bug 测没。
 func callRequest(args map[string]any) mcp.CallToolRequest {
+	return callRequestAs(testPrincipal, args)
+}
+
+// callRequestAs 指定身份（空串 = 不带身份，用于验 fail-closed）。
+func callRequestAs(principal string, args map[string]any) mcp.CallToolRequest {
 	var request mcp.CallToolRequest
 	request.Params.Arguments = args
+	if principal != "" {
+		request.Params.Meta = mcp.NewMetaFromMap(map[string]any{metaPrincipalKey: principal})
+	}
 	return request
+}
+
+// newTestServer 造一个把 testPrincipal **直接映射到 s** 的 server：用例把文件种在
+// s.Root 里，所以让 test 租户的根就是 s.Root（不走 `<根>/<user>` 那一层）。
+func newTestServer(s *Sandbox) *bashServer {
+	return &bashServer{
+		opts:      Options{Root: s.Root},
+		sandboxes: map[string]*Sandbox{testPrincipal: s},
+	}
+}
+
+func withExecLog(s *bashServer, execLog *ExecLog) *bashServer {
+	s.execLog = execLog
+	return s
 }
 
 func resultText(t *testing.T, result *mcp.CallToolResult) string {
@@ -30,7 +55,7 @@ func resultText(t *testing.T, result *mcp.CallToolResult) string {
 
 // TestRun工具_缺command要拒 没有命令就没得跑——回一句给模型看的话，不抛异常。
 func TestRun工具_缺command要拒(t *testing.T) {
-	impl := &bashServer{sandbox: newTestSandbox(t)}
+	impl := newTestServer(newTestSandbox(t))
 
 	result, err := impl.handleRun(context.Background(), callRequest(map[string]any{}))
 	if err != nil {
@@ -49,7 +74,7 @@ func TestRun工具_缺command要拒(t *testing.T) {
 // 用 `sleep 5` + `timeout_sec: 1` 钉住：读对了 1 秒就超时，读错了会等满 5 秒。
 func TestRun工具_超时参数按数字读(t *testing.T) {
 	requireBash(t)
-	impl := &bashServer{sandbox: newTestSandbox(t)}
+	impl := newTestServer(newTestSandbox(t))
 
 	result, err := impl.handleRun(context.Background(), callRequest(map[string]any{
 		"command":     "sleep 5",
@@ -69,7 +94,7 @@ func TestRun工具_超时参数按数字读(t *testing.T) {
 // TestRun工具_成功结果不带IsError 命令跑完、退出码 0，是正常结果。
 func TestRun工具_成功结果不带IsError(t *testing.T) {
 	requireBash(t)
-	impl := &bashServer{sandbox: newTestSandbox(t)}
+	impl := newTestServer(newTestSandbox(t))
 
 	result, err := impl.handleRun(context.Background(), callRequest(map[string]any{
 		"command": `printf sandbox-ok`,
@@ -87,7 +112,7 @@ func TestRun工具_成功结果不带IsError(t *testing.T) {
 
 // TestRun工具_策略拒绝是IsError 被策略拦下的命令是「没能跑起来」，该让模型看到原因。
 func TestRun工具_策略拒绝是IsError(t *testing.T) {
-	impl := &bashServer{sandbox: newTestSandbox(t)}
+	impl := newTestServer(newTestSandbox(t))
 
 	result, err := impl.handleRun(context.Background(), callRequest(map[string]any{
 		"command": "shutdown -h now",
