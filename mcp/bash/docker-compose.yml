@@ -1,0 +1,43 @@
+# fka-bash 沙盒容器编排：一条命令起一个「已经装好 python3 / nodejs 的隔离沙盒」。
+#
+#   make docker-bash                                    # 先交叉编译并构建镜像
+#   docker compose -f mcp/bash/docker-compose.yml up -d
+#
+# 镜像里不编译 fka-bash，build 段要求 bin/fka-bash-linux-<arch> 已存在（见 Dockerfile）。
+# 所以别直接 `up --build` 而不先跑 `make docker-bash`。
+#
+# ## 边界在哪
+#
+# 宿主部署时用 bwrap 起命名空间沙盒；这里**容器就是沙盒**，容器里走 direct 模式。
+# 所以下线不能松：read_only 根文件系统 + 只给 /sandbox 可写 + cap_drop ALL +
+# no-new-privileges，把「模型 `cd /` 然后乱写」也一并关在容器只读根里。
+#
+# ## 网络
+#
+# MCP 用 HTTP 传输，agent 必须能连到 8080——所以容器**默认是通网的**（与 bwrap
+# 「默认独立网络」不同）。若本部署允许模型联网装包，设 BASH_ALLOW_PIP=1 让工具说明
+# 与事实一致；若要断掉外网，改用 `network_mode: none` 并让 agent 经别的方式连（或
+# 仅保留一个只连 agent 的内部网络）。
+services:
+  bash:
+    build:
+      context: ../..
+      dockerfile: mcp/bash/Dockerfile
+    image: fka-bash:latest
+    ports:
+      # 只发布到宿主回环：这是个能执行命令的 server，别默认暴露给同网段。
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # 每个租户的根是 /sandbox/<safe(principal)>，全在这两个卷里。
+      - ./sandbox:/sandbox
+      # 审计日志在沙盒外（模型擦不掉）。bwrap 模式下由只读根保证，这里靠分卷。
+      - ./logs:/logs
+    # 容器即边界：根只读，只留沙盒与日志两处可写，/tmp 走内存。
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

@@ -115,6 +115,20 @@ rebuild: ## 强制重建（改了依赖之后用）
 	@rm -f $(FKA) $(FKA_MEMORY) $(FKA_BASH)
 	@$(MAKE) --no-print-directory build
 
+# ── 容器 ────────────────────────────────────────────────
+#
+# 沙盒容器。**镜像里不编译**（见 mcp/bash/Dockerfile）：先把 fka-bash 交叉编译成
+# linux 静态二进制，再 COPY 进去。两种架构都编，BuildKit 的 TARGETARCH 自动挑。
+DOCKER_IMAGE ?= fka-bash:latest
+
+.PHONY: docker-bash
+docker-bash: ## 交叉编译 fka-bash(linux/amd64,arm64) 并构建沙盒镜像
+	@mkdir -p $(BIN)
+	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-bash-linux-amd64 ./mcp/bash
+	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-bash-linux-arm64 ./mcp/bash
+	docker build -f mcp/bash/Dockerfile -t $(DOCKER_IMAGE) .
+	@echo "$(BOLD)✓$(RESET) $(DOCKER_IMAGE)"
+
 .PHONY: version
 version: ## 版本信息（进二进制的那份）
 	@echo "version    $(VERSION)"

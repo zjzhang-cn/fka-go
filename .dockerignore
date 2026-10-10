@@ -1,0 +1,21 @@
+# 构建上下文是仓库根（Dockerfile 在 mcp/bash/，见其头注释）。
+# 镜像只 COPY 预编译的 bin/fka-bash-linux-<arch>，其余源码不进上下文。
+.git
+.gitignore
+data/
+logs/
+web/
+docs/
+*.md
+.env
+.env.*
+.sandbox/
+sandbox/
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# bin/ 只放行交叉编译好的 linux 静态二进制（宿主自己的 bin/fka 等不进镜像）。
+bin/*
+!bin/fka-bash-linux-amd64
+!bin/fka-bash-linux-arm64

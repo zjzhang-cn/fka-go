@@ -99,6 +99,48 @@ JSON-RPC 通道，帮助不能往那里写。帮助**早于沙盒构造**：没�
 会变成一句查不出的假象。
 ⚠️ 内容块是协议层的，不绑定传输：`read` 的文本 / 图片 / 音频块换到 HTTP 后面照旧。
 
+## 容器化：把整道沙盒装进 Docker
+
+`Dockerfile` + `docker-compose.yml` 把 **fka-bash + python3 + nodejs** 打成一个镜像，
+让「连 python/node 都在里面」的开箱沙盒一条命令起来：
+
+```bash
+make docker-bash                                       # 交叉编译 fka-bash(linux) 并构建镜像
+docker compose -f mcp/bash/docker-compose.yml up -d    # 起容器
+# 宿主侧 mcp.json 指向容器发布的端口：
+# { "mcpServers": { "bash": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" } } }
+```
+
+**镜像里不编译**（省掉容器内的 Go 工具链）：`docker-bash` 先在宿主把 fka-bash
+交叉编译成 `bin/fka-bash-linux-<arch>`，Dockerfile 只 `COPY` 它进去。手动等价于：
+
+```bash
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/fka-bash-linux-arm64 ./mcp/bash
+docker build -f mcp/bash/Dockerfile -t fka-bash .
+```
+
+### 边界换了一处：容器即沙盒
+
+宿主部署用 **bwrap 起命名空间**；容器里 **Docker 就是那道边界**——文件系统、网络、
+PID、user 全在容器内——所以容器里的 fka-bash 走 **`--mode direct`**，不再叠一层 bwrap
+（那需要额外 capability，且是重复隔离）。
+
+**`direct` 不是「关掉沙盒」**：命令白名单/黑名单、cwd 词法+符号链接越界、硬超时、
+输出上限、多租户子目录**全部照旧**，砍掉的只是「OS 级命名空间」那一层，由 Docker 顶上。
+真正的加固在运行参数里（compose 已给）：`read_only` 根文件系统、只给 `/sandbox` 可写、
+`cap_drop: ALL`、`no-new-privileges`。
+
+| 差异 | 宿主（bwrap） | 容器（direct + Docker） |
+|---|---|---|
+| 写边界 | `/` 只读，仅沙盒根可写 | 容器根只读，仅挂载的 `/sandbox` 可写 |
+| 网络 | **默认独立**（`--share-net` 才保留） | 默认通网（否则 agent 连不上 8080）；要断网见 compose 注释 |
+| 解释器 | 只读绑宿主那几份 | 镜像内自带 python3 / nodejs，**与宿主无关** |
+| 审计日志 | 落在安装根 `logs/`（只读根保护） | 落在挂载的 `/logs`（与 `/sandbox` 分开） |
+
+基础镜像是 **`ubuntu:24.04`**（自带 python3.12 与 nodejs 18），环境变量见 Dockerfile；
+`PIP_BREAK_SYSTEM_PACKAGES=1` 是为了让 Ubuntu 24.04 上 `pip install` 不被 PEP 668 拦下。
+构建上下文必须是**仓库根**（要 `COPY` 到 `bin/`）。
+
 ## 构建
 
 与主程序同一个 module，从仓库根构建：
@@ -164,6 +206,8 @@ stdout 是 JSON-RPC 的通道。**任何** `fmt.Println` 都会插进协议流�
 
 ```
 mcp/bash/
+├── Dockerfile             容器化：fka-bash + python3 + nodejs（容器即沙盒）
+├── docker-compose.yml     一条命令起容器（硬化参数 + /sandbox、/logs 双卷）
 ├── boundary_test.go       边界测试：不许依赖树外的包；server 必须是 main 包
 ├── main.go                启动（沙盒路径/模式/策略解析、--transport 选传输）
 ├── main_test.go           --transport / --addr 解析与 SSE 真链路用例
