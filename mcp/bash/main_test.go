@@ -195,3 +195,18 @@ func TestHelp参数直接以0退出(t *testing.T) {
 		}
 	}
 }
+
+// TestReadOnlyExtra_解析 参数与环境变量合并，按系统路径分隔符切分。
+func TestReadOnlyExtra_解析(t *testing.T) {
+	t.Setenv("BASH_RO_BINDS", "/opt/node:/home/me/conda")
+	got := sandboxReadOnlyExtra([]string{"--ro-bind", "/x:/y"})
+	want := []string{"/x", "/y", "/opt/node", "/home/me/conda"}
+	if len(got) != len(want) {
+		t.Fatalf("= %v，期望 %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("第 %d 项 = %q，期望 %q", i, got[i], want[i])
+		}
+	}
+}

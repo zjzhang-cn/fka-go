@@ -137,6 +137,8 @@ func run(args []string) int {
 		Bwrap:        firstNonEmpty(flagValue(args, "--bwrap"), os.Getenv("BASH_BWRAP")),
 		BwrapArgs:    strings.Fields(os.Getenv("BASH_BWRAP_ARGS")),
 		ShareNetwork: shareNetwork(args),
+		// 自装工具链的只读绑定（node/python/…）
+		ReadOnlyExtra: sandboxReadOnlyExtra(args),
 	}
 	sandbox, err := NewSandbox(opts)
 	if err != nil {
@@ -302,12 +304,19 @@ func printUsage() {
   --share-net                  保留宿主网络（默认独立网络命名空间）
   --allow A,B                  命令白名单（非空即白名单模式）
   --deny A,B                   追加命令黑名单（内置那份不能清空）
+  --ro-bind P1:P2              额外**只读**绑定宿主目录（自装工具链，见下）
 
   -h, --help                   这份帮助
 
+自装工具链（node / python / conda / nvm…）：
+  沙盒只读绑定宿主的最小必要部分（/usr /bin /lib /etc 等），系统装的解释器直接能用；
+  装在 /opt、~ 等非标准位置的，用 --ro-bind 或 BASH_RO_BINDS 点名挂进来
+  （多个路径用冒号分隔），例如：BASH_RO_BINDS=/opt/node:/home/me/miniconda3
+
 环境变量：
   BASH_SANDBOX_ROOT / BASH_SANDBOX_MODE / BASH_BWRAP / BASH_BWRAP_ARGS /
-  BASH_SHARE_NET / BASH_ALLOW / BASH_DENY / BASH_MCP_TRANSPORT / BASH_MCP_ADDR
+  BASH_SHARE_NET / BASH_ALLOW / BASH_DENY / BASH_RO_BINDS /
+  BASH_MCP_TRANSPORT / BASH_MCP_ADDR
 
 stdout 是 JSON-RPC 通道：server 运行期间一个字节都不能往 stdout 打。
 `)
@@ -346,6 +355,23 @@ func sandboxAllow(args []string) []string {
 
 func sandboxDeny(args []string) []string {
 	return append(splitList(flagValue(args, "--deny")), splitList(os.Getenv("BASH_DENY"))...)
+}
+
+// sandboxReadOnlyExtra 额外只读绑定的宿主目录：`--ro-bind` 参数 + `BASH_RO_BINDS`
+// 环境变量，用**系统路径分隔符**（Unix 是 `:`）分隔。
+//
+// 用途：自装工具链（`/opt` 下的 node、`~` 下的 conda/python、nvm/pyenv）不在内置
+// 白名单里；点名把它们**只读**挂进来即可，不必放开整个 `/opt` 或家目录。
+func sandboxReadOnlyExtra(args []string) []string {
+	var out []string
+	for _, raw := range []string{flagValue(args, "--ro-bind"), os.Getenv("BASH_RO_BINDS")} {
+		for _, item := range strings.Split(raw, string(os.PathListSeparator)) {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+	}
+	return out
 }
 
 // shareNetwork 是否保留宿主网络。默认**不保留**（bwrap 起独立网络命名空间）。

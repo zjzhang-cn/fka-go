@@ -69,6 +69,12 @@ type Options struct {
 	BwrapArgs []string
 	// ShareNetwork 为 true 时保留宿主网络；默认 false = 起独立网络命名空间。
 	ShareNetwork bool
+	// ReadOnlyExtra 额外**只读**绑定的宿主目录，与内置白名单（/usr /bin /lib …）合并。
+	//
+	// 用途：自装的工具链不在 `/usr` 里——node 常在 `/opt`、conda/python 在 `~`、
+	// nvm/pyenv 各自一处。它们是软件，**只读**挂进来是安全的，而且只暴露点名的目录，
+	// 不放开整个 `/opt` 或家目录。每条命令都看得见（不是每租户一份）。
+	ReadOnlyExtra []string
 }
 
 // Sandbox 一次运行的沙盒配置。**启动时建一次，之后只读**。
@@ -86,8 +92,9 @@ type Sandbox struct {
 	MaxTimeout     time.Duration
 	StreamCap      int
 
-	rootReal string
-	tmpDir   string
+	rootReal      string
+	tmpDir        string
+	readOnlyExtra []string
 }
 
 // RunRequest 一条待执行的命令。
@@ -161,6 +168,7 @@ func NewSandbox(opts Options) (*Sandbox, error) {
 		StreamCap:      DefaultStreamCap,
 		rootReal:       rootReal,
 		tmpDir:         tmp,
+		readOnlyExtra:  opts.ReadOnlyExtra,
 	}
 	for name := range defaultDeny {
 		s.Deny[name] = true
@@ -395,18 +403,29 @@ func (s *Sandbox) bwrapArgs(dir, command string) []string {
 	// `mcp.json`，以及**别的租户的目录**。单租户时这是可接受的取舍，多租户下就是
 	// 凭证泄漏——所以改成白名单：只给命令需要的可执行文件与库；宿主其余部分（家目录、
 	// 安装根、兄弟租户）在沙盒里**根本不存在**。
-	for _, hostDir := range hostReadOnlyDirs {
-		if _, err := os.Stat(hostDir); err == nil {
-			args = append(args, "--ro-bind", hostDir, hostDir)
+	seen := map[string]bool{}
+	appendRO := func(dirs []string) {
+		for _, hostDir := range dirs {
+			if hostDir == "" || seen[hostDir] {
+				continue
+			}
+			seen[hostDir] = true
+			if _, err := os.Stat(hostDir); err == nil {
+				args = append(args, "--ro-bind", hostDir, hostDir)
+			}
 		}
 	}
-	// 一个可写的 /tmp → 新 proc/dev，最后才把沙盒根绑成可写
+	appendRO(hostReadOnlyDirs)
+	// 一个可写的 /tmp → 新 proc/dev
 	args = append(args,
 		"--tmpfs", "/tmp",
 		"--proc", "/proc",
 		"--dev", "/dev",
-		"--bind", s.Root, s.Root,
 	)
+	// 额外只读绑定排在 `--tmpfs /tmp` **之后**：否则挂在 /tmp 下的工具链会被 tmpfs
+	// 盖掉。最后才把沙盒根绑成可写（必须排在所有只读绑定与 tmpfs 之后）。
+	appendRO(s.readOnlyExtra)
+	args = append(args, "--bind", s.Root, s.Root)
 	args = append(args, s.BwrapArgs...)
 	args = append(args,
 		"--chdir", dir,

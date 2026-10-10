@@ -183,3 +183,39 @@ func TestBwrap_读不到宿主与兄弟目录(t *testing.T) {
 		t.Errorf("租户读到了安装根的 .env：%q", res2.Stdout)
 	}
 }
+
+// TestBwrap_额外只读绑定可见 自装工具链（node/python…）不在内置白名单里；
+// 用 ReadOnlyExtra 点名挂进来后，沙盒里读得到；不挂则读不到。
+func TestBwrap_额外只读绑定可见(t *testing.T) {
+	bwrapUsable(t)
+	tooling := t.TempDir() // 模拟一份自装工具链目录
+	if err := os.WriteFile(filepath.Join(tooling, "hello.txt"), []byte("TOOL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(tooling, "hello.txt")
+
+	self := t.TempDir()
+	read := func(s *Sandbox) string {
+		res, err := s.Run(context.Background(), RunRequest{Command: "cat '" + target + "' 2>/dev/null || echo DENIED"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Stdout
+	}
+
+	plain, err := NewSandbox(Options{Root: self, Mode: ModeBwrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read(plain), "TOOL") {
+		t.Error("没挂的目录不该可见")
+	}
+
+	withTool, err := NewSandbox(Options{Root: self, Mode: ModeBwrap, ReadOnlyExtra: []string{tooling}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(read(withTool), "TOOL") {
+		t.Error("挂了只读绑定后该读得到")
+	}
+}
