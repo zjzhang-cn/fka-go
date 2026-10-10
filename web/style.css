@@ -89,6 +89,12 @@ main {
 .note.tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .note.error { color: #d0463b; }
 
+/* 推理只显示最近 5 行：超过的部分往上滚出（JS 每来一块把它滚到底）。 */
+.note.reasoning {
+  max-height: calc(5 * 1.5em);
+  overflow: hidden;
+}
+
 .media { max-width: min(46rem, 82%); }
 .media img { max-width: 100%; border-radius: 12px; border: 1px solid var(--line); }
 .media a { color: #2b6cff; }

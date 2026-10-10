@@ -17,7 +17,9 @@
   };
 
   var state = { conversation: "", source: null };
-  var reasoningLine = null; // 当前轮的推理行，增量往它上面追加
+  // 当前**推理段**的元素：推理增量往它上面追加；一次工具调用或一条答案 = 这一段
+  // 结束，下段另起一块（避免整轮的推理全堆在一个地方）。见 tool/message 处理器。
+  var reasoningLine = null;
 
   // ── 会话 id ────────────────────────────────────────────
   // 存 localStorage：它不是机密，只用来把同一个浏览器认成同一段对话。
@@ -127,11 +129,15 @@
       var data = JSON.parse(ev.data);
       if (!reasoningLine) reasoningLine = addNote("reasoning", "");
       reasoningLine.textContent += data.text || "";
+      // 限高 5 行（见 style.css），滚到底让**最新**的推理可见
+      reasoningLine.scrollTop = reasoningLine.scrollHeight;
       scroll();
     });
     source.addEventListener("tool", function (ev) {
       var data = JSON.parse(ev.data);
       addNote("tool", "🔧 " + data.name + " → " + (data.result || "").slice(0, 200));
+      // 一次工具调用 = 一段结束：下一段推理另起一块，不跟这一段堆在一起
+      reasoningLine = null;
     });
     source.addEventListener("file", function (ev) {
       addMedia(JSON.parse(ev.data));
