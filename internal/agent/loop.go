@@ -26,8 +26,9 @@
 // 两者不重叠，也不再有第二份把它们各抄一遍的输入结构。
 //
 // 与 llm/openai 的分工：那边管「怎么跟接口说话」，这边管「说几轮、每轮做什么」。
-// **这个文件不 import llm/openai**——那条边曾只为 MaxAnswerTokens 一个常量存在，现已搬进
-// llm；`internal/llm/boundary_test.go` 用 AST 扫 import 守住它不会再长回来。
+// **这个文件不 import llm/openai**——那条边曾经只为「回答预留多少 token」一个常量
+// 存在（现在这个常量在本包，见 answerReserveTokens）；`internal/llm/boundary_test.go`
+// 用 AST 扫 import 守住它不会再长回来。
 package agent
 
 import (
@@ -52,6 +53,13 @@ const (
 	// MaxMaxSteps 上限。再高就不是「多查两次」，而是拿额度赌一个大概率答不出来的
 	// 问题。
 	MaxMaxSteps = 999
+
+	// answerReserveTokens 上下文预算里给回答预留的位置。
+	//
+	// **不是发给服务端的 `max_tokens`**（那个已经不发，见 llm/openai 的 baseRequest），
+	// 只是「别把窗口塞满历史、给回答留点地方」的估算。放在这里（agent）而不是 llm：
+	// 这是工具循环的预算决定，不是 provider 契约。
+	answerReserveTokens = 800
 )
 
 // MaxStepsAnswer 工具用完仍没收拢时的兜底话术。**如实说**，不假装是答案。
@@ -167,7 +175,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// （工具一多，声明也能占掉不少）。剩下的才是历史可用的部分
 	encodedTools, _ := json.Marshal(toolDefs)
 	fixed := llm.EstimateTokens(system) + llm.EstimateTokens(question) +
-		llm.MaxAnswerTokens + llm.EstimateTokens(string(encodedTools))
+		answerReserveTokens + llm.EstimateTokens(string(encodedTools))
 	budget := 0
 	if r.ContextTokens > 0 {
 		budget = max(0, r.ContextTokens-fixed)

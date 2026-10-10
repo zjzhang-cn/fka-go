@@ -20,13 +20,6 @@ package llm
 
 import "context"
 
-// MaxAnswerTokens 回答长度的**预算**：`internal/agent` 算上下文时给回答预留的位置。
-//
-// **它不再作为请求的 `max_tokens` 发出去**——那个额度会把推理一起限死，长推理会在
-// 吐出正文前被截断（见 openai 的 baseRequest）。这里只用于「上下文里给回答留多少」
-// 的估算。放在 `llm` 而不是 `llm/openai`，是因为那一层不认识任何 provider。
-const MaxAnswerTokens = 800
-
 // Config 一条能用得上的配置。缺任何必填项时对应 provider 的 ReadConfig 返回 false。
 type Config struct {
 	// BaseURL 含版本段，如 https://api.openai.com/v1。

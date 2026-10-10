@@ -1,8 +1,8 @@
 // ## 这个文件守的是什么
 //
 // `llm` 是接缝，`llm/openai` 是它目前唯一的实现。接缝的价值全在「换一个实现时别的包
-// 一个字不改」上。这条边**真的长过**：`internal/agent/loop.go` 曾为了一个常量
-// `MaxAnswerTokens` import `llm/openai`，而那个常量已经搬进 `llm`。
+// 一个字不改」上。这条边**真的长过**：`internal/agent/loop.go` 曾为了一个「回答预留
+// 多少 token」的常量 import `llm/openai`，那个常量后来搬走了（现在在 agent 本包）。
 //
 // ## 为什么只扫 agent，不扫 llm 自己
 //

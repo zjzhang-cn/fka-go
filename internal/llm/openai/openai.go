@@ -351,15 +351,15 @@ func (p Provider) CreateChat(cfg llm.Config) llm.ChatClient {
 
 func baseRequest(cfg llm.Config, messages []llm.ChatMessage) goopenai.ChatCompletionRequest {
 	// **不设 `max_tokens`**：留 0，SDK 的 `omitempty` 会把它整个省掉，由服务端按模型
-	// 自己的上限来。曾经写死 `MaxAnswerTokens=800`，而推理模型的 reasoning 也计入这个
-	// 额度——推理一长（几千字）就在吐出正文或工具调用**之前**被截断，收尾帧是
-	// `finish_reason=length`，正文为空，报成「既没回答也没调用工具」。
+	// 自己的上限来。以前这里写死 800，而推理模型的 reasoning 也计入这个额度——推理一长
+	// （几千字）就在吐出正文或工具调用**之前**被截断，收尾帧是 `finish_reason=length`，
+	// 正文为空，报成「既没回答也没调用工具」。
 	return goopenai.ChatCompletionRequest{
 		Model:       cfg.Model,
 		Messages:    toAPIMessages(messages),
 		Temperature: Temperature,
-		// 只要工具就发流式：没有它拿不到增量，也就没有「每收一块重置断流预算」
-		Stream: true,
+		MaxTokens:   0,    // 留 0，SDK 的 `omitempty` 会把它整个省掉，由服务端按模型自己的上限来
+		Stream:      true, // 只要工具就发流式：没有它拿不到增量，也就没有「每收一块重置断流预算」
 	}
 }
 
