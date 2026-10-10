@@ -7,11 +7,34 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	mcp "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/zjzhang-cn/fka-go/internal/config"
 )
+
+// MetaPrincipalKey 把调用方身份经 MCP `_meta` 传给 server 的键。
+//
+// **必须与 mcp/bash 的 metaPrincipalKey 逐字一致**——bash 自给自足（边界测试不许
+// import 树内别的包），所以两边各写一份字面量，改动要一起改。
+//
+// 用 `_meta` 而不是工具参数：**模型改不了它**。bash 的多租户文件隔离靠它，
+// 用不到身份的 server 直接忽略即可（标准字段，不影响它们）。
+const MetaPrincipalKey = "fka/principal"
+
+// principalOf 从 ctx 上取调用方身份。消息层把它绑在 ctx 的 `principal` 字段上
+// （见 internal/messages 的 Handle）；取不到就返回空串。
+func principalOf(ctx context.Context) string {
+	fields := config.FieldsOf(ctx)
+	if fields == nil {
+		return ""
+	}
+	principal, _ := fields["principal"].(string)
+	return strings.TrimSpace(principal)
+}
 
 // clientInfo 我们在握手里报的身份。**版本号与主程序一致**——服务器可能按它做兼容
 // 判断，写死一个不会变的字符串会让排查时看不出客户端是哪个版本。
@@ -273,9 +296,14 @@ func (c *connection) CallTool(ctx context.Context, name string, args map[string]
 			if args == nil {
 				args = map[string]any{}
 			}
-			result, err := c.client.CallTool(ctx, mcp.CallToolRequest{
+			request := mcp.CallToolRequest{
 				Params: mcp.CallToolParams{Name: name, Arguments: args},
-			})
+			}
+			// 把调用方身份经 `_meta` 带上（模型碰不到）。多租户的 bash 靠它隔离。
+			if principal := principalOf(ctx); principal != "" {
+				request.Params.Meta = mcp.NewMetaFromMap(map[string]any{MetaPrincipalKey: principal})
+			}
+			result, err := c.client.CallTool(ctx, request)
 			if err != nil {
 				return CallResult{}, err
 			}

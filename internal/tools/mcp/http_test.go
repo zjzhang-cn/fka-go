@@ -5,12 +5,15 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	mcpapi "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/zjzhang-cn/fka-go/internal/config"
 )
 
 // samplePNGBase64 一段可以当图片数据的 base64。
@@ -205,5 +208,59 @@ func TestHTTP服务器_image块抽成附件(t *testing.T) {
 	}
 	if want := "data:image/png;base64," + samplePNGBase64; result.Images[0].DataURI != want {
 		t.Errorf("DataURI = %q，期望 %q", result.Images[0].DataURI, want)
+	}
+}
+
+// newMetaServer 一个把收到的 `_meta` 身份原样回显的工具 server。
+func newMetaServer() *mcpserver.MCPServer {
+	server := mcpserver.NewMCPServer("fka-meta", "0.0.1")
+	server.AddTool(
+		mcpapi.NewTool("who", mcpapi.WithDescription("回显调用方身份")),
+		func(_ context.Context, request mcpapi.CallToolRequest) (*mcpapi.CallToolResult, error) {
+			got := ""
+			if request.Params.Meta != nil {
+				if v, ok := request.Params.Meta.AdditionalFields[MetaPrincipalKey]; ok {
+					got, _ = v.(string)
+				}
+			}
+			return mcpapi.NewToolResultText(got), nil
+		},
+	)
+	return server
+}
+
+// Test工具调用_带上_meta身份 ctx 上有 principal 时，client 要把它经标准 `_meta`
+// 传给 server；没有就不带。**模型改不了这个字段**——bash 的多租户隔离靠它。
+func Test工具调用_带上_meta身份(t *testing.T) {
+	httpServer := httptest.NewServer(mcpserver.NewStreamableHTTPServer(newMetaServer()))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	connection, err := ConnectMcpServer(ctx, "meta", ServerConfig{URL: httpServer.URL})
+	if err != nil {
+		t.Fatalf("该连上：%v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	// 没有身份：server 收到空串
+	plain, err := connection.CallTool(ctx, "who", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 空内容会被 client 换成「（工具没有返回内容）」——只要不是身份即可
+	if strings.Contains(plain.Content, "web:alice") {
+		t.Errorf("ctx 上没有 principal 时不该带身份，实际 %q", plain.Content)
+	}
+
+	// 有身份：应经 _meta 传到 server
+	bound := config.Bind(ctx, config.Context{"principal": "web:alice"})
+	result, err := connection.CallTool(bound, "who", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "web:alice" {
+		t.Errorf("身份该经 _meta 传过去，实际 %q", result.Content)
 	}
 }
