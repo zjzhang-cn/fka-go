@@ -438,17 +438,23 @@ type LoginParams struct {
 	Emit func(event string, data any)
 }
 
-// Ops 渠道**运维端口**（可选）。接缝把它原样交给控制面，**不理解内容**：
-// 返回形状由渠道自定义，控制面只负责转发，CLI 负责解读。
+// LoginResult 交互式登录成功后的结果：登录到了哪个账号、它现在的状态。
+//
+// 以前 Login 返回 `any`，调用方得靠类型断言到 `map[string]any` 再取键名，键名拼错
+// 只会在运行期静默变成空值。现在字段在编译期就是确定的。
+type LoginResult struct {
+	AccountID string `json:"accountId"`
+	Status    string `json:"status"`
+}
+
+// Ops 渠道**运维端口**（可选）：渠道自己提供、CLI 直接调用的操作。
 //
 // 不支持某项能力就不实现对应方法——调用方据此报「不支持」，而不是拿到 nil 去调。
+// 目前只有登录；状态与上下文报告是渠道的具体方法（见 ilink.Provider），
+// 还没有通过这个接口被调用的需求，所以不在接口里。
 type Ops interface {
-	// Status 运行状态报告（形状渠道自定义）
-	Status() any
-	// Context 「现在能发给谁」的上下文（形状渠道自定义）
-	Context() any
 	// Login 交互式登录（扫码等）。不支持登录的渠道不实现
-	Login(params LoginParams) (any, error)
+	Login(params LoginParams) (LoginResult, error)
 }
 
 // Provider 渠道**种类**。一个 provider 可以产出多个渠道实例（一个账号一个）。

@@ -169,58 +169,86 @@ func (p *Provider) DescribeAccounts() string {
 // **它不被接缝理解**——接缝只把返回的东西原样转给控制面，形状由渠道自定义。
 func (p *Provider) Ops() channels.Ops { return p }
 
+// StatusReport 运行状态报告：每个账号一条。
+type StatusReport struct {
+	Channel  string          `json:"channel"`
+	Accounts []AccountStatus `json:"accounts"`
+}
+
+// AccountStatus 单个账号的状态。
+type AccountStatus struct {
+	AccountID string `json:"accountId"`
+	Status    string `json:"status"`
+	UserID    string `json:"userId"`
+	BotID     string `json:"botId"`
+}
+
 // Status 运行状态报告。
-func (p *Provider) Status() any {
+func (p *Provider) Status() StatusReport {
 	accounts := p.accounts()
-	items := make([]map[string]any, 0, len(accounts))
+	items := make([]AccountStatus, 0, len(accounts))
 	for _, account := range accounts {
-		items = append(items, map[string]any{
-			"accountId": account.ID,
-			"status":    account.Status,
-			"userId":    account.ILinkUserID,
-			"botId":     account.ILinkBotID,
+		items = append(items, AccountStatus{
+			AccountID: account.ID,
+			Status:    string(account.Status),
+			UserID:    account.ILinkUserID,
+			BotID:     account.ILinkBotID,
 		})
 	}
-	return map[string]any{"channel": ID, "accounts": items}
+	return StatusReport{Channel: ID, Accounts: items}
+}
+
+// ContextReport 「现在能发给谁」的上下文。LastInbound 为 nil 表示还没收到过任何消息。
+type ContextReport struct {
+	Channel     string           `json:"channel"`
+	LastInbound []LastInboundRef `json:"lastInbound"`
+}
+
+// LastInboundRef 某个账号最近一条入站消息的寻址信息。**不含令牌本身**。
+type LastInboundRef struct {
+	AccountID string `json:"accountId"`
+	To        string `json:"to"`
+	At        int64  `json:"at"`
+	HasToken  bool   `json:"hasToken"`
 }
 
 // Context 「现在能发给谁」的上下文。
-func (p *Provider) Context() any {
+func (p *Provider) Context() ContextReport {
 	if p.state == nil {
-		return map[string]any{"channel": ID, "lastInbound": nil}
+		return ContextReport{Channel: ID, LastInbound: nil}
 	}
 
-	items := make([]map[string]any, 0, 4)
+	items := make([]LastInboundRef, 0, 4)
 	for _, account := range p.accounts() {
 		entry, ok := p.state.lastOf(account.ID)
 		if !ok {
 			continue
 		}
-		items = append(items, map[string]any{
-			"accountId": account.ID,
-			"to":        entry.conversation,
-			"at":        entry.at,
+		items = append(items, LastInboundRef{
+			AccountID: account.ID,
+			To:        entry.conversation,
+			At:        entry.at,
 			// **令牌本身不给**：状态快照会落盘，而它等同于发消息的资格
-			"hasToken": entry.replyToken != "",
+			HasToken: entry.replyToken != "",
 		})
 	}
-	return map[string]any{"channel": ID, "lastInbound": items}
+	return ContextReport{Channel: ID, LastInbound: items}
 }
 
 // Login 交互式登录（扫码）。
 //
 // account 选择器：给空串或 `next` 时用「下一个还没登录的槽位」。
-func (p *Provider) Login(params channels.LoginParams) (any, error) {
+func (p *Provider) Login(params channels.LoginParams) (channels.LoginResult, error) {
 	// **先确认 Create 过了**：下面 `pickSlot` 与 `table.replace` 都要用账号表。
 	// 这句检查以前在 `pickSlot` **之后**，而「下一个空槽」那条路会直接读 nil 表
 	// （`accountTable.get` 对 nil 接收者取锁 → panic）——于是这句话永远不可达。
 	if p.table == nil {
-		return nil, fmt.Errorf("provider 还没 Create 过")
+		return channels.LoginResult{}, fmt.Errorf("provider 还没 Create 过")
 	}
 
 	index, err := p.pickSlot(params.Account)
 	if err != nil {
-		return nil, err
+		return channels.LoginResult{}, err
 	}
 
 	emit := params.Emit
@@ -234,13 +262,13 @@ func (p *Provider) Login(params channels.LoginParams) (any, error) {
 
 	code, err := bot.GetQRCode(params.Ctx, p.loginBaseURL(), p.HTTPClient)
 	if err != nil {
-		return nil, err
+		return channels.LoginResult{}, err
 	}
 	payload, err := bot.QRPayload(code)
 	if err != nil {
 		// 内容取不到就**不要发码**：让人扫一个生成不出来的码，
 		// 只会等上几分钟再听到「没反应」
-		return nil, err
+		return channels.LoginResult{}, err
 	}
 	emit("qrcode:ready", map[string]any{
 		"accountIndex": index, "content": payload,
@@ -249,13 +277,13 @@ func (p *Provider) Login(params channels.LoginParams) (any, error) {
 	credentials, err := bot.PollQRCodeStatus(params.Ctx, p.loginBaseURL(), p.HTTPClient, code.QRCode,
 		func(status string) { emit("qrcode:"+status, map[string]any{"accountIndex": index}) })
 	if err != nil {
-		return nil, err
+		return channels.LoginResult{}, err
 	}
 
 	// **先落盘再接进服务**：凭证写不进 .env 的话，重启后账号就消失了，
 	// 而用户会以为「登录成功了但消息收不到」
 	if err := bot.SaveCredentials(config.EnvPath(), index, credentials); err != nil {
-		return nil, err
+		return channels.LoginResult{}, err
 	}
 
 	account := bot.WeixinAccount{
@@ -277,7 +305,7 @@ func (p *Provider) Login(params channels.LoginParams) (any, error) {
 	}
 
 	emit("login:done", map[string]any{"accountId": account.ID})
-	return map[string]any{"accountId": account.ID, "status": account.Status}, nil
+	return channels.LoginResult{AccountID: account.ID, Status: string(account.Status)}, nil
 }
 
 // pickSlot 定这次登录用哪个槽位。

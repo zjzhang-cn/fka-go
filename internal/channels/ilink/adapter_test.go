@@ -870,9 +870,8 @@ func Test登录流程走通(t *testing.T) {
 		t.Errorf("该有 login:done：%v", events)
 	}
 
-	report, _ := result.(map[string]any)
-	if report["accountId"] != "account_002" {
-		t.Errorf("该登录到下一个空槽：%v", report)
+	if result.AccountID != "account_002" {
+		t.Errorf("该登录到下一个空槽：%+v", result)
 	}
 
 	// 凭证落盘了

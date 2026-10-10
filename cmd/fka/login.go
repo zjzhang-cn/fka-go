@@ -57,9 +57,7 @@ func runLogin(ctx context.Context, parsed cliArgs) int {
 
 	fmt.Println()
 	fmt.Println("登录成功。凭证已写进 " + config.EnvPath())
-	if report, ok := result.(map[string]any); ok {
-		fmt.Printf("账号 %v（%v）\n", report["accountId"], report["status"])
-	}
+	fmt.Printf("账号 %s（%s）\n", result.AccountID, result.Status)
 	fmt.Println("现在跑 `fka serve` 就会用这个账号收消息。")
 	return exitOK
 }
