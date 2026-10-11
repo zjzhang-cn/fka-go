@@ -97,6 +97,9 @@ func (s *Sandbox) ReadFile(raw string) (fileRead, error) {
 	}
 	head = head[:n]
 
+	// read 是给**模型**的：SVG 这类文本走纯嗅探（会被认成 text/xml）正是我们要的——
+	// 模型读 SVG 源码比把 SVG 当图片喂给它更靠谱（视觉接口普遍不收 image/svg+xml）。
+	// 靠后缀纠正类型的事只发生在 export（`detectMIME`），那条是发给用户看的。
 	out := fileRead{Path: raw, MIME: http.DetectContentType(head), Size: info.Size()}
 
 	if strings.HasPrefix(out.MIME, "image/") {

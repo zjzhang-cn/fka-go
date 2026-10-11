@@ -16,7 +16,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -339,7 +338,7 @@ func (s *bashServer) handleExport(ctx context.Context, request mcp.CallToolReque
 	if err != nil {
 		return fail("读取失败：" + err.Error()), nil
 	}
-	mime := http.DetectContentType(data)
+	mime := detectMIME(raw, data)
 
 	resource := mcp.NewEmbeddedResource(mcp.BlobResourceContents{
 		URI:      "sandbox:///" + strings.TrimPrefix(raw, "/"),

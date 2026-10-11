@@ -68,6 +68,26 @@ func TestExport_返回给用户的资源块(t *testing.T) {
 	}
 }
 
+// TestExport_SVG按后缀给对类型 嗅探会把 SVG 认成 text/xml；交给渠道的类型必须是
+// image/svg+xml，否则浏览器不按图片渲染。这是后端主动纠错的那一层。
+func TestExport_SVG按后缀给对类型(t *testing.T) {
+	s := newTestSandbox(t)
+	svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>`)
+	writeFile(t, s, "图.svg", svg)
+	impl := newTestServer(s)
+
+	result, err := impl.handleExport(context.Background(), callRequest(map[string]any{"path": "图.svg"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("导出不该是 IsError：%s", resultText(t, result))
+	}
+	if got := exportedResource(t, result).MIMEType; got != "image/svg+xml" {
+		t.Errorf("SVG 该按后缀纠成 image/svg+xml，实际 %q", got)
+	}
+}
+
 // TestExport_越界被拒 发送路径与 read 同一条边界：只认沙盒根下的相对路径。
 func TestExport_越界被拒(t *testing.T) {
 	s := newTestSandbox(t)
