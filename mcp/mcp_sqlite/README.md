@@ -17,13 +17,16 @@ Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具分三类�
 `chinook.original.db`（生成器输入）。
 
 ```bash
-node obfuscate.mjs            # 读 chinook.original.db → 写 chinook.db / sqlite.sql / 技能 / map.json
-node obfuscate.mjs --seed 换一个种子
+scripts/obfuscate.sh                 # 一键：生成 + 同步进安装根（默认 <仓库>/bin）
+scripts/obfuscate.sh --seed 换个种子  # 换种子则整份产物一致重生
+scripts/obfuscate.sh --no-bin        # 只生成，不同步进安装根
+node obfuscate.mjs                   # 或直接跑生成器：读 chinook.original.db → 写 chinook.db / sqlite.sql / 技能 / map.json
 ```
 
 生成器同时渲染 `../../skills/music-catalog-analytics/SKILL.md`（混淆名 → 业务含义的字典
 + 用短码重写的 SQL 模板）。它每次运行都会自检「无原名残留 + 行数一致」，不通过非零退出。
 `obfuscate.map.json` 含原名，只作工具用途，**不入库**（.gitignore 已忽略）。
+生成后要重启正在跑的 `fka serve` 才会读到新库 / 新技能（启动脚本只提醒、不替你重启）。
 
 ## 用法
 
