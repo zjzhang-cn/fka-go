@@ -56,3 +56,33 @@ func Test安全段_非法字符换下划线(t *testing.T) {
 		t.Errorf("= %q，期望 a_b_c", got)
 	}
 }
+
+// Test清空历史_删文件且再读为空 清空后 Load 必须返回空——这是「用户说清空就不再
+// 用旧数据」的唯一判据。已经空了的会话再清一次不算错（幂等）。
+func Test清空历史_删文件且再读为空(t *testing.T) {
+	store := NewSessionHistory(t.TempDir())
+	store.Append("s", []ChatMessage{{Role: RoleUser, Content: "旧问题"}})
+	if got := store.Load("s"); len(got) != 1 {
+		t.Fatalf("清空前该读到 1 条，实际 %d", len(got))
+	}
+
+	if err := store.Clear("s"); err != nil {
+		t.Fatalf("清空失败：%v", err)
+	}
+	if got := store.Load("s"); len(got) != 0 {
+		t.Errorf("清空后该读不到任何历史，实际 %d 条", len(got))
+	}
+	// 幂等：文件已经不在，再清一次不该报错
+	if err := store.Clear("s"); err != nil {
+		t.Errorf("清空一个已经空的会话不该报错：%v", err)
+	}
+}
+
+// Test清空历史_没持久化要报错 SESSION_HISTORY=0 时历史本来就不落盘，清空这个动作
+// 无从谈起。报错而不是假装成功——静默的「已清空」比报错更误导。
+func Test清空历史_没持久化要报错(t *testing.T) {
+	store := NewSessionHistory("")
+	if err := store.Clear("s"); err == nil {
+		t.Error("没持久化时清空该报错")
+	}
+}

@@ -159,11 +159,16 @@ type CompressionResult struct {
 //
 // Load 给出可逐字重放的前缀（KV 缓存的命中前提），Append 追加本轮新产生的消息。
 //
-// **两个方向都永不返错**——调用点在长驻的消息处理链里，返错只会逼每个调用点写一遍
-// 「记日志然后忽略」。失败在这里就地记下并降级（读失败当空、追加失败丢弃）。
+// **Load / Append 两个方向都永不返错**——调用点在长驻的消息处理链里，返错只会逼每个
+// 调用点写一遍「记日志然后忽略」。失败在这里就地记下并降级（读失败当空、追加失败丢弃）。
+//
+// **Clear 是个例外：它返错**。它是一个用户显式要求的动作（「清空历史」），失败要让
+// 上层能如实回一句，而不是静默地当没发生——静默失败正是这个产品最怕的形态。
 type SessionHistoryStore interface {
 	Load(sessionID string) []ChatMessage
 	Append(sessionID string, messages []ChatMessage)
+	// Clear 清空一个会话的历史。已经空了（文件不存在）**不算错**。
+	Clear(sessionID string) error
 }
 
 // Provider 一种模型服务实现。

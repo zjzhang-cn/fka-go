@@ -156,6 +156,11 @@ func (m *memStore) Append(sessionID string, messages []ChatMessage) {
 	m.appends = append(m.appends, append([]ChatMessage(nil), messages...))
 }
 
+func (m *memStore) Clear(sessionID string) error {
+	m.stored = nil
+	return nil
+}
+
 // TestLoadHistoryPrefix_读回文件里那份 这就是历史的**唯一**来源：会话文件。
 //
 // 这里曾经还有三条用例，验「调用方给一份数据库重建的历史」那条路（quote/time 模式、

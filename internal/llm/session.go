@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,4 +210,28 @@ func (s *sessionHistory) Append(sessionID string, messages []ChatMessage) {
 			"session": sessionID, "error": err.Error(),
 		})
 	}
+}
+
+// Clear 清空一个会话的历史：**删掉那个文件**。
+//
+// 为什么删而不是截断：空文件与没有文件在 Load 眼里完全等价（都返回 nil），删掉更彻底，
+// 也不留下一个「永远是 0 字节」的残骸。同一个文件的追加锁与 Append 共用，避免删到一半
+// 有另一路正在追加。
+//
+// **不持久化时（dir 为空）返错**：那说明这次部署本来就没存历史，清空这个动作无意义，
+// 让调用方如实说一句，而不是假装成功。
+func (s *sessionHistory) Clear(sessionID string) error {
+	path := s.resolve(sessionID)
+	if path == "" {
+		return errors.New("会话历史未持久化（SESSION_HISTORY 关闭）")
+	}
+
+	lock := s.lockFor(path)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
