@@ -37,6 +37,7 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/messages"
 	"github.com/zjzhang-cn/fka-go/internal/prompts"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
+	"github.com/zjzhang-cn/fka-go/internal/tools/history"
 	"github.com/zjzhang-cn/fka-go/internal/tools/mcp"
 	"github.com/zjzhang-cn/fka-go/internal/tools/reply"
 	"github.com/zjzhang-cn/fka-go/internal/tools/skills"
@@ -113,19 +114,34 @@ func Build(ctx context.Context, opts Options) *App {
 
 	app := &App{}
 
+	// ── 会话历史 ──────────────────────────────────────────
+	//
+	// **必须在注册工具之前**：history 工具源要拿到这份存储，且只在它非 nil 时才注册
+	// （没有历史落盘就没有「清空历史」这件事，声明一个跑不了的工具比不声明更糟）。
+	app.History = llm.NewDefaultSessionHistory()
+	if app.History == nil {
+		config.Log().Info(config.TypeSYS, "SESSION_HISTORY 已关闭，历史不落盘", config.Context{})
+	}
+
 	// ── 工具 ──────────────────────────────────────────────
 	//
 	// **能力只有两条来源：MCP 与技能。** 这个 agent 刻意不带任何内置能力——
 	// 文档、记忆、检索全在 MCP server 里，它自己不拥有任何数据。
 	//
-	// 唯一的例外是 `reply`：它**不是能力，是输出通道**——把「往当前会话回话」
-	// （文字 / 文件 / 图片）也交给模型调度，好让它能先发说明再发文件。它不拥有
-	// 数据、不出网、不拉进程，所以没有破坏那条原则。见该包的头注释。
+	// 两个有意的例外，动的都是 agent**自己**的东西，不是外部能力：
+	//   - `reply`：**输出通道**——把「往当前会话回话」（文字 / 文件 / 图片）交给模型
+	//     调度，好让它能先发说明再发文件。不拥有数据、不出网、不拉进程。
+	//   - `history`：**自身状态**——会话历史是它自己落盘的（data/history/*.jsonl），
+	//     用户说「清空历史」时得有个动作删掉它。同样不出网、不拉进程。
+	// 见两个包的头注释。
 	app.Policy = tools.ReadToolPolicy()
 	app.Tools = tools.NewRegistry(nil, app.Policy)
 	app.SkillsDir = skills.ResolveDirs()
 	app.Tools.Use(skills.NewSource(app.SkillsDir))
 	app.Tools.Use(reply.NewSource(reply.Options{}))
+	if app.History != nil {
+		app.Tools.Use(history.NewSource(app.History))
+	}
 	app.registerMcp()
 
 	// ── 模型 ──────────────────────────────────────────────
@@ -134,12 +150,6 @@ func Build(ctx context.Context, opts Options) *App {
 	// ── 渠道 ──────────────────────────────────────────────
 	app.Channels = channels.NewService()
 	app.registerChannels(ctx, opts.ChannelProviders)
-
-	// ── 会话历史 ──────────────────────────────────────────
-	app.History = llm.NewDefaultSessionHistory()
-	if app.History == nil {
-		config.Log().Info(config.TypeSYS, "SESSION_HISTORY 已关闭，历史不落盘", config.Context{})
-	}
 
 	// ── 工具循环 ──────────────────────────────────────────
 	//
