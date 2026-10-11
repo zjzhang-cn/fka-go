@@ -7,8 +7,23 @@ Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具分三类�
 - **复杂查询**：`query_sql` 跑任意只读 SELECT/WITH（JOIN / GROUP BY / 聚合 / 子查询 /
   窗口函数）；`describe_schema` 先给出表结构与外键，便于拼复杂 SQL。
 
-表结构从 `sqlite.sql` 解析（文件缺失时退回 `PRAGMA table_info` 反射），所以改动建表脚本
-后按表工具清单会跟着变。
+表结构**一律反射实际库**（`sqlite_master` + `PRAGMA table_info` / `foreign_key_list`），
+所以换了 `chinook.db` 工具清单就跟着变。`sqlite.sql` 只是给人看的建表脚本，服务不读它。
+
+## 名称混淆（用于 Text-to-SQL 评测）
+
+`chinook.db` 的表名/列名/索引名已被换成与含义无关的短码（`z_` 开头），好让模型没法靠
+预训练里认得的 Chinook 名字蒙对，只能读 schema / 技能写 SQL。原始库保留为
+`chinook.original.db`（生成器输入）。
+
+```bash
+node obfuscate.mjs            # 读 chinook.original.db → 写 chinook.db / sqlite.sql / 技能 / map.json
+node obfuscate.mjs --seed 换一个种子
+```
+
+生成器同时渲染 `../../skills/music-catalog-analytics/SKILL.md`（混淆名 → 业务含义的字典
++ 用短码重写的 SQL 模板）。它每次运行都会自检「无原名残留 + 行数一致」，不通过非零退出。
+`obfuscate.map.json` 含原名，只作工具用途，**不入库**（.gitignore 已忽略）。
 
 ## 用法
 
