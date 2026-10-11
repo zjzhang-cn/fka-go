@@ -232,9 +232,13 @@ func (c *Channel) handleFiles(w http.ResponseWriter, r *http.Request, _ string) 
 		w.Header().Set("Content-Type", item.mime)
 	}
 	if item.name != "" {
-		// inline：图片能被 <img> 直接渲染；文件由前端的 <a download> 触发下载
+		// inline：图片/视频/音频/PDF 由前端**直接显示在页面上**，不做附件下载。
 		w.Header().Set("Content-Disposition", "inline; filename=\""+sanitizeFilename(item.name)+"\"")
 	}
+	// SVG 是文本（可内联 <script>），而这个端点在客户端**同源**上。用 <img> 嵌它时脚本
+	// 本就不执行，但用户直接打开这条 URL 时脚本会在同源下跑——那是个 XSS 面。所以把
+	// 媒体**内联展示**（不退回附件下载）的同时，禁掉脚本与外链，让同源不再是可乘之机。
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'self' data:; media-src 'self'")
 	_, _ = w.Write(item.data)
 }
 

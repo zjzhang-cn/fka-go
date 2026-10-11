@@ -415,8 +415,71 @@ func Test出站媒体_下载要认证(t *testing.T) {
 	}
 }
 
-// ── 静态页与 Emitter ────────────────────────────────────
+// Test出站媒体_多种类型的MIME 浏览器按 Content-Type 渲染，所以类型必须尽量具体：
+// 具体声明优先、嗅探认得就用嗅探、SVG 这类嗅探认不出的（是 XML 文本）按后缀补、
+// 通配 `image/*` 不能原样当 Content-Type 发出去。
+func Test出站媒体_多种类型的MIME(t *testing.T) {
+	svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>`)
+	png := []byte("\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x00")
+	cases := []struct {
+		name, declared, file string
+		data                 []byte
+		want                 string
+	}{
+		{"具体声明优先", "image/png", "x.bin", []byte("whatever"), "image/png"},
+		{"嗅探认得 PNG", "", "x.dat", png, "image/png"},
+		{"嗅探认得 BMP", "", "x.dat", []byte("BM\x00\x00\x00\x00"), "image/bmp"},
+		{"SVG 按后缀补", "image/*", "icon.svg", svg, "image/svg+xml"},
+		{"导出误标的 SVG 也纠回", "text/xml; charset=utf-8", "icon.svg", svg, "image/svg+xml"},
+		{"非媒体声明不压后缀", "application/octet-stream", "pic.png", png, "image/png"},
+		{"通配不原样发出", "image/*", "x.unknownext", []byte{0, 1, 2, 3}, "application/octet-stream"},
+		{"未知全落兜底", "", "x.unknownext", []byte{0, 1, 2, 3}, "application/octet-stream"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mediaMime(tc.file, tc.declared, tc.data); got != tc.want {
+				t.Errorf("mediaMime(%q, %q) = %q，想要 %q", tc.file, tc.declared, got, tc.want)
+			}
+		})
+	}
+}
 
+// Test出站媒体_SVG能渲染 端到端：SVG 字节经 sendFile 落库后，下载响应的
+// Content-Type 必须是 image/svg+xml，否则浏览器把它当 XML、`<img>` 显示不出来。
+func Test出站媒体_SVG能渲染(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	result, err := c.sendFile(context.Background(), channels.SendMediaParams{
+		Target:   channels.SendTarget{ConversationID: sessionConversation("web:alice", "conv")},
+		Data:     []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+		FileName: "icon.svg",
+		MimeType: "image/*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/files/"+result.MessageID, nil)
+	req.AddCookie(cookie("secret"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "image/svg+xml" {
+		t.Errorf("SVG 的 Content-Type 该是 image/svg+xml，实际 %q", got)
+	}
+	// 直接显示在页面上（inline），不是附件下载；同时禁脚本，免得同源下被 SVG 脚本 XSS。
+	if got := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+		t.Errorf("该 inline 显示而非附件下载，实际 %q", got)
+	}
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'none'") {
+		t.Errorf("SVG 可内联脚本，必须禁掉，实际 CSP=%q", csp)
+	}
+}
+
+// ── 静态页与 Emitter ────────────────────────────────────
 // Test静态目录不存在给说明 配错目录时要一眼看得出，而不是 500。
 func Test静态目录不存在给说明(t *testing.T) {
 	c := newChannel(testAccount, "127.0.0.1:0", testUsers(), "/nonexistent/"+newID())

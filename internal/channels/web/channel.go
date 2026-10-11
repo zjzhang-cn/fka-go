@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -130,10 +131,7 @@ func (c *Channel) sendMedia(p channels.SendMediaParams, kind string) (channels.S
 	if err != nil {
 		return channels.SendResult{}, err
 	}
-	mime := p.MimeType
-	if mime == "" {
-		mime = http.DetectContentType(data)
-	}
+	mime := mediaMime(p.FileName, p.MimeType, data)
 
 	id, ok := c.blobs.put(data, p.FileName, mime)
 	if !ok {
@@ -143,6 +141,60 @@ func (c *Channel) sendMedia(p channels.SendMediaParams, kind string) (channels.S
 		"url": "/files/" + id, "name": p.FileName, "mimeType": mime, "kind": kind,
 	})
 	return channels.SendResult{MessageID: id}, nil
+}
+
+// mediaMime 定下这次出站媒体的 MIME，决定 `/files/{id}` 的 `Content-Type`，
+// 从而决定浏览器怎么渲染。按可信度排序：
+//
+//  1. 调用方给的**媒体类**具体类型（`image/png`、`video/mp4`、`application/pdf`）——直接用；
+//  2. 内容嗅探（http.DetectContentType）——覆盖 png/jpeg/gif/webp/bmp 与 mp4/webm/mp3/wav；
+//  3. 扩展名——嗅探认不出的（**SVG** 是 XML 文本、mov/mkv/ogg/m4a 等）按后缀补。
+//
+// 关键一条：`text/*`、`application/octet-stream` 这类**不是渲染类型**，不能无条件信任。
+// `mcp__bash__export` 把 SVG 嗅探成 `text/xml` 就是这么来的——它带着正确的文件名到这儿，
+// 有后缀就该让后缀把它纠回 `image/svg+xml`，否则浏览器拿着 `text/xml` 不解码。
+func mediaMime(name, declared string, data []byte) string {
+	declared = strings.TrimSpace(declared)
+	if isMediaMime(declared) {
+		return declared
+	}
+	sniffed := http.DetectContentType(data)
+	if isMediaMime(sniffed) {
+		return sniffed
+	}
+	if m := mediaExtMime[strings.ToLower(filepath.Ext(name))]; m != "" {
+		return m
+	}
+	// 兜底：既不是媒体类、后缀也认不出，就退回一个具体的声明（`text/plain; charset=utf-8`），
+	// 至少比 sniff 的 octet-stream 更贴切；通配（`image/*`）不是合法 Content-Type，不用。
+	if declared != "" && !strings.Contains(declared, "*") {
+		return declared
+	}
+	return sniffed
+}
+
+// isMediaMime 是不是浏览器能直接渲染的媒体类型。**排除通配**（`image/*`）——它不是合法
+// 的 `Content-Type`，只有它的「大类」有用，那由嗅探与后缀去落实。
+func isMediaMime(m string) bool {
+	if m == "" || strings.Contains(m, "*") {
+		return false
+	}
+	m = strings.ToLower(m)
+	return strings.HasPrefix(m, "image/") || strings.HasPrefix(m, "video/") ||
+		strings.HasPrefix(m, "audio/") || strings.HasPrefix(m, "application/pdf")
+}
+
+// mediaExtMime 只列**嗅探认不出**或需要更精确后缀的类型；png/jpeg/gif/webp/bmp 与
+// mp4/webm 已由嗅探覆盖，这里仍列全是为了「明明有后缀却退成下载」不出现。
+var mediaExtMime = map[string]string{
+	".svg": "image/svg+xml", ".bmp": "image/bmp", ".png": "image/png",
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+	".webp": "image/webp", ".ico": "image/x-icon", ".avif": "image/avif",
+	".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+	".mkv": "video/x-matroska", ".avi": "video/x-msvideo", ".ogv": "video/ogg",
+	".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+	".oga": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac",
+	".flac": "audio/flac", ".opus": "audio/opus",
 }
 
 // readMedia 取字节：Data 优先，否则读 Path。**大小在读取前先看**，免得先分配再拒。
