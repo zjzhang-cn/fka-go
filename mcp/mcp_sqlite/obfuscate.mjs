@@ -1,38 +1,48 @@
 #!/usr/bin/env node
 /**
- * 音乐商店示例库的**名称混淆器**：把 `chinook.original.db` 的表名 / 列名 / 索引名
- * 换成与原名无关的稳定短码，写成 `chinook.db`，并同步渲染 `sqlite.sql` 与
- * `skills/music-catalog-analytics/SKILL.md`。
+ * 音乐商店示例库的**名称混淆器**：把 `chinook.original.db` 的表名 / 列名 / 索引名换成与
+ * 原名无关的稳定短码，写成 `chinook.db`；并**从原始技能 `SKILL.original.md` 变换**出
+ * 混淆名版的技能 `SKILL.md`。
  *
  * ## 为什么这么做
  *
- * 目的是**测 Text-to-SQL**：模型若能从预训练里认出 Chinook 的表列名，测的就不是它
- * 读 schema 写 SQL 的能力，而是它背没背过这份示例库。把名字换成无意义短码，再给一份
+ * 目的是**测 Text-to-SQL**：模型若能从预训练里认出 Chinook 的表列名，测的就不是它读
+ * schema 写 SQL 的能力，而是它背没背过这份示例库。把名字换成无意义短码，再给一份
  * 「短码 → 业务含义」的字典技能，才测得到真本事。
  *
- * ## 三条不变量（`--check` 会守）
+ * ## 两个原始输入，两个混淆产物
  *
- * 1. **原名一个都不留**——包括 `sqlite_master.sql` 里那段建表语句、以及
- *    `IFK_AlbumArtistId` 这类**索引名**（它自己就把原列名带出来了）。所以索引名也换；
- *    `CONSTRAINT [PK_...]` 这类约束名则**直接删掉**（SQLite 不需要它们）。
+ *   chinook.original.db  →  chinook.db     （改表/列/索引名，数据不动）
+ *   SKILL.original.md    →  SKILL.md       （标识符换短码，末尾附业务含义字典）
+ *
+ * 技能只做**变换**，内容单一来源是原始技能；生成器不另写一份技能文本。唯一由生成器
+ * 补的是 front-matter 的 description（原文列的是原表名的复数，会泄漏）和末尾的含义字典。
+ *
+ * ## 三条不变量（每次运行自检）
+ *
+ * 1. **原名一个都不留**——包括 `sqlite_master.sql` 里那段建表语句、`IFK_AlbumArtistId`
+ *    这类**索引名**（它自己就把原列名带出来了）、原文 description 里的复数表名。
+ *    `CONSTRAINT [PK_...]` 这类约束名则直接删掉（SQLite 不需要它们）。
  * 2. **数据一个都不动**——值、行数、类型、PK/FK/NOT NULL 全保留；只改名。
  * 3. **可复现**——短码 = `hash(seed + 原名)`，同一 seed 必得同一份库与同一份技能。
+ *
+ * 注意：服务端（server.mjs）**不读 sqlite.sql**，一律反射实际库；本工具也不再产出
+ * `sqlite.sql`（结构的可读版本由技能末尾的字典 + `describe_schema` 提供）。
  *
  * ## 用法
  *
  *   node obfuscate.mjs [--seed chinook-obf] [--in chinook.original.db]
- *                      [--out chinook.db] [--sql sqlite.sql]
+ *                      [--out chinook.db]
+ *                      [--skill-src SKILL.original.md]
  *                      [--skill ../../skills/music-catalog-analytics/SKILL.md]
  *                      [--map obfuscate.map.json]
  *
- * 每次运行**都会自检**（无原名残留 + 行数一致），不通过就非零退出。
- *
- * `--map` 里带**原名**（code ↔ 含义 ↔ 原名），只给工具/校验用，**不要入库**
- * （.gitignore 已忽略）。技能里只出现业务含义，绝不出现原名。
+ * `--map` 里带**原名**（code ↔ 含义 ↔ 原名），只给工具用，**不要入库**（.gitignore 已忽略）。
+ * 技能里只出现业务含义，绝不出现原名。
  */
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -57,11 +67,11 @@ const args = parseArgs(process.argv.slice(2));
 const SEED = args.seed ?? 'chinook-obf';
 const IN_DB = resolve(HERE, args.in ?? 'chinook.original.db');
 const OUT_DB = resolve(HERE, args.out ?? 'chinook.db');
-const OUT_SQL = resolve(HERE, args.sql ?? 'sqlite.sql');
 const OUT_SKILL = resolve(HERE, args.skill ?? '../../skills/music-catalog-analytics/SKILL.md');
+const SKILL_SRC = resolve(HERE, args['skill-src'] ?? 'SKILL.original.md');
 const OUT_MAP = resolve(HERE, args.map ?? 'obfuscate.map.json');
 
-// ── 语义字典（生成技能用；只在这份脚本里出现原名）──────────
+// ── 语义字典（只在这份脚本里出现原名）────────────────────────
 // 表名 → 业务含义
 const TABLE_MEANING = {
 	Artist: '歌手 / 表演者',
@@ -120,68 +130,19 @@ const COLUMN_MEANING = {
 	UnitPrice: '单价',
 };
 
-// 外键 → 关系场景（键是 `子表.子列`）
-const FK_SCENE = {
-	'Album.ArtistId': '专辑属于某歌手',
-	'Track.AlbumId': '曲目属于某专辑',
-	'Track.GenreId': '曲目属于某流派',
-	'Track.MediaTypeId': '曲目属于某格式',
-	'PlaylistTrack.PlaylistId': '歌单 ↔ 曲目（多对多）',
-	'PlaylistTrack.TrackId': '同上',
-	'Invoice.CustomerId': '客户的发票',
-	'InvoiceLine.InvoiceId': '发票的明细',
-	'InvoiceLine.TrackId': '明细里的曲目',
-	'Customer.SupportRepId': '客户的客服',
-	'Employee.ReportsTo': '员工上级（自关联）',
-};
+// 混淆后技能的 front-matter description。**由生成器写**：原文那份列的是原表名的复数
+// （Artists、Albums…），令牌替换匹配不到会残留可识别的 Chinook 名。
+const SAFE_DESCRIPTION =
+	'音乐商店（Music Store）关系型数据库的查询技能。**本库的表名与列名已被混淆**（如 z_a1b2），' +
+	'本技能是唯一权威的名称字典：把混淆名对应到业务含义、表间关系与常用 SQL 模板。' +
+	'适用：跨表联合查询（热销流派、客户消费排行、员工业绩）、资产多维清点（按流派/格式/年度统计曲目）、' +
+	'异常排查（无销量的孤儿曲目、未分配客服的客户）。**不要凭记忆臆造表名或列名；不确定就用 ' +
+	'describe_schema 核对，一切以本技能与库结构为准。**';
 
-// 常用模板：写**原名**，渲染时统一替换成短码（别名 g/t/il… 不在映射里，保持不变）
-const TEMPLATES = [
-	{
-		title: '各流派销售额 Top5',
-		sql: `SELECT g.Name AS genre, ROUND(SUM(il.UnitPrice*il.Quantity),2) AS revenue
-FROM InvoiceLine il JOIN Track t ON t.TrackId=il.TrackId JOIN Genre g ON g.GenreId=t.GenreId
-GROUP BY g.GenreId ORDER BY revenue DESC LIMIT 5`,
-	},
-	{
-		title: '歌手曲目数 Top10',
-		sql: `SELECT ar.Name AS artist, COUNT(t.TrackId) AS tracks
-FROM Artist ar JOIN Album al ON al.ArtistId=ar.ArtistId JOIN Track t ON t.AlbumId=al.AlbumId
-GROUP BY ar.ArtistId ORDER BY tracks DESC LIMIT 10`,
-	},
-	{
-		title: '客户消费额 Top5',
-		sql: `SELECT c.CustomerId, c.FirstName||' '||c.LastName AS name, ROUND(SUM(i.Total),2) AS total
-FROM Customer c JOIN Invoice i ON i.CustomerId=c.CustomerId
-GROUP BY c.CustomerId ORDER BY total DESC LIMIT 5`,
-	},
-	{
-		title: '按月销售额',
-		sql: `SELECT strftime('%Y-%m', InvoiceDate) AS ym, ROUND(SUM(Total),2) AS total
-FROM Invoice GROUP BY ym ORDER BY ym`,
-	},
-	{
-		title: '每张专辑时长最长的曲目',
-		sql: `WITH r AS (
-  SELECT al.Title AS album, t.Name AS track, t.Milliseconds AS ms,
-         ROW_NUMBER() OVER (PARTITION BY al.AlbumId ORDER BY t.Milliseconds DESC) AS rn
-  FROM Track t JOIN Album al ON al.AlbumId=t.AlbumId)
-SELECT album, track, ms FROM r WHERE rn=1 ORDER BY ms DESC LIMIT 10`,
-	},
-	{
-		title: '员工上下级层级',
-		sql: `WITH RECURSIVE org(id,name,mgr,lvl) AS (
-  SELECT EmployeeId, FirstName||' '||LastName, ReportsTo, 0 FROM Employee WHERE ReportsTo IS NULL
-  UNION ALL SELECT e.EmployeeId, e.FirstName||' '||e.LastName, e.ReportsTo, org.lvl+1
-  FROM Employee e JOIN org ON e.ReportsTo=org.id)
-SELECT lvl, mgr, name FROM org ORDER BY lvl, mgr`,
-	},
-	{
-		title: '歌单曲目数 Top5',
-		sql: `SELECT p.PlaylistId, p.Name AS playlist, COUNT(pt.TrackId) AS tracks
-FROM Playlist p JOIN PlaylistTrack pt ON pt.PlaylistId=p.PlaylistId
-GROUP BY p.PlaylistId ORDER BY tracks DESC LIMIT 5`,
-	},
+// 表名的**复数**（原文 description 里出现过）。单独列出来一并守泄漏，防回归。
+const PLURAL_ALIASES = [
+	'Artists', 'Albums', 'Tracks', 'Genres', 'MediaTypes', 'Playlists', 'PlaylistTracks',
+	'Customers', 'Invoices', 'InvoiceLines', 'Employees', 'Invoice_Items',
 ];
 
 // ── 短码：全局双射 原名 → z_<sha1(seed·name)> ────────────────
@@ -209,8 +170,8 @@ function stripConstraintNames(sql) {
 	return sql.replace(/CONSTRAINT\s+(?:\[[^\]]*\]|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)\s+/gi, '');
 }
 
-function replaceTokens(sql, codeOf) {
-	return sql.replace(TOKEN, (token) => codeOf.get(token) ?? token);
+function replaceTokens(text, codeOf) {
+	return text.replace(TOKEN, (token) => codeOf.get(token) ?? token);
 }
 
 function obfuscateSql(sql, codeOf) {
@@ -222,31 +183,29 @@ const quote = (ident) => `"${String(ident).replace(/"/g, '""')}"`;
 // ── 读原库结构 ──────────────────────────────────────────────
 const src = new DatabaseSync(IN_DB, { readOnly: true });
 
-const tableRows = src
+const tables = src
 	.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-	.all();
-
-const tables = tableRows.map(({ name, sql }) => ({
-	name,
-	sql,
-	columns: src.prepare(`PRAGMA table_info(${quote(name)})`).all().map((c) => ({
-		name: c.name,
-		type: c.type,
-		notNull: c.notnull === 1,
-		pk: c.pk, // 0 = 非主键；>0 是主键里的位置（支持复合主键）
-	})),
-	foreignKeys: src.prepare(`PRAGMA foreign_key_list(${quote(name)})`).all().map((fk) => ({
-		from: fk.from,
-		table: fk.table,
-		to: fk.to,
-	})),
-	rowCount: src.prepare(`SELECT COUNT(*) AS n FROM ${quote(name)}`).get().n,
-}));
+	.all()
+	.map(({ name, sql }) => ({
+		name,
+		sql,
+		columns: src.prepare(`PRAGMA table_info(${quote(name)})`).all().map((c) => ({
+			name: c.name,
+			type: c.type,
+			notNull: c.notnull === 1,
+			pk: c.pk, // 0 = 非主键；>0 是主键里的位置（支持复合主键）
+		})),
+		foreignKeys: src.prepare(`PRAGMA foreign_key_list(${quote(name)})`).all().map((fk) => ({
+			from: fk.from,
+			table: fk.table,
+			to: fk.to,
+		})),
+		rowCount: src.prepare(`SELECT COUNT(*) AS n FROM ${quote(name)}`).get().n,
+	}));
 
 const indexRows = src
 	.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name")
-	.all()
-	.map(({ name, sql }) => ({ name, sql }));
+	.all();
 
 // ── 建映射 ──────────────────────────────────────────────────
 const allNames = new Set();
@@ -264,17 +223,12 @@ const out = new DatabaseSync(OUT_DB);
 out.exec('PRAGMA foreign_keys = OFF;');
 out.exec(`ATTACH DATABASE '${IN_DB.replace(/'/g, "''")}' AS orig;`);
 
-const obfuscatedTableSql = new Map(); // 原名 → 混淆后的 CREATE TABLE
 for (const t of tables) {
 	const ddl = obfuscateSql(t.sql, codeOf);
-	obfuscatedTableSql.set(t.name, ddl);
 	out.exec(ddl.endsWith(';') ? ddl : ddl + ';');
 }
-
-const obfuscatedIndexSql = [];
 for (const idx of indexRows) {
 	const ddl = obfuscateSql(idx.sql, codeOf);
-	obfuscatedIndexSql.push(ddl);
 	out.exec(ddl.endsWith(';') ? ddl : ddl + ';');
 }
 
@@ -289,58 +243,37 @@ for (const t of tables) {
 out.exec('DETACH DATABASE orig;');
 out.exec('VACUUM;');
 
-// ── 渲染 sqlite.sql ─────────────────────────────────────────
-const sqlFile = [
-	'/*******************************************************************************',
-	'   本文件由 mcp_sqlite/obfuscate.mjs 生成（表名/列名/索引名为混淆后的短码）。',
-	`   seed=${SEED}；源库=chinook.original.db。改回原名的映射只在这份生成器的语义字典里。`,
-	'********************************************************************************/',
-	'',
-	...tables.map((t) => obfuscatedTableSql.get(t.name).replace(/;\s*$/, '') + ';'),
-	'',
-	...obfuscatedIndexSql.map((ddl) => ddl.replace(/;\s*$/, '') + ';'),
-	'',
-].join('\n');
-writeFileSync(OUT_SQL, sqlFile);
-
-// ── 渲染 SKILL.md ───────────────────────────────────────────
+// ── 渲染 SKILL.md：从 SKILL.original.md 变换而来 ──────────────
+//
+// 技能内容以**原始技能**为底（单一来源），生成器只做三件事：
+//   1. 换掉 front-matter 的 description（原文列的是原表名的复数，见 SAFE_DESCRIPTION）。
+//   2. 删掉过时的「按表查询」条目（server 里 query_<表名> 已默认关闭，且 `query_album`
+//      这种名字把原表名写进去了）并改掉对应的「选择」一句。
+//   3. 全篇标识符 → 短码；末尾附一节「短码 → 业务含义」字典（原文只有结构、没有逐列含义）。
 function renderSkill() {
-	const lines = [];
-	const t = (name) => codeOf.get(name);
+	if (!existsSync(SKILL_SRC)) {
+		throw new Error(`找不到原始技能 ${SKILL_SRC}（可用 --skill-src 指定）`);
+	}
+	let text = readFileSync(SKILL_SRC, 'utf-8');
 
-	lines.push('---');
-	lines.push('name: music-catalog-analytics');
-	lines.push(
-		'description: 音乐商店（Music Store）关系型数据库的查询技能。**本库的表名与列名已被混淆**' +
-		'（如 z_a1b2），本技能是唯一权威的名称字典：把混淆名对应到业务含义、表间关系与常用 SQL 模板。' +
-		'适用：跨表联合查询（热销流派、客户消费排行、员工业绩）、资产多维清点（按流派/格式/年度统计曲目）、' +
-		'异常排查（无销量的孤儿曲目、未分配客服的客户）。**不要凭记忆臆造表名或列名；不确定就用 ' +
-		'describe_schema 核对，一切以本技能与库结构为准。**'
+	text = text.replace(/^description:.*$/m, `description: ${SAFE_DESCRIPTION}`);
+	text = text.replace(/- `query_<表名>`[\s\S]*?不支持 JOIN\*\*。\n/, '');
+	text = text.replace(
+		/^\*\*选择\*\*：.*$/m,
+		'**选择**：先 `describe_schema` 看结构；要数据一律用 `query_sql`（单表就直接 SELECT 那张表）。'
 	);
-	lines.push('---');
-	lines.push('');
-	lines.push('# 音乐商店数据库查询指南（混淆标识符）');
-	lines.push('');
-	lines.push('本库的表名、列名、索引名都是**与含义无关的短码**（`z_` 开头）。');
-	lines.push('mcp 工具（`mcp__sqlite__*`）需 `LLM_TOOL_EFFECTS=read,external`：');
-	lines.push('');
-	lines.push('- `list_tables`：列出全部表名（不确定有哪些表时先看它）。');
-	lines.push('- `describe_schema`：查表结构（列 / PK / NOT NULL / 外键），可传 `table` 只看一张表。');
-	lines.push('- `query_sql`：一条只读 SELECT/WITH，支持 JOIN / GROUP BY / 聚合 / 子查询 / 窗口 / 递归 CTE；值用 `?` 占位符放进 `params`。');
-	lines.push('');
-	lines.push('## 执行流程（照做，少走弯路）');
-	lines.push('');
-	lines.push('1. 用下面的**名称对照**确定要用的表 / 列（都用混淆短码写 SQL）。');
-	lines.push('2. 字段或外键不确定就先 `describe_schema`（可只传一张表），**不要臆造短码**。');
-	lines.push('3. 跨表用 `query_sql`：每张表起别名，列名带别名前缀（短码在多表之间可能重名）。');
-	lines.push('4. 聚合列用 `AS` 起名（返回 JSON 的键就是别名）；加 `LIMIT` 防刷屏。');
-	lines.push('5. 报错就按错误里的表名/列名/语法改正后重试；只允许单条 SELECT/WITH。');
-	lines.push('');
-	lines.push('## 名称对照');
+	text = replaceTokens(text, codeOf);
+
+	return text.replace(/\s*$/, '') + '\n\n' + renderDictionary() + '\n';
+}
+
+// renderDictionary 生成「短码 → 业务含义（逐列，含 PK/FK）」一节，附在变换后的技能末尾。
+function renderDictionary() {
+	const lines = [];
+	lines.push('## 名称对照（混淆短码 → 业务含义）');
 	lines.push('');
 	lines.push('记法：`PK` 主键、`FK→表.列` 外键、未标即可空。');
 	lines.push('');
-
 	for (const table of tables) {
 		const tableCode = codeOf.get(table.name);
 		const fkByFrom = new Map(table.foreignKeys.map((fk) => [fk.from, fk]));
@@ -355,60 +288,6 @@ function renderSkill() {
 		});
 		lines.push(`- **${tableCode}**（${TABLE_MEANING[table.name] ?? '未知'}）：${parts.join('；')}。`);
 	}
-	lines.push('');
-
-	lines.push('## 表间关系');
-	lines.push('');
-	lines.push('| 子表.列 | → 父表.列 | 关系 | 场景 |');
-	lines.push('|---|---|---|---|');
-	for (const table of tables) {
-		for (const fk of table.foreignKeys) {
-			const scene = FK_SCENE[`${table.name}.${fk.from}`] ?? '';
-			lines.push(
-				`| ${codeOf.get(table.name)}.${codeOf.get(fk.from)} | → ${codeOf.get(fk.table)}.${codeOf.get(fk.to)} | N:1 | ${scene} |`
-			);
-		}
-	}
-	lines.push('');
-
-	lines.push('## SQL 编写规则（提准）');
-	lines.push('');
-	lines.push(
-		`- **金额**：实际成交额 = ${codeOf.get('UnitPrice')}（单价）× ${codeOf.get('Quantity')}（数量）之和；` +
-		`${codeOf.get('Total')}（订单总额）已是整单总额。二者按问题选一个，**不要重复相加**。`
-	);
-	lines.push(
-		`- **重名列**：${codeOf.get('Name')}（名称）在歌手/专辑/曲目/流派/格式/歌单多张表里都有，` +
-		`${codeOf.get('UnitPrice')}（单价）在曲目/明细里都有——必须带表别名。`
-	);
-	lines.push(
-		`- **时长**：${codeOf.get('Milliseconds')} 是毫秒，展示秒用 ROUND(${codeOf.get('Milliseconds')}/1000.0, 1)。`
-	);
-	lines.push(
-		`- **日期**：${codeOf.get('InvoiceDate')} 是文本 'YYYY-MM-DD 00:00:00'；按年/月用 strftime('%Y-%m', ${codeOf.get('InvoiceDate')})。`
-	);
-	lines.push('- **文本拼接**：SQLite 用 `||`。');
-	lines.push(
-		`- **NULL 外键**：${codeOf.get('AlbumId')} / ${codeOf.get('GenreId')}（曲目）、${codeOf.get('SupportRepId')}（客户）、` +
-		`${codeOf.get('ReportsTo')}（员工）可为空；JOIN 会丢这些行，要保留就 LEFT JOIN，判空用 IS NULL 不要用 = NULL。`
-	);
-	lines.push(
-		'- **计数去重**：歌单可能有同名项，计数按歌单主键而非名称列；可能重复的行用 COUNT(DISTINCT ...)。'
-	);
-	lines.push('- **参数**：值用 `?` 占位符按顺序放进 `params`，不要拼字符串。`query_sql` 默认最多 100 行（可传 `limit`，上限 1000）。');
-	lines.push('');
-
-	lines.push('## 常用 SQL 模板（改条件即用）');
-	lines.push('');
-	for (const tpl of TEMPLATES) {
-		lines.push(`${tpl.title}：`);
-		lines.push('');
-		lines.push('```sql');
-		lines.push(replaceTokens(tpl.sql, codeOf));
-		lines.push('```');
-		lines.push('');
-	}
-
 	return lines.join('\n');
 }
 
@@ -435,8 +314,9 @@ writeFileSync(OUT_MAP, JSON.stringify(mapOut, null, 2) + '\n');
 // ── 校验：没有原名残留 ──────────────────────────────────────
 function checkNoOriginalNames() {
 	const problems = [];
-	const original = [...allNames].filter((n) => n.length > 1); // 单字符名太容易误伤，跳过
-	const tokenRe = new RegExp(`\\b(?:${original.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`);
+	// 认得出的原名：库里的表/列/索引名，外加原文 description 里出现过的复数表名。
+	const names = [...new Set([...allNames, ...PLURAL_ALIASES])].filter((n) => n.length > 1);
+	const tokenRe = new RegExp(`\\b(?:${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`);
 
 	const schemaText = out
 		.prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL")
@@ -445,10 +325,9 @@ function checkNoOriginalNames() {
 		.join('\n');
 	if (tokenRe.test(schemaText)) problems.push('库的 sqlite_master 里还有原名');
 
-	for (const [label, text] of [['sqlite.sql', readFileSync(OUT_SQL, 'utf-8')], ['SKILL.md', readFileSync(OUT_SKILL, 'utf-8')]]) {
-		const hit = text.match(tokenRe);
-		if (hit) problems.push(`${label} 里还有原名：${hit[0]}`);
-	}
+	const hit = readFileSync(OUT_SKILL, 'utf-8').match(tokenRe);
+	if (hit) problems.push(`SKILL.md 里还有原名：${hit[0]}`);
+
 	return problems;
 }
 
@@ -464,13 +343,11 @@ function checkRowCounts() {
 
 src.close();
 
-const nameProblems = checkNoOriginalNames();
-const rowProblems = checkRowCounts();
-const problems = [...nameProblems, ...rowProblems];
+const problems = [...checkNoOriginalNames(), ...checkRowCounts()];
 out.close();
 
-console.log(`[obfuscate] seed=${SEED} 表 ${tables.length} / 列 ${allNames.size} 个名字`);
-console.log(`[obfuscate] 写出：${OUT_DB}、${OUT_SQL}、${OUT_SKILL}、${OUT_MAP}`);
+console.log(`[obfuscate] seed=${SEED} 表 ${tables.length} / 名字 ${allNames.size} 个`);
+console.log(`[obfuscate] 写出：${OUT_DB}、${OUT_SKILL}、${OUT_MAP}`);
 if (problems.length > 0) {
 	console.error('[obfuscate] ✗ 校验未过：');
 	for (const p of problems) console.error('  - ' + p);

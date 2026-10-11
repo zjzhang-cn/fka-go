@@ -29,8 +29,7 @@
  * ## 表结构从哪来
  *
  * **一律反射实际库**（`sqlite_master` + `PRAGMA table_info` / `foreign_key_list`）。
- * 换了 `chinook.db`（比如换成上面那版混淆短码名）工具清单就跟着变，不需要同步
- * `sqlite.sql`。`sqlite.sql` 只是给人看的建表脚本，**服务不再读它**。
+ * 换了 `chinook.db`（比如换成上面那版混淆短码名）工具清单就跟着变；服务不读任何 SQL 脚本。
  *
  * 运行：node mcp_sqlite/server.mjs
  * 依赖：node:sqlite（Node 内置）+ @modelcontextprotocol/sdk（仓库根 node_modules 已有）
@@ -54,7 +53,7 @@ const MAX_SQL_LIMIT = 1000;
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** 反射实际库结构：这是**唯一**的来源（服务不读 sqlite.sql）。 */
+/** 反射实际库结构：这是**唯一**的来源（服务不读任何 SQL 脚本）。 */
 function introspectSchema(db) {
 	const names = db
 		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

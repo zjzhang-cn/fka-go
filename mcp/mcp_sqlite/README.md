@@ -1,14 +1,13 @@
 # mcp_sqlite
 
-Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具分三类：
+Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具：
 
 - **表名清单**：`list_tables` 列出所有用户表名，先看有哪些表。
-- **按表查询**， `query_<表名>`：按表查询，列过滤 + 分页，**不支持 JOIN**。
-- **复杂查询**：`query_sql` 跑任意只读 SELECT/WITH（JOIN / GROUP BY / 聚合 / 子查询 /
-  窗口函数）；`describe_schema` 先给出表结构与外键，便于拼复杂 SQL。
+- **表结构**：`describe_schema` 给出列（类型 / PK / NOT NULL）与外键，可传 `table` 只看一张表。
+- **复杂查询**：`query_sql` 跑任意只读 SELECT/WITH（JOIN / GROUP BY / 聚合 / 子查询 / 窗口函数）。
 
 表结构**一律反射实际库**（`sqlite_master` + `PRAGMA table_info` / `foreign_key_list`），
-所以换了 `chinook.db` 工具清单就跟着变。`sqlite.sql` 只是给人看的建表脚本，服务不读它。
+所以换了 `chinook.db` 工具清单就跟着变——服务不读任何 SQL 脚本。
 
 ## 名称混淆（用于 Text-to-SQL 评测）
 
@@ -21,11 +20,11 @@ Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具分三类�
 scripts/obfuscate.sh                 # 一键：生成 + 同步进安装根（默认 <仓库>/bin）
 scripts/obfuscate.sh --seed 换个种子  # 换种子则整份产物一致重生
 scripts/obfuscate.sh --no-bin        # 只生成，不同步进安装根
-node obfuscate.mjs                   # 或直接跑生成器：读 chinook.original.db → 写 chinook.db / sqlite.sql / 技能 / map.json
+node obfuscate.mjs                   # 或直接跑生成器：读 chinook.original.db + SKILL.original.md → 写 chinook.db / SKILL.md / map.json
 ```
 
-生成器同时渲染 `../../skills/music-catalog-analytics/SKILL.md`（混淆名 → 业务含义的字典
-+ 用短码重写的 SQL 模板）。它每次运行都会自检「无原名残留 + 行数一致」，不通过非零退出。
+生成器把原始技能**变换**出 `../../skills/music-catalog-analytics/SKILL.md`：标识符换成短码、
+末尾附一节「短码 → 业务含义」字典。它每次运行都会自检「无原名残留 + 行数一致」，不通过非零退出。
 `obfuscate.map.json` 含原名，只作工具用途，**不入库**（.gitignore 已忽略）。
 生成后要重启正在跑的 `fka serve` 才会读到新库 / 新技能（启动脚本只提醒、不替你重启）。
 

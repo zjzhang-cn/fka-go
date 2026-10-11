@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# 一键混淆音乐商店示例库：跑 `mcp/mcp_sqlite/obfuscate.mjs` 生成「混淆库 + sqlite.sql +
-# 技能字典」，并把这三样产物同步进安装根（默认 <仓库>/bin），省得手抄。
+# 一键混淆音乐商店示例库：跑 `mcp/mcp_sqlite/obfuscate.mjs` 从**原始库 + 原始技能**生成
+# 「混淆库 + 混淆技能」，并把这两样产物同步进安装根（默认 <仓库>/bin），省得手抄。
 #
 # 用法：
 #   scripts/obfuscate.sh [选项]
@@ -40,8 +40,9 @@ die()  { printf '\033[31m[错误] %s\033[0m\n' "$1" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || die "缺少 node（obfuscate.mjs 依赖 node:sqlite）"
 [ -f "$REPO/mcp/mcp_sqlite/obfuscate.mjs" ] || die "找不到 mcp/mcp_sqlite/obfuscate.mjs"
 [ -f "$REPO/mcp/mcp_sqlite/chinook.original.db" ] || die "找不到 chinook.original.db（脚本输入；原始库）"
+[ -f "$REPO/mcp/mcp_sqlite/SKILL.original.md" ] || die "找不到 SKILL.original.md（脚本输入；原始技能）"
 
-step "生成混淆库 / sqlite.sql / 技能字典"
+step "从原始库 + 原始技能生成混淆产物"
 ARGS=()
 [ -n "$SEED" ] && ARGS+=(--seed "$SEED")
 # bash 3.2 + set -u 下，空数组展开会报未绑定变量，所以要加 ${arr[@]+...} 守卫
@@ -52,10 +53,9 @@ if [ "$SYNC_BIN" -eq 1 ]; then
   if [ -d "$HOME_DIR/mcp_sqlite" ]; then
     step "同步进安装根 $HOME_DIR"
     cp "$REPO/mcp/mcp_sqlite/chinook.db" "$HOME_DIR/mcp_sqlite/chinook.db"
-    cp "$REPO/mcp/mcp_sqlite/sqlite.sql" "$HOME_DIR/mcp_sqlite/sqlite.sql"
     mkdir -p "$HOME_DIR/skills/music-catalog-analytics"
     cp "$REPO/skills/music-catalog-analytics/SKILL.md" "$HOME_DIR/skills/music-catalog-analytics/SKILL.md"
-    printf '  已同步 chinook.db / sqlite.sql / SKILL.md\n'
+    printf '  已同步 chinook.db / SKILL.md\n'
   else
     printf '\033[33m[跳过]\033[0m %s/mcp_sqlite 不存在，未同步进安装根（用 --no-bin 可跳过此提示）\n' "$HOME_DIR"
   fi
