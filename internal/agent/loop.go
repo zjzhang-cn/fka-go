@@ -143,7 +143,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 工具看到的那份外界。**由输入里的身份与回话能力拼出来**，而不是让消息层
 	// 自己拼一个 tools.Context 递进来——那样同一个「外界」就有两个入口，
 	// 而漏掉一处身份的后果是权限过滤失效（见 tools.Context.PrincipalID）。
-	tc := tools.Context{PrincipalID: input.PrincipalID, Reply: input.Reply}
+	tc := tools.Context{PrincipalID: input.PrincipalID, SessionID: input.SessionID, Reply: input.Reply}
 
 	// 回显：前端传了 Emitter 就把推理流也接到它上面；没传就让 provider 走自己的落点。
 	// 推理由模型层按块写出，这里经 ctx 换一条通道，逐块变成 Emitter 事件。
@@ -193,8 +193,11 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 本回合新产生的消息从本轮 user 起。收尾时原样落进会话文件——**含 assistant 的
 	// toolCalls 与工具结果**，下一轮才能逐字重放这一整段前缀
 	turnStart := len(messages) - 1
+	// historyCleared 本轮有工具清空了会话历史。清空后**不能落盘本轮**——否则这句
+	// 「清空历史」+ 工具调用 + 答复又会被写回，下一轮依旧带上它，等于没清。
+	historyCleared := false
 	persistTurn := func() {
-		if r.sessionHistory != nil {
+		if r.sessionHistory != nil && !historyCleared {
 			r.sessionHistory.Append(input.SessionID, persistable(messages[turnStart:]))
 		}
 	}
@@ -267,6 +270,9 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 
 			// 失败也照样喂回去：模型看到「参数不合法」会自己改，这正是循环的意义
 			outcome := r.runToolCall(ctx, call, tc)
+			if outcome.ClearedHistory {
+				historyCleared = true
+			}
 			event := ToolEvent{Name: call.Name, Arguments: call.Arguments, Result: outcome.Content}
 			toolEvents = append(toolEvents, event)
 			if emitter != nil {

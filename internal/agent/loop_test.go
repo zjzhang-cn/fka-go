@@ -9,6 +9,7 @@ import (
 
 	"github.com/zjzhang-cn/fka-go/internal/llm"
 	"github.com/zjzhang-cn/fka-go/internal/tools"
+	"github.com/zjzhang-cn/fka-go/internal/tools/history"
 )
 
 // fakeSource 一个可控的工具源：按预设脚本回答。
@@ -588,5 +589,55 @@ func TestRun_未放行send时不投递(t *testing.T) {
 	}
 	if body := toolMessageContent(*seen); !strings.Contains(body, "未启用发送能力") {
 		t.Errorf("该告诉模型为什么没发：%q", body)
+	}
+}
+
+// TestRun_清空历史后本轮不落盘 清空历史后若还把这轮（那句「清空历史」+ 调用 + 答复）
+// 写回会话文件，下一轮依旧会带上它——用户看到的正是「清空历史」这句话自己还在。
+// 所以成功清空的那一轮必须**不落盘**。这里走真正的 history 源，端到端钉住这条。
+func TestRun_清空历史后本轮不落盘(t *testing.T) {
+	dir := t.TempDir()
+	store := llm.NewSessionHistory(dir)
+	store.Append("s", []llm.ChatMessage{{Role: llm.RoleUser, Content: "旧问题"}})
+
+	// history__clear 是 delete 类，默认策略（只读）看不到它——放行 delete 才走得到。
+	t.Setenv(tools.ToolEffectsEnv, "read,delete")
+	registry := tools.NewRegistry([]tools.Source{history.NewSource(store)}, tools.ReadToolPolicy())
+	chat, _ := scriptedChat(t, "history__clear", "{}", "已清空")
+
+	runner := &Runner{chat: chat, tools: registry, MaxSteps: 5, enabled: true, sessionHistory: store}
+	if _, err := runner.Run(context.Background(), RunnerInput{
+		SessionID: "s", PrincipalID: "u", Question: "清空历史会话",
+	}); err != nil {
+		t.Fatalf("Run 返错：%v", err)
+	}
+
+	if got := store.Load("s"); len(got) != 0 {
+		t.Errorf("清空历史后本轮不该落盘，实际残留 %d 条：%+v", len(got), got)
+	}
+}
+
+// TestRun_没清空则照常落盘 对照组：没有清空标记时本轮照常落盘，免得「不落盘」被写成
+// 了无条件的。
+func TestRun_没清空则照常落盘(t *testing.T) {
+	dir := t.TempDir()
+	store := llm.NewSessionHistory(dir)
+
+	source := &fakeSource{
+		specs:   []tools.Spec{searchSpec()},
+		replies: map[string]string{"search": "结果"},
+	}
+	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
+	chat, _ := scriptedChat(t, "fake__search", `{"q":"x"}`, "答案")
+
+	runner := &Runner{chat: chat, tools: registry, MaxSteps: 5, enabled: true, sessionHistory: store}
+	if _, err := runner.Run(context.Background(), RunnerInput{
+		SessionID: "s", PrincipalID: "u", Question: "问一句",
+	}); err != nil {
+		t.Fatalf("Run 返错：%v", err)
+	}
+
+	if got := store.Load("s"); len(got) == 0 {
+		t.Error("没清空时本轮该照常落盘")
 	}
 }
