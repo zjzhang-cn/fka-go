@@ -31,8 +31,11 @@ sandbox/
 # chinook.db 是 mcp_sqlite 的示例数据（server 默认识它），**入库不忽略**。
 node_modules/
 npm-debug.log*
-yarn-error.log*
+yarn-error.log
 .pnpm-debug.log*
+
+# 名称混淆的中间产物：含**原始表/列名**，只给生成器用，不入库。
+mcp/mcp_sqlite/obfuscate.map.json
 
 # 编辑器与系统
 .DS_Store
