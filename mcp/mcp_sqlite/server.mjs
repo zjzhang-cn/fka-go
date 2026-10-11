@@ -28,13 +28,13 @@
  *
  * ## 表结构从哪来
  *
- * `sqlite.sql` 是权威来源；文件缺失时退回 `PRAGMA table_info` 反射实际库结构。
- * 所以换了 `chinook.db` 或改了建表脚本，工具清单会跟着变。
+ * **一律反射实际库**（`sqlite_master` + `PRAGMA table_info` / `foreign_key_list`）。
+ * 换了 `chinook.db`（比如换成上面那版混淆短码名）工具清单就跟着变，不需要同步
+ * `sqlite.sql`。`sqlite.sql` 只是给人看的建表脚本，**服务不再读它**。
  *
  * 运行：node mcp_sqlite/server.mjs
  * 依赖：node:sqlite（Node 内置）+ @modelcontextprotocol/sdk（仓库根 node_modules 已有）
  */
-import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,52 +46,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 const SERVER_INFO = { name: 'sqlite', version: '0.1.0' };
 const DB_PATH = process.env.CHINOOK_DB_PATH?.trim() || join(HERE, 'chinook.db');
-const SQL_PATH = join(HERE, 'sqlite.sql');
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 200;
 const MAX_CELL = 40;
 const DEFAULT_SQL_LIMIT = 100;
 const MAX_SQL_LIMIT = 1000;
 
-/** 数值列的类型；其余一律当文本。 */
-const NUMERIC_TYPES = new Set(['INTEGER', 'NUMERIC', 'REAL', 'FLOAT', 'DOUBLE']);
-
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/**
- * 从 `sqlite.sql` 解析 `CREATE TABLE` 的列。
- * 返回 `{ table, columns: [{ name, numeric }] }[]`；解析不出任何表时返回 `null`。
- */
-function parseSchemaSql(sql) {
-	const tables = [];
-	const createRe = /CREATE\s+TABLE\s+\[?(\w+)\]?\s*\(([\s\S]*?)\n\s*\)\s*;/gi;
-
-	for (const match of sql.matchAll(createRe)) {
-		const table = match[1];
-		const columns = [];
-		const seen = new Set();
-
-		for (const rawLine of match[2].split('\n')) {
-			const line = rawLine.trim().replace(/,$/, '');
-			if (line.length === 0) continue;
-
-			// 约束行不是列定义（含外键末尾独立成行的 ON DELETE / ON UPDATE）
-			if (/^(CONSTRAINT|PRIMARY|FOREIGN|UNIQUE|CHECK|ON)\b/i.test(line)) continue;
-
-			const col = line.match(/^\[?(\w+)\]?\s+([A-Za-z]+)/);
-			if (!col || seen.has(col[1])) continue;
-
-			seen.add(col[1]);
-			columns.push({ name: col[1], numeric: NUMERIC_TYPES.has(col[2].toUpperCase()) });
-		}
-
-		if (columns.length > 0) tables.push({ table, columns });
-	}
-
-	return tables.length > 0 ? tables : null;
-}
-
-/** 建表脚本缺失/解析不出时，反射实际库结构。 */
+/** 反射实际库结构：这是**唯一**的来源（服务不读 sqlite.sql）。 */
 function introspectSchema(db) {
 	const names = db
 		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -109,20 +72,6 @@ function introspectSchema(db) {
 				})),
 			};
 		});
-}
-
-/** 读取表结构：优先 `sqlite.sql`，退回库反射。 */
-function readSchema(db) {
-	try {
-		const parsed = parseSchemaSql(readFileSync(SQL_PATH, 'utf-8'));
-		if (parsed) return parsed;
-	} catch (error) {
-		console.error(
-			`[${SERVER_INFO.name}] 读不了 ${SQL_PATH}，改用库结构反射：${error instanceof Error ? error.message : String(error)
-			}`
-		);
-	}
-	return introspectSchema(db);
 }
 
 /** 单元格转成一行里的文字，过长截断。 */
@@ -156,7 +105,7 @@ function quoteIdent(ident, known) {
 }
 
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
-const schema = readSchema(db);
+const schema = introspectSchema(db);
 const server = new McpServer(SERVER_INFO);
 
 /** 每个 SQL 工具都复用的查询实现。 */
