@@ -55,22 +55,63 @@
     return line;
   }
 
+  // 后缀 → 类别，给「MIME 认不出来」兜底。服务端的 Content-Type 大多已经具体
+  // （含 svg、视频、音频），但通配（image/*）、空串、或嗅探认不出的类型要有第二条路。
+  var EXT_KIND = {
+    png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image",
+    bmp: "image", svg: "image", ico: "image", avif: "image",
+    mp4: "video", webm: "video", mov: "video", mkv: "video", avi: "video", ogv: "video",
+    mp3: "audio", wav: "audio", ogg: "audio", oga: "audio", m4a: "audio",
+    aac: "audio", flac: "audio", opus: "audio", pdf: "pdf",
+  };
+
+  // mediaKind 决定用哪种元素渲染：先看 MIME 前缀，看不出来再看后缀。
+  function mediaKind(mime, name) {
+    mime = (mime || "").toLowerCase();
+    if (mime.indexOf("image/") === 0) return "image";
+    if (mime.indexOf("video/") === 0) return "video";
+    if (mime.indexOf("audio/") === 0) return "audio";
+    if (mime.indexOf("application/pdf") === 0) return "pdf";
+    var m = /\.([a-z0-9]+)$/.exec((name || "").toLowerCase());
+    return (m && EXT_KIND[m[1]]) || "file";
+  }
+
   function addMedia(payload) {
     var box = document.createElement("div");
     box.className = "media";
     var url = payload.url || "";
-    if ((payload.mimeType || "").indexOf("image/") === 0) {
-      var img = document.createElement("img");
-      img.src = url;
-      img.alt = payload.name || "图片";
-      box.appendChild(img);
+    var kind = mediaKind(payload.mimeType, payload.name);
+    var node;
+    if (kind === "image") {
+      node = document.createElement("img");
+      node.src = url;
+      node.alt = payload.name || "图片";
+      node.loading = "lazy";
+    } else if (kind === "video") {
+      node = document.createElement("video");
+      node.src = url;
+      node.controls = true;
+      node.preload = "metadata";
+      node.setAttribute("playsinline", "");
+    } else if (kind === "audio") {
+      node = document.createElement("audio");
+      node.src = url;
+      node.controls = true;
+      node.preload = "metadata";
+    } else if (kind === "pdf") {
+      node = document.createElement("iframe");
+      node.src = url;
+      node.className = "pdf";
+      node.title = payload.name || "PDF";
     } else {
-      var a = document.createElement("a");
-      a.href = url;
-      a.textContent = "📎 " + (payload.name || "下载文件");
-      if (payload.name) a.setAttribute("download", payload.name);
-      box.appendChild(a);
+      // 认不出的类型不做「附件下载」：新标签页打开，交给浏览器自己决定怎么呈现。
+      node = document.createElement("a");
+      node.href = url;
+      node.target = "_blank";
+      node.rel = "noopener";
+      node.textContent = "📎 " + (payload.name || "打开文件");
     }
+    box.appendChild(node);
     el.log.appendChild(box);
     scroll();
   }
