@@ -14,7 +14,8 @@ Chinook 示例库（`chinook.db`）的只读查询 MCP 服务。工具分三类�
 
 `chinook.db` 的表名/列名/索引名已被换成与含义无关的短码（`z_` 开头），好让模型没法靠
 预训练里认得的 Chinook 名字蒙对，只能读 schema / 技能写 SQL。原始库保留为
-`chinook.original.db`（生成器输入）。
+`chinook.original.db`（生成器输入），混淆前的**原始技能**（真实 Chinook 版）另存为
+`SKILL.original.md`，仅供对照 / 还原。
 
 ```bash
 scripts/obfuscate.sh                 # 一键：生成 + 同步进安装根（默认 <仓库>/bin）
