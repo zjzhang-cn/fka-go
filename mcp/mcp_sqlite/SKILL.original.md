@@ -58,6 +58,67 @@ NUMERIC(10,2)，标 † 为 DATETIME（文本日期）。
 - **Employee**：EmployeeId PK；LastName；FirstName；Title；ReportsTo FK→Employee（自关联，上级）；
   BirthDate†；HireDate†；Address；City；State；Country；PostalCode；Phone；Fax；Email。
 
+## 名称对照
+
+英文表名 / 字段名 → 中文含义。混淆时这一节的英文名整体换成短码，含义列原样保留，
+所以目标技能的同一节与这里一一对应。
+
+表名：
+
+- Artist → 歌手 / 表演者
+- Album → 专辑
+- Track → 曲目（歌曲）
+- Genre → 音乐流派
+- MediaType → 媒体格式（编码 / 载体）
+- Playlist → 播放列表（歌单）
+- PlaylistTrack → 歌单与曲目的多对多关联表
+- Customer → 客户
+- Invoice → 发票（订单）
+- InvoiceLine → 发票明细行
+- Employee → 员工
+
+字段名：
+
+- Address → 街道地址
+- AlbumId → 专辑 ID
+- ArtistId → 歌手 ID
+- BillingAddress → 账单街道地址
+- BillingCity → 账单城市
+- BillingCountry → 账单国家
+- BillingPostalCode → 账单邮编
+- BillingState → 账单州 / 省
+- BirthDate → 出生日期
+- Bytes → 文件字节数
+- City → 城市
+- Company → 公司
+- Composer → 作曲者
+- Country → 国家
+- CustomerId → 客户 ID
+- Email → 邮箱
+- EmployeeId → 员工 ID
+- Fax → 传真
+- FirstName → 名
+- GenreId → 流派 ID
+- HireDate → 入职日期
+- InvoiceDate → 订单日期
+- InvoiceId → 发票 ID
+- InvoiceLineId → 发票明细行 ID
+- LastName → 姓
+- MediaTypeId → 媒体格式 ID
+- Milliseconds → 时长（毫秒）
+- Name → 名称（含义随所在表而定：歌手名 / 专辑名 / 曲名 / 流派名 / 格式名 / 歌单名）
+- Phone → 电话
+- PlaylistId → 歌单 ID
+- PostalCode → 邮编
+- Quantity → 数量
+- ReportsTo → 上级员工 ID
+- State → 州 / 省
+- SupportRepId → 客服代表（员工）ID
+- Title → 头衔 / 标题（员工表为职务，专辑表为专辑名）
+- Total → 订单总额
+- TrackId → 曲目 ID
+- UnitPrice → 单价
+
 ## 表间关系
 
 | 子表.外键 | → 父表.主键 | 关系 | 场景 |

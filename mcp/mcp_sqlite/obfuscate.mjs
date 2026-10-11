@@ -13,21 +13,25 @@
  * ## 两个原始输入，两个混淆产物
  *
  *   chinook.original.db  →  chinook.db     （改表/列/索引名，数据不动）
- *   SKILL.original.md    →  SKILL.md       （标识符换短码，末尾附业务含义字典）
+ *   SKILL.original.md    →  SKILL.md       （标识符换短码；「名称对照」节用生成器字典重渲染）
  *
- * 技能只做**变换**，内容单一来源是原始技能；生成器不另写一份技能文本。唯一由生成器
- * 补的是 front-matter 的 description（原文列的是原表名的复数，会泄漏）和末尾的含义字典。
+ * 技能以原始技能为底**变换**：结构原样保留，标识符换成短码。其中「## 名称对照」一节由
+ * **生成器自身的字典**（`TABLE_MEANING` / `COLUMN_MEANING`）渲染成「短码 → 中文含义」，
+ * 替换原文那一节——原始技能里也有一份同结构的「英文名 → 中文含义」，自检保证两边条目、
+ * 顺序、含义一致，于是**原始技能与目标技能一一对应**。front-matter 的 description 由生成器
+ * 补（原文列的是原表名的复数，会泄漏）。
  *
- * ## 三条不变量（每次运行自检）
+ * ## 四条不变量（每次运行自检）
  *
  * 1. **原名一个都不留**——包括 `sqlite_master.sql` 里那段建表语句、`IFK_AlbumArtistId`
  *    这类**索引名**（它自己就把原列名带出来了）、原文 description 里的复数表名。
  *    `CONSTRAINT [PK_...]` 这类约束名则直接删掉（SQLite 不需要它们）。
  * 2. **数据一个都不动**——值、行数、类型、PK/FK/NOT NULL 全保留；只改名。
  * 3. **可复现**——短码 = `hash(seed + 原名)`，同一 seed 必得同一份库与同一份技能。
+ * 4. **对照不丢**——原始技能「名称对照」的条目、顺序、含义必须与生成器字典一致，缺一条就报错。
  *
  * 注意：服务端（server.mjs）**不读 sqlite.sql**，一律反射实际库；本工具也不再产出
- * `sqlite.sql`（结构的可读版本由技能末尾的字典 + `describe_schema` 提供）。
+ * `sqlite.sql`（结构的可读版本由技能的「名称对照」一节 + `describe_schema` 提供）。
  *
  * ## 用法
  *
@@ -245,11 +249,12 @@ out.exec('VACUUM;');
 
 // ── 渲染 SKILL.md：从 SKILL.original.md 变换而来 ──────────────
 //
-// 技能内容以**原始技能**为底（单一来源），生成器只做三件事：
+// 技能以**原始技能**为底，生成器做四件事：
 //   1. 换掉 front-matter 的 description（原文列的是原表名的复数，见 SAFE_DESCRIPTION）。
-//   2. 删掉过时的「按表查询」条目（server 里 query_<表名> 已默认关闭，且 `query_album`
-//      这种名字把原表名写进去了）并改掉对应的「选择」一句。
-//   3. 全篇标识符 → 短码；末尾附一节「短码 → 业务含义」字典（原文只有结构、没有逐列含义）。
+//   2. 删掉过时的「按表查询」条目并改掉对应的「选择」一句。
+//   3. 用**生成器自身的字典**渲染「## 名称对照」一节（短码 → 中文含义），替换原文同名节。
+//   4. 全篇标识符 → 短码。
+// 于是目标技能与原始技能**结构、内容一一对应**（同节同序，只是英文名换成短码）。
 function renderSkill() {
 	if (!existsSync(SKILL_SRC)) {
 		throw new Error(`找不到原始技能 ${SKILL_SRC}（可用 --skill-src 指定）`);
@@ -262,33 +267,51 @@ function renderSkill() {
 		/^\*\*选择\*\*：.*$/m,
 		'**选择**：先 `describe_schema` 看结构；要数据一律用 `query_sql`（单表就直接 SELECT 那张表）。'
 	);
+	text = replaceMeaningSection(text, renderMeaningSection());
 	text = replaceTokens(text, codeOf);
 
-	return text.replace(/\s*$/, '') + '\n\n' + renderDictionary() + '\n';
+	return text.replace(/\s*$/, '') + '\n';
 }
 
-// renderDictionary 生成「短码 → 业务含义（逐列，含 PK/FK）」一节，附在变换后的技能末尾。
-function renderDictionary() {
-	const lines = [];
-	lines.push('## 名称对照（混淆短码 → 业务含义）');
-	lines.push('');
-	lines.push('记法：`PK` 主键、`FK→表.列` 外键、未标即可空。');
-	lines.push('');
-	for (const table of tables) {
-		const tableCode = codeOf.get(table.name);
-		const fkByFrom = new Map(table.foreignKeys.map((fk) => [fk.from, fk]));
-		const parts = table.columns.map((col) => {
-			const colCode = codeOf.get(col.name);
-			const marks = [];
-			if (col.pk > 0) marks.push('PK');
-			const fk = fkByFrom.get(col.name);
-			if (fk) marks.push(`FK→${codeOf.get(fk.table)}.${codeOf.get(fk.to)}`);
-			const suffix = marks.length > 0 ? ` [${marks.join(' ')}]` : '';
-			return `${colCode}（${COLUMN_MEANING[col.name] ?? '未知'}）${suffix}`;
-		});
-		lines.push(`- **${tableCode}**（${TABLE_MEANING[table.name] ?? '未知'}）：${parts.join('；')}。`);
+// renderMeaningSection 用**生成器自身的字典**渲染「## 名称对照」一节（短码 → 中文含义）。
+// 顺序取自字典本身，与原始技能那一节一致。
+function renderMeaningSection() {
+	const lines = [
+		'## 名称对照',
+		'',
+		'英文表名 / 字段名 → 中文含义。混淆时这一节的英文名整体换成短码，含义列原样保留，',
+		'所以目标技能的同一节与这里一一对应。',
+		'',
+		'表名：',
+		'',
+	];
+	for (const name of Object.keys(TABLE_MEANING)) lines.push(`- ${codeOf.get(name)} → ${TABLE_MEANING[name]}`);
+	lines.push('', '字段名：', '');
+	for (const name of Object.keys(COLUMN_MEANING)) lines.push(`- ${codeOf.get(name)} → ${COLUMN_MEANING[name]}`);
+	return lines.join('\n') + '\n';
+}
+
+// replaceMeaningSection 把原文的「## 名称对照」一节换成生成器渲染的那份（到下一个 `## ` 为止）。
+function replaceMeaningSection(text, rendered) {
+	const header = /^## 名称对照\s*$/m;
+	const at = text.search(header);
+	if (at < 0) throw new Error(`原始技能里找不到「## 名称对照」一节：${SKILL_SRC}`);
+	const before = text.slice(0, at);
+	const after = text.slice(at).split(header)[1] ?? '';
+	const nextAt = after.search(/^## /m);
+	const tail = nextAt >= 0 ? after.slice(nextAt) : '';
+	return before + rendered + '\n' + tail;
+}
+
+// parseMeaningSection 从原始技能的「## 名称对照」一节取 `英文名 → 中文含义`（保持顺序）。
+function parseMeaningSection(text) {
+	const section = (text.split(/^## 名称对照\s*$/m)[1] ?? '').split(/^## /m)[0];
+	const map = new Map();
+	for (const line of section.split('\n')) {
+		const hit = line.match(/^\s*-\s*(\S+)\s*→\s*(.+?)\s*$/);
+		if (hit) map.set(hit[1], hit[2]);
 	}
-	return lines.join('\n');
+	return map;
 }
 
 writeFileSync(OUT_SKILL, renderSkill());
@@ -341,9 +364,28 @@ function checkRowCounts() {
 	return problems;
 }
 
+// ── 校验：原始技能与生成器字典一一对应 ──────────────────────
+// 生成器用自己的字典渲染目标技能的「名称对照」；原始技能也有一份同结构的英文版。这条钉住
+// 两边条目、顺序、含义一致——否则原始技能与目标技能就会「对不上」。
+function checkMeaningCorresponds() {
+	const problems = [];
+	const parsed = parseMeaningSection(readFileSync(SKILL_SRC, 'utf-8'));
+	const expected = [...Object.keys(TABLE_MEANING), ...Object.keys(COLUMN_MEANING)];
+	const got = [...parsed.keys()];
+	if (got.length !== expected.length || got.some((name, i) => name !== expected[i])) {
+		problems.push('原始技能「名称对照」的条目或顺序与生成器字典不一致');
+		return problems;
+	}
+	for (const name of expected) {
+		const meaning = TABLE_MEANING[name] ?? COLUMN_MEANING[name];
+		if (parsed.get(name) !== meaning) problems.push(`「名称对照」里 ${name} 的含义与生成器字典不一致`);
+	}
+	return problems;
+}
+
 src.close();
 
-const problems = [...checkNoOriginalNames(), ...checkRowCounts()];
+const problems = [...checkNoOriginalNames(), ...checkMeaningCorresponds(), ...checkRowCounts()];
 out.close();
 
 console.log(`[obfuscate] seed=${SEED} 表 ${tables.length} / 名字 ${allNames.size} 个`);
@@ -353,4 +395,4 @@ if (problems.length > 0) {
 	for (const p of problems) console.error('  - ' + p);
 	process.exit(1);
 }
-console.log('[obfuscate] ✓ 无原名残留、行数一致');
+console.log('[obfuscate] ✓ 无原名残留、行数一致、原始/目标对照一致');
