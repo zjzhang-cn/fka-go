@@ -1,135 +1,108 @@
 ---
 name: music-catalog-analytics
-description: 本技能专注于音乐商店（Music Store）关系型数据库的架构理解与复杂数据查询。包含媒体资产、销售发票、客户关系及员工组织四大核心业务板块。 **适用场景**：支持的表关系模型, 涵盖 Artists、Albums、Tracks、Genres、Customers、Invoices、Invoice_Items 等表的 1:N 和 N:M 关联逻辑。**核心功能**：跨表联合查询（如分析热销音乐流派、客户消费排行、员工业绩考核）。资产多维清点（如按流派、媒体类型、年度统计曲库分布）。异常数据排查（如查找无销售记录的孤儿单曲、未分配服务代表的客户）。
+description: 音乐商店（Music Store）关系型数据库的查询技能。**本库的表名与列名已被混淆**（如 z_a1b2），本技能是唯一权威的名称字典：把混淆名对应到业务含义、表间关系与常用 SQL 模板。适用：跨表联合查询（热销流派、客户消费排行、员工业绩）、资产多维清点（按流派/格式/年度统计曲目）、异常排查（无销量的孤儿曲目、未分配客服的客户）。**不要凭记忆臆造表名或列名；不确定就用 describe_schema 核对，一切以本技能与库结构为准。**
 ---
 
-# 音乐商店数据库查询指南
+# 音乐商店数据库查询指南（混淆标识符）
 
-SQLite 音乐商店示例库。mcp工具（ `mcp__sqlite__*` ）需 `LLM_TOOL_EFFECTS=read,external`：
+本库的表名、列名、索引名都是**与含义无关的短码**（`z_` 开头）。
+mcp 工具（`mcp__sqlite__*`）需 `LLM_TOOL_EFFECTS=read,external`：
 
 - `list_tables`：列出全部表名（不确定有哪些表时先看它）。
 - `describe_schema`：查表结构（列 / PK / NOT NULL / 外键），可传 `table` 只看一张表。
-- `query_<表名>`：一表一个——`query_album` `query_artist` `query_customer` `query_employee`
-  `query_genre` `query_invoice` `query_invoiceline` `query_mediatype` `query_playlist`
-  `query_playlisttrack` `query_track`；列过滤 + 分页，**不支持 JOIN**。
-- `query_sql`：一条只读 SELECT/WITH，支持 JOIN / GROUP BY / 聚合 / 子查询 / 窗口 / 递归 CTE；
-  值用 `?` 占位符放进 `params`。
-
-**选择**：只罗列单表数据 → `query_<表名>`；跨表、聚合、排行、层级 → `query_sql`。
+- `query_sql`：一条只读 SELECT/WITH，支持 JOIN / GROUP BY / 聚合 / 子查询 / 窗口 / 递归 CTE；值用 `?` 占位符放进 `params`。
 
 ## 执行流程（照做，少走弯路）
 
-1. 想清楚要哪几个表、哪些列、怎么过滤/分组/排序。
-2. 字段或外键不确定就先 `describe_schema`（可只传一张表），**不要臆造表名或列名**。
-3. 跨表用 `query_sql`：每张表起别名，列名带别名前缀（`Name`、`UnitPrice` 在多表重名）。
+1. 用下面的**名称对照**确定要用的表 / 列（都用混淆短码写 SQL）。
+2. 字段或外键不确定就先 `describe_schema`（可只传一张表），**不要臆造短码**。
+3. 跨表用 `query_sql`：每张表起别名，列名带别名前缀（短码在多表之间可能重名）。
 4. 聚合列用 `AS` 起名（返回 JSON 的键就是别名）；加 `LIMIT` 防刷屏。
 5. 报错就按错误里的表名/列名/语法改正后重试；只允许单条 SELECT/WITH。
 
-## 表结构
+## 名称对照
 
-记法：`PK` 主键、`FK→表` 外键、未标即可空；ID/数量为 INTEGER，文本 NVARCHAR，金额
-NUMERIC(10,2)，标 † 为 DATETIME（文本日期）。
+记法：`PK` 主键、`FK→表.列` 外键、未标即可空。
 
-媒体与音乐：
-
-- **Artist**：ArtistId PK；Name。
-- **Album**：AlbumId PK；Title；ArtistId FK→Artist。
-- **Genre**：GenreId PK；Name。
-- **MediaType**：MediaTypeId PK；Name。
-- **Track**：TrackId PK；Name；AlbumId FK→Album；MediaTypeId FK→MediaType；GenreId FK→Genre；
-  Composer；Milliseconds（毫秒）；Bytes；UnitPrice（售价）。
-
-播放列表：
-
-- **Playlist**：PlaylistId PK；Name。
-- **PlaylistTrack**（多对多中间表）：PlaylistId PK·FK→Playlist；TrackId PK·FK→Track。
-
-客户与销售：
-
-- **Customer**：CustomerId PK；FirstName；LastName；Company；Address；City；State；Country；
-  PostalCode；Phone；Fax；Email；SupportRepId FK→Employee。
-- **Invoice**：InvoiceId PK；CustomerId FK→Customer；InvoiceDate†；BillingAddress；BillingCity；
-  BillingState；BillingCountry；BillingPostalCode；Total（订单总额）。
-- **InvoiceLine**：InvoiceLineId PK；InvoiceId FK→Invoice；TrackId FK→Track；UnitPrice（成交单价）；
-  Quantity。
-
-员工：
-
-- **Employee**：EmployeeId PK；LastName；FirstName；Title；ReportsTo FK→Employee（自关联，上级）；
-  BirthDate†；HireDate†；Address；City；State；Country；PostalCode；Phone；Fax；Email。
+- **z_7c9787**（专辑）：z_390399（专辑 ID） [PK]；z_e6d303（头衔 / 标题（员工表为职务，专辑表为专辑名））；z_2f7d91（歌手 ID） [FK→z_f4a38f.z_2f7d91]。
+- **z_f4a38f**（歌手 / 表演者）：z_2f7d91（歌手 ID） [PK]；z_f77cd2（名称（含义随所在表而定：歌手名 / 专辑名 / 曲名 / 流派名 / 格式名 / 歌单名））。
+- **z_2af565**（客户）：z_8c8908（客户 ID） [PK]；z_742f3a（名）；z_1aad66（姓）；z_dd2680（公司）；z_095c3b（街道地址）；z_c89d56（城市）；z_6e134e（州 / 省）；z_44584d（国家）；z_a2c90a（邮编）；z_e2c0e1（电话）；z_1c61a7（传真）；z_bfe382（邮箱）；z_a8691f（客服代表（员工）ID） [FK→z_fbb450.z_05c212]。
+- **z_fbb450**（员工）：z_05c212（员工 ID） [PK]；z_1aad66（姓）；z_742f3a（名）；z_e6d303（头衔 / 标题（员工表为职务，专辑表为专辑名））；z_4e96af（上级员工 ID） [FK→z_fbb450.z_05c212]；z_5e1000（出生日期）；z_c8bf4f（入职日期）；z_095c3b（街道地址）；z_c89d56（城市）；z_6e134e（州 / 省）；z_44584d（国家）；z_a2c90a（邮编）；z_e2c0e1（电话）；z_1c61a7（传真）；z_bfe382（邮箱）。
+- **z_69bb8b**（音乐流派）：z_ccacba（流派 ID） [PK]；z_f77cd2（名称（含义随所在表而定：歌手名 / 专辑名 / 曲名 / 流派名 / 格式名 / 歌单名））。
+- **z_3ec2de**（发票（订单））：z_a24fb2（发票 ID） [PK]；z_8c8908（客户 ID） [FK→z_2af565.z_8c8908]；z_605bad（订单日期）；z_ead0f8（账单街道地址）；z_3c9709（账单城市）；z_ff3acc（账单州 / 省）；z_47e659（账单国家）；z_4a113e（账单邮编）；z_6c577b（订单总额）。
+- **z_3427e1**（发票明细行）：z_9d0b0f（发票明细行 ID） [PK]；z_a24fb2（发票 ID） [FK→z_3ec2de.z_a24fb2]；z_03ab46（曲目 ID） [FK→z_fa92c4.z_03ab46]；z_aafe4d（单价）；z_9238bb（数量）。
+- **z_d3a8b1**（媒体格式（编码 / 载体））：z_8c15c7（媒体格式 ID） [PK]；z_f77cd2（名称（含义随所在表而定：歌手名 / 专辑名 / 曲名 / 流派名 / 格式名 / 歌单名））。
+- **z_30d9c3**（播放列表（歌单））：z_ea1b0b（歌单 ID） [PK]；z_f77cd2（名称（含义随所在表而定：歌手名 / 专辑名 / 曲名 / 流派名 / 格式名 / 歌单名））。
+- **z_7a1bbe**（歌单与曲目的多对多关联表）：z_ea1b0b（歌单 ID） [PK FK→z_30d9c3.z_ea1b0b]；z_03ab46（曲目 ID） [PK FK→z_fa92c4.z_03ab46]。
+- **z_fa92c4**（曲目（歌曲））：z_03ab46（曲目 ID） [PK]；z_f77cd2（名称（含义随所在表而定：歌手名 / 专辑名 / 曲名 / 流派名 / 格式名 / 歌单名））；z_390399（专辑 ID） [FK→z_7c9787.z_390399]；z_8c15c7（媒体格式 ID） [FK→z_d3a8b1.z_8c15c7]；z_ccacba（流派 ID） [FK→z_69bb8b.z_ccacba]；z_95237a（作曲者）；z_a4e40b（时长（毫秒））；z_0b3164（文件字节数）；z_aafe4d（单价）。
 
 ## 表间关系
 
-| 子表.外键 | → 父表.主键 | 关系 | 场景 |
+| 子表.列 | → 父表.列 | 关系 | 场景 |
 |---|---|---|---|
-| Album.ArtistId | Artist.ArtistId | N:1 | 专辑属某歌手 |
-| Track.AlbumId | Album.AlbumId | N:1 | 歌曲属某专辑 |
-| Track.GenreId | Genre.GenreId | N:1 | 歌曲属某流派 |
-| Track.MediaTypeId | MediaType.MediaTypeId | N:1 | 歌曲属某格式 |
-| PlaylistTrack.PlaylistId | Playlist.PlaylistId | N:1 | 歌单↔歌曲（多对多） |
-| PlaylistTrack.TrackId | Track.TrackId | N:1 | 同上 |
-| Invoice.CustomerId | Customer.CustomerId | N:1 | 客户的发票 |
-| InvoiceLine.InvoiceId | Invoice.InvoiceId | N:1 | 发票的明细 |
-| InvoiceLine.TrackId | Track.TrackId | N:1 | 明细里的歌曲 |
-| Customer.SupportRepId | Employee.EmployeeId | N:1 | 客户的客服 |
-| Employee.ReportsTo | Employee.EmployeeId | N:1 | 员工上级（自关联） |
+| z_7c9787.z_2f7d91 | → z_f4a38f.z_2f7d91 | N:1 | 专辑属于某歌手 |
+| z_2af565.z_a8691f | → z_fbb450.z_05c212 | N:1 | 客户的客服 |
+| z_fbb450.z_4e96af | → z_fbb450.z_05c212 | N:1 | 员工上级（自关联） |
+| z_3ec2de.z_8c8908 | → z_2af565.z_8c8908 | N:1 | 客户的发票 |
+| z_3427e1.z_03ab46 | → z_fa92c4.z_03ab46 | N:1 | 明细里的曲目 |
+| z_3427e1.z_a24fb2 | → z_3ec2de.z_a24fb2 | N:1 | 发票的明细 |
+| z_7a1bbe.z_03ab46 | → z_fa92c4.z_03ab46 | N:1 | 同上 |
+| z_7a1bbe.z_ea1b0b | → z_30d9c3.z_ea1b0b | N:1 | 歌单 ↔ 曲目（多对多） |
+| z_fa92c4.z_8c15c7 | → z_d3a8b1.z_8c15c7 | N:1 | 曲目属于某格式 |
+| z_fa92c4.z_ccacba | → z_69bb8b.z_ccacba | N:1 | 曲目属于某流派 |
+| z_fa92c4.z_390399 | → z_7c9787.z_390399 | N:1 | 曲目属于某专辑 |
 
 ## SQL 编写规则（提准）
 
-- **金额**：实际成交额 = `SUM(InvoiceLine.UnitPrice * InvoiceLine.Quantity)`；`Invoice.Total` 已是
-  订单总额。二者按问题选一个，**不要重复相加**。
-- **重名列**：`Name`（Artist/Album/Track/Genre/MediaType/Playlist）、`UnitPrice`
-  （Track/InvoiceLine）必须带表别名。
-- **时长**：`Milliseconds` 是毫秒，展示秒用 `ROUND(Milliseconds/1000.0, 1)`。
-- **日期**：`InvoiceDate` 是文本 `'YYYY-MM-DD 00:00:00'`；按年/月用 `strftime('%Y-%m', InvoiceDate)`。
-- **文本拼接**：SQLite 用 `||`，如 `FirstName || ' ' || LastName AS name`。
-- **NULL 外键**：`Track.AlbumId/GenreId`、`Customer.SupportRepId`、`Employee.ReportsTo` 可为空；
-  `JOIN` 会丢掉这些行，要保留就 `LEFT JOIN`，判空用 `IS NULL` 不要用 `= NULL`。
-- **计数去重**：歌单有同名项，计数按 `PlaylistId` 而非 `Name`；可能重复的行用
-  `COUNT(DISTINCT ...)`。
-- **参数**：值用 `?` 占位符按顺序放进 `params`，不要拼字符串。`query_sql` 默认最多 100 行
-  （可传 `limit`，上限 1000），不够就聚合或分页。
+- **金额**：实际成交额 = z_aafe4d（单价）× z_9238bb（数量）之和；z_6c577b（订单总额）已是整单总额。二者按问题选一个，**不要重复相加**。
+- **重名列**：z_f77cd2（名称）在歌手/专辑/曲目/流派/格式/歌单多张表里都有，z_aafe4d（单价）在曲目/明细里都有——必须带表别名。
+- **时长**：z_a4e40b 是毫秒，展示秒用 ROUND(z_a4e40b/1000.0, 1)。
+- **日期**：z_605bad 是文本 'YYYY-MM-DD 00:00:00'；按年/月用 strftime('%Y-%m', z_605bad)。
+- **文本拼接**：SQLite 用 `||`。
+- **NULL 外键**：z_390399 / z_ccacba（曲目）、z_a8691f（客户）、z_4e96af（员工）可为空；JOIN 会丢这些行，要保留就 LEFT JOIN，判空用 IS NULL 不要用 = NULL。
+- **计数去重**：歌单可能有同名项，计数按歌单主键而非名称列；可能重复的行用 COUNT(DISTINCT ...)。
+- **参数**：值用 `?` 占位符按顺序放进 `params`，不要拼字符串。`query_sql` 默认最多 100 行（可传 `limit`，上限 1000）。
 
 ## 常用 SQL 模板（改条件即用）
 
 各流派销售额 Top5：
 
 ```sql
-SELECT g.Name AS genre, ROUND(SUM(il.UnitPrice*il.Quantity),2) AS revenue
-FROM InvoiceLine il JOIN Track t ON t.TrackId=il.TrackId JOIN Genre g ON g.GenreId=t.GenreId
-GROUP BY g.GenreId ORDER BY revenue DESC LIMIT 5
+SELECT g.z_f77cd2 AS genre, ROUND(SUM(il.z_aafe4d*il.z_9238bb),2) AS revenue
+FROM z_3427e1 il JOIN z_fa92c4 t ON t.z_03ab46=il.z_03ab46 JOIN z_69bb8b g ON g.z_ccacba=t.z_ccacba
+GROUP BY g.z_ccacba ORDER BY revenue DESC LIMIT 5
 ```
 
-艺人歌曲数 Top10：
+歌手曲目数 Top10：
 
 ```sql
-SELECT ar.Name AS artist, COUNT(t.TrackId) AS tracks
-FROM Artist ar JOIN Album al ON al.ArtistId=ar.ArtistId JOIN Track t ON t.AlbumId=al.AlbumId
-GROUP BY ar.ArtistId ORDER BY tracks DESC LIMIT 10
+SELECT ar.z_f77cd2 AS artist, COUNT(t.z_03ab46) AS tracks
+FROM z_f4a38f ar JOIN z_7c9787 al ON al.z_2f7d91=ar.z_2f7d91 JOIN z_fa92c4 t ON t.z_390399=al.z_390399
+GROUP BY ar.z_2f7d91 ORDER BY tracks DESC LIMIT 10
 ```
 
 客户消费额 Top5：
 
 ```sql
-SELECT c.CustomerId, c.FirstName||' '||c.LastName AS name, ROUND(SUM(i.Total),2) AS total
-FROM Customer c JOIN Invoice i ON i.CustomerId=c.CustomerId
-GROUP BY c.CustomerId ORDER BY total DESC LIMIT 5
+SELECT c.z_8c8908, c.z_742f3a||' '||c.z_1aad66 AS name, ROUND(SUM(i.z_6c577b),2) AS total
+FROM z_2af565 c JOIN z_3ec2de i ON i.z_8c8908=c.z_8c8908
+GROUP BY c.z_8c8908 ORDER BY total DESC LIMIT 5
 ```
 
 按月销售额：
 
 ```sql
-SELECT strftime('%Y-%m', InvoiceDate) AS ym, ROUND(SUM(Total),2) AS total
-FROM Invoice GROUP BY ym ORDER BY ym
+SELECT strftime('%Y-%m', z_605bad) AS ym, ROUND(SUM(z_6c577b),2) AS total
+FROM z_3ec2de GROUP BY ym ORDER BY ym
 ```
 
 每张专辑时长最长的曲目：
 
 ```sql
 WITH r AS (
-  SELECT al.Title AS album, t.Name AS track, t.Milliseconds AS ms,
-         ROW_NUMBER() OVER (PARTITION BY al.AlbumId ORDER BY t.Milliseconds DESC) AS rn
-  FROM Track t JOIN Album al ON al.AlbumId=t.AlbumId)
+  SELECT al.z_e6d303 AS album, t.z_f77cd2 AS track, t.z_a4e40b AS ms,
+         ROW_NUMBER() OVER (PARTITION BY al.z_390399 ORDER BY t.z_a4e40b DESC) AS rn
+  FROM z_fa92c4 t JOIN z_7c9787 al ON al.z_390399=t.z_390399)
 SELECT album, track, ms FROM r WHERE rn=1 ORDER BY ms DESC LIMIT 10
 ```
 
@@ -137,16 +110,16 @@ SELECT album, track, ms FROM r WHERE rn=1 ORDER BY ms DESC LIMIT 10
 
 ```sql
 WITH RECURSIVE org(id,name,mgr,lvl) AS (
-  SELECT EmployeeId, FirstName||' '||LastName, ReportsTo, 0 FROM Employee WHERE ReportsTo IS NULL
-  UNION ALL SELECT e.EmployeeId, e.FirstName||' '||e.LastName, e.ReportsTo, org.lvl+1
-  FROM Employee e JOIN org ON e.ReportsTo=org.id)
+  SELECT z_05c212, z_742f3a||' '||z_1aad66, z_4e96af, 0 FROM z_fbb450 WHERE z_4e96af IS NULL
+  UNION ALL SELECT e.z_05c212, e.z_742f3a||' '||e.z_1aad66, e.z_4e96af, org.lvl+1
+  FROM z_fbb450 e JOIN org ON e.z_4e96af=org.id)
 SELECT lvl, mgr, name FROM org ORDER BY lvl, mgr
 ```
 
 歌单曲目数 Top5：
 
 ```sql
-SELECT p.PlaylistId, p.Name AS playlist, COUNT(pt.TrackId) AS tracks
-FROM Playlist p JOIN PlaylistTrack pt ON pt.PlaylistId=p.PlaylistId
-GROUP BY p.PlaylistId ORDER BY tracks DESC LIMIT 5
+SELECT p.z_ea1b0b, p.z_f77cd2 AS playlist, COUNT(pt.z_03ab46) AS tracks
+FROM z_30d9c3 p JOIN z_7a1bbe pt ON pt.z_ea1b0b=p.z_ea1b0b
+GROUP BY p.z_ea1b0b ORDER BY tracks DESC LIMIT 5
 ```
