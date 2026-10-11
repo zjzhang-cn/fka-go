@@ -9,12 +9,19 @@ Go 版 agent 工具循环 + 两个渠道（微信 iLink、网页 SSE）。**它�
 能力只有两条来源：`<安装根>/mcp.json` 里的 MCP server，和 `<安装根>/skills/` 下的 skill。
 整个 module 只有 5 个直接依赖，全部纯 Go。
 
-**唯一的例外是 `internal/tools/reply`**：它**不是能力，是输出通道**——把「往当前会话
+**两个例外，动的都是 agent 自己、不是外部能力。**
+
+其一是 `internal/tools/reply`：它**不是能力，是输出通道**——把「往当前会话
 回话」（文字 / 文件 / 图片）也做成工具交给模型，好让它能先发说明再发文件。它不拥有
 数据、不出网、不拉进程，所以没破坏上面那条原则。三个工具的 effect 都是 `send`，
 **默认关着**（`LLM_TOOL_EFFECTS` 默认只有 `read`）；发文件只认**发送根**内的相对路径
 （默认 `<安装根>/sandbox`，即 `fka-bash` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
 逃逸、非普通文件、超上限都在 `reply.resolve` 里拒掉。见 `docs/decisions.md` 第 17 条。
+
+其二是 `internal/tools/history`：会话历史是 agent **自己落盘的状态**
+（`data/history/*.jsonl`），用户说「清空历史」时需要有个动作删掉它。只有一个工具
+`history__clear`（effect `delete`，**默认关着**），清的是 `tools.Context.SessionID`
+指向的当前会话，不出网、不拉进程。
 
 **远端沙盒（SSE）的文件走另一条路：字节端到端。** 沙盒用 MCP 标准内容块返回字节，
 `annotations.audience=["user"]` 表示「给用户」；agent **只认这个字段、不认来源**，由
