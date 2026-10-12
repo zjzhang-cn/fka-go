@@ -78,6 +78,13 @@ type Options struct {
 	// nvm/pyenv 各自一处。它们是软件，**只读**挂进来是安全的，而且只暴露点名的目录，
 	// 不放开整个 `/opt` 或家目录。每条命令都看得见（不是每租户一份）。
 	ReadOnlyExtra []string
+	// DefaultPrincipal 调用没带 MCP `_meta`（键 `fka/principal`）身份时回落的租户名。
+	//
+	// **默认空 = fail-closed**：没身份就拒绝执行，绝不落进共享目录，这是多租户下最
+	// 该保持的姿态。只有显式配了它（`--default-principal` / `SANDBOX_DEFAULT_PRINCIPAL`）
+	// 才回落——给「不走 agent、直接连 server 的调用方」一个能挂的名字，而不是把它们
+	// 全归到同一个匿名租户。见 server.go 的 effectivePrincipal。
+	DefaultPrincipal string
 }
 
 // Sandbox 一次运行的沙盒配置。**启动时建一次，之后只读**。

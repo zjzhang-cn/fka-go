@@ -51,6 +51,10 @@
 // 身份是 agent 注入的、**模型改不了**；**缺身份 fail-closed**，不落共享目录。
 // 见 server.go 的 sandboxFor / sandboxOf。
 //
+// 若确实有「不走 agent、直接连 server」的调用方，可以显式配 `--default-principal`
+// （或 `SANDBOX_DEFAULT_PRINCIPAL`）给它们一个具名租户来回落——**默认不配**，此时
+// 缺身份照旧拒绝。回落的是那个名字，不是「匿名共享」。
+//
 // ## 默认用 Bubblewrap 做真实隔离
 //
 // 默认模式是 `bwrap`：用 Linux 命名空间起一个沙盒，**只读绑定宿主的最小必要部分**
@@ -141,6 +145,8 @@ func run(args []string) int {
 		AllowPip: allowPip(args),
 		// 自装工具链的只读绑定（node/python/…）
 		ReadOnlyExtra: sandboxReadOnlyExtra(args),
+		// 没带 `_meta` 身份时回落的租户名（默认空 = fail-closed）
+		DefaultPrincipal: defaultPrincipal(args),
 	}
 	sandbox, err := NewSandbox(opts)
 	if err != nil {
@@ -308,6 +314,7 @@ func printUsage() {
   --allow A,B                  命令白名单（非空即白名单模式）
   --deny A,B                   追加命令黑名单（内置那份不能清空）
   --ro-bind P1:P2              额外**只读**绑定宿主目录（自装工具链，见下）
+  --default-principal NAME     没带 _meta 身份时回落的租户名（默认空 = 拒绝）
 
   -h, --help                   这份帮助
 
@@ -319,7 +326,7 @@ func printUsage() {
 环境变量：
   SANDBOX_ROOT / SANDBOX_MODE / SANDBOX_BWRAP / SANDBOX_BWRAP_ARGS /
   SANDBOX_SHARE_NET / SANDBOX_ALLOW_PIP / SANDBOX_ALLOW / SANDBOX_DENY / SANDBOX_RO_BINDS /
-  SANDBOX_MCP_TRANSPORT / SANDBOX_MCP_ADDR
+  SANDBOX_DEFAULT_PRINCIPAL / SANDBOX_MCP_TRANSPORT / SANDBOX_MCP_ADDR
 
 stdout 是 JSON-RPC 通道：server 运行期间一个字节都不能往 stdout 打。
 `)
@@ -358,6 +365,13 @@ func sandboxAllow(args []string) []string {
 
 func sandboxDeny(args []string) []string {
 	return append(splitList(flagValue(args, "--deny")), splitList(os.Getenv("SANDBOX_DENY"))...)
+}
+
+// defaultPrincipal 没带 `_meta` 身份时回落的租户名：`--default-principal` >
+// `SANDBOX_DEFAULT_PRINCIPAL`。**默认空 = fail-closed**：没配置时缺身份照旧拒绝。
+func defaultPrincipal(args []string) string {
+	return strings.TrimSpace(firstNonEmpty(
+		flagValue(args, "--default-principal"), os.Getenv("SANDBOX_DEFAULT_PRINCIPAL")))
 }
 
 // allowPip 是否允许 pip/npm 联网装包：`--allow-pip` 参数 或 `SANDBOX_ALLOW_PIP`。

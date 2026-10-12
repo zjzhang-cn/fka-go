@@ -196,6 +196,33 @@ func TestHelp参数直接以0退出(t *testing.T) {
 	}
 }
 
+// TestDefaultPrincipal_解析 顺序必须是「参数 > 环境变量」，且**默认空 = fail-closed**。
+func TestDefaultPrincipal_解析(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		env  string
+		want string
+	}{
+		{"不给为空", nil, "", ""},
+		{"空环境变量等于没给", nil, "   ", ""},
+		{"显式参数", []string{"--default-principal", "guest"}, "", "guest"},
+		{"等号写法", []string{"--default-principal=guest"}, "", "guest"},
+		{"环境变量兜底", nil, "guest", "guest"},
+		{"参数压过环境变量", []string{"--default-principal", "a"}, "b", "a"},
+		{"两侧空白忽略", []string{"--default-principal", "  a  "}, "", "a"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("SANDBOX_DEFAULT_PRINCIPAL", c.env)
+			if got := defaultPrincipal(c.args); got != c.want {
+				t.Errorf("defaultPrincipal = %q，期望 %q", got, c.want)
+			}
+		})
+	}
+}
+
 // TestReadOnlyExtra_解析 参数与环境变量合并，按系统路径分隔符切分。
 func TestReadOnlyExtra_解析(t *testing.T) {
 	t.Setenv("SANDBOX_RO_BINDS", "/opt/node:/home/me/conda")

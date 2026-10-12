@@ -63,8 +63,8 @@ const metaPrincipalKey = "fka/principal"
 // ## 多租户：每个 principal 一个沙盒根
 //
 // `opts.Root` 是**基根**；真正跑命令的根是 `<基根>/<safe(principal)>`，按需创建。
-// 身份从 MCP `_meta` 来（agent 注入，模型改不了）——没有身份就 **fail-closed**，
-// 绝不落到共享目录。
+// 身份从 MCP `_meta` 来（agent 注入，模型改不了）——没有身份时默认 **fail-closed**，
+// 绝不落到共享目录；只有显式配了 `Options.DefaultPrincipal` 才回落到那个具名租户。
 type sandboxServer struct {
 	opts    Options
 	execLog *ExecLog
@@ -116,10 +116,13 @@ func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
 
 // ── 多租户：身份 → 沙盒 ─────────────────────────────────
 
-// sandboxOf 取出这次调用的沙盒。**fail-closed**：拿不到身份就拒绝，绝不落到共享
-// 目录——那等于「绕过 agent 就全共享」，是多租户下最坏的失败形态。
+// sandboxOf 取出这次调用的沙盒。**缺身份 fail-closed**：拿不到身份就拒绝，绝不落到
+// 共享目录——那等于「绕过 agent 就全共享」，是多租户下最坏的失败形态。
+//
+// 唯一例外是显式配了 `Options.DefaultPrincipal`：此时「没带身份」回落到那个具名租户，
+// 而不是匿名共享。没配（默认）仍然拒绝。
 func (s *sandboxServer) sandboxOf(request mcp.CallToolRequest) (*Sandbox, *mcp.CallToolResult) {
-	principal := principalOf(request)
+	principal := s.effectivePrincipal(request)
 	if principal == "" {
 		return nil, fail("这次调用没带调用方身份（_meta." + metaPrincipalKey + "），已拒绝执行。")
 	}
@@ -129,6 +132,15 @@ func (s *sandboxServer) sandboxOf(request mcp.CallToolRequest) (*Sandbox, *mcp.C
 		return nil, fail("建租户沙盒失败：" + err.Error())
 	}
 	return sb, nil
+}
+
+// effectivePrincipal 这次调用实际归属的租户：`_meta` 身份 优先，其次配置的
+// DefaultPrincipal（默认空）。**模型改不了 `_meta`**，所以默认值也不会被模型改。
+func (s *sandboxServer) effectivePrincipal(request mcp.CallToolRequest) string {
+	if principal := principalOf(request); principal != "" {
+		return principal
+	}
+	return strings.TrimSpace(s.opts.DefaultPrincipal)
 }
 
 // sandboxFor 取该租户的沙盒，没有就**按需建**（懒创建，缓存起来）。
@@ -199,7 +211,7 @@ func (s *sandboxServer) handleRun(ctx context.Context, request mcp.CallToolReque
 	if problem != nil {
 		return problem, nil
 	}
-	principal := principalOf(request)
+	principal := s.effectivePrincipal(request)
 
 	cwd := request.GetString("cwd", "")
 	result, err := sb.Run(ctx, RunRequest{

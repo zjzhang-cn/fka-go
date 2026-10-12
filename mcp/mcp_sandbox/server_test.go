@@ -128,6 +128,76 @@ func TestRun工具_策略拒绝是IsError(t *testing.T) {
 	}
 }
 
+// TestRun工具_缺身份默认拒绝 没带 `_meta` 身份、也没配默认租户 = fail-closed：回一句给
+// 模型看的错误，不落进任何共享目录（多租户下最坏的失败形态）。
+func TestRun工具_缺身份默认拒绝(t *testing.T) {
+	impl := newTestServer(newTestSandbox(t))
+
+	result, err := impl.handleRun(context.Background(), callRequestAs("", map[string]any{
+		"command": `printf x`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("缺身份该回 IsError，而不是照常执行")
+	}
+	if body := resultText(t, result); !strings.Contains(body, "身份") {
+		t.Errorf("该说清是缺调用方身份：%s", body)
+	}
+}
+
+// TestRun工具_缺身份回落默认租户 配了 DefaultPrincipal 时，没带身份回落到那个**具名**
+// 租户：既不是被拒、也不是所有匿名调用方共用一个共享根。
+func TestRun工具_缺身份回落默认租户(t *testing.T) {
+	requireBash(t)
+	s := newTestSandbox(t)
+	impl := &sandboxServer{
+		opts:      Options{Root: s.Root, DefaultPrincipal: testPrincipal},
+		sandboxes: map[string]*Sandbox{testPrincipal: s},
+	}
+
+	result, err := impl.handleRun(context.Background(), callRequestAs("", map[string]any{
+		"command": `printf fallback-ok`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("配了默认租户就不该被拒：%s", resultText(t, result))
+	}
+	if body := resultText(t, result); !strings.Contains(body, "fallback-ok") {
+		t.Errorf("该在那个默认租户的沙盒里跑：%s", body)
+	}
+}
+
+// TestRun工具_显式身份压过默认租户 `_meta` 带了身份时就以它为准，默认租户只兜底。
+func TestRun工具_显式身份压过默认租户(t *testing.T) {
+	requireBash(t)
+	s := newTestSandbox(t)
+	other := newTestSandbox(t)
+	impl := &sandboxServer{
+		opts: Options{Root: s.Root, DefaultPrincipal: "fallback-tenant"},
+		sandboxes: map[string]*Sandbox{
+			testPrincipal:     s,
+			"fallback-tenant": other,
+		},
+	}
+
+	result, err := impl.handleRun(context.Background(), callRequestAs(testPrincipal, map[string]any{
+		"command": `printf explicit-ok`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("带身份该照常执行：%s", resultText(t, result))
+	}
+	if body := resultText(t, result); !strings.Contains(body, "explicit-ok") {
+		t.Errorf("该在带身份的租户沙盒里跑：%s", body)
+	}
+}
+
 // TestRun说明_按是否允许pip动态生成 钉住两件事：装包那句随参数变化；无论哪一支，
 // 都要提到能用 python/node 跑脚本、以及解释器缺失时是 command not found。
 func TestRun说明_按是否允许pip动态生成(t *testing.T) {
