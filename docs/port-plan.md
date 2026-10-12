@@ -166,6 +166,7 @@ make smoke 的 smoke-sandbox     # 沙盒 bash 的端到端，**真起 bwrap**
 | 2 | ~~**提示词用例**~~ **已完成**（`a92f3cf`） | — | `internal/prompts` 现在钉住「工具参数真实性」「拒答话术」「注入防护」与 `Compose` 的拼装形状 |
 | 3 | **运维端口** | 无 | 状态 / 上下文 / 扫码登录三件事的 CLI 或 HTTP 出口（`Provider.Ops()` 已有，实现还没接）。**`internal/channels/contract_test.go` 的 `pendingConsumers` 里 `Status` 那条记的就是这一项** |
 | 4 | ~~**第二个渠道**~~ **已完成**（网页/SSE，`internal/channels/web`） | — | 加一个 `Provider` 就够，**接缝与业务层未改一行**。实现了可选能力 `EmitterProvider`（流式回显），认证走 token→HttpOnly cookie，见 `decisions.md` 第 19 条 |
+| 5 | **渠道接入协议（网络层统一渠道接口）** | 设计已定，见 `docs/channel-access-protocol.md` | 适配器经 HTTP/SSE 拨入；iLink 提取为第一个适配器（整桥搬出 `internal/channels/ilink`），短信为第二个。分 P0–P3，验收见该文 §6 |
 
 **做第 1 项之前先写 `docs/real-machine-test.md`**：现在 `make real-check` 打印的那个
 文件名背后什么都没有，而「该看到什么」只有真机跑的人知道——**先记下来再跑第二次**。
