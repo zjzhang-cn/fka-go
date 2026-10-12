@@ -47,9 +47,24 @@ type source struct {
 	connected map[string]*connectedServer
 }
 
+// toolKind 一次调用走哪条路：真实工具，还是某个合成原语工具。
+//
+// 用枚举而不是解析工具名（`<server>__list_resources` 里 `list_resources` 可能是
+// 真实工具名）：定位靠注册时记下的 kind，字符串只用于展示。
+type toolKind int
+
+const (
+	kindTool toolKind = iota
+	kindListResources
+	kindReadResource
+	kindListPrompts
+	kindGetPrompt
+)
+
 type toolLocator struct {
 	serverKey string
 	toolName  string
+	kind      toolKind
 }
 
 // NewSource 造 MCP 工具源。
@@ -94,6 +109,11 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 	}
 	if server == nil {
 		return tools.FailResult("MCP 服务器 %s 当前不可用。", locator.serverKey), nil
+	}
+
+	// 合成原语工具（resources / prompts）：走各自的方法，不走 CallTool
+	if locator.kind != kindTool {
+		return s.callPrimitive(ctx, server.connection, locator, args)
 	}
 
 	result, err := server.connection.CallTool(ctx, locator.toolName, args)
@@ -252,10 +272,15 @@ func (s *source) connectOne(ctx context.Context, name string) {
 		})
 	}
 
+	// 再补 resources / prompts 的合成工具：只对服务器声明了的原语注册，
+	// 且真实工具优先（撞名时合成工具让位，见 addPrimitiveTools）
+	caps := connection.Capabilities()
+	s.addPrimitiveTools(key, name, caps)
+
 	// 把工作目录与传输方式一起记进日志：子进程在哪儿跑决定了它读得到什么文件，
 	// 而 HTTP 那条路有**两种**互不兼容的传输——「连上了但工具是空的」第一个要看的
 	// 就是这行里的 transport
-	details := config.Context{"tools": len(listed)}
+	details := config.Context{"tools": len(listed), "resources": caps.Resources, "prompts": caps.Prompts}
 	if cfg.Cwd != "" {
 		details["cwd"] = cfg.Cwd
 	}

@@ -18,6 +18,13 @@
 // 服务器起不来（命令错、缺 key、网断）只记一条警告并跳过它，别的服务器与其余
 // 工具照常。与「技能目录为空」同一条原则：少一批工具不等于服务坏了。连接是
 // **惰性**的——第一次列工具时才连，不在启动期阻塞。
+//
+// ## resources 与 prompts 也包成工具
+//
+// MCP 一共三种原语：tools / resources / prompts。后两种不另立接缝，而是**按服务器
+// 声明的能力**合成工具（`list_resources` / `read_resource` / `list_prompts` /
+// `get_prompt`），与真实工具同一条 external 闸门、同一个调用循环——见 primitives.go。
+// 服务器的内容**绝不进 system prompt**（PromptSection 恒为空）。
 package mcp
 
 import (
@@ -51,10 +58,64 @@ type CallResult struct {
 	Deliver []tools.Attachment
 }
 
+// ServerCapabilities 该服务器在 initialize 握手里声明提供的原语。
+//
+// **只有声明了的原语才会生成对应工具**：MCP 规范里 server 不声明 resources/prompts
+// 就是对这两个方法返回「没实现」错误，硬注册会让模型拿到一个永远失败的工具——
+// 「声明一个跑不了的比不声明更糟」。
+type ServerCapabilities struct {
+	Resources bool
+	Prompts   bool
+}
+
+// ResourceInfo 一件可读资源。
+type ResourceInfo struct {
+	URI         string
+	Name        string
+	MIMEType    string
+	Description string
+}
+
+// ResourceTemplateInfo 一个资源模板（URI 里含 RFC 6570 占位符）。
+type ResourceTemplateInfo struct {
+	URITemplate string
+	Name        string
+	MIMEType    string
+	Description string
+}
+
+// PromptInfo 一个提示词模板。
+type PromptInfo struct {
+	Name        string
+	Description string
+	Arguments   []PromptArg
+}
+
+// PromptArg 提示词的一个参数。
+type PromptArg struct {
+	Name        string
+	Description string
+	Required    bool
+}
+
 // Connection 一条连上的 MCP 连接。
+//
+// 除了 tools，还覆盖 resources 与 prompts 两个原语（MCP 一共就这三种）。source 按
+// `Capabilities()` 决定把哪些原语包成工具交给模型。
 type Connection interface {
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	CallTool(ctx context.Context, name string, args map[string]any) (CallResult, error)
+	// Capabilities 服务器声明的原语，用于决定注册哪些合成工具。
+	Capabilities() ServerCapabilities
+	// ListResources 列资源与资源模板。两者合在一个返回里：对模型而言它们都是
+	// 「能读的东西」，分开反而要多一个工具。
+	ListResources(ctx context.Context) (resources []ResourceInfo, templates []ResourceTemplateInfo, err error)
+	// ReadResource 按 uri 读一个资源，结果归一成 CallResult（与工具结果同形状）。
+	ReadResource(ctx context.Context, uri string) (CallResult, error)
+	// ListPrompts 列提示词模板。
+	ListPrompts(ctx context.Context) ([]PromptInfo, error)
+	// GetPrompt 渲染一个提示词模板，结果归一成 CallResult。
+	GetPrompt(ctx context.Context, name string, args map[string]string) (CallResult, error)
 	Close() error
 }
 
