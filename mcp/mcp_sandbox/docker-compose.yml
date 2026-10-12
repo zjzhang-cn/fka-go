@@ -26,12 +26,18 @@ services:
     image: fka-sandbox:latest
     ports:
       # 只发布到宿主回环：这是个能执行命令的 server，别默认暴露给同网段。
-      - "127.0.0.1:8080:8080"
+      # 宿主端口可用 SANDBOX_MCP_PORT 覆盖（默认 8080）；被别的进程占用时换一个，
+      # setup.sh 会把这个端口写进 mcp.json 的 url，两边保持一致。
+      - "127.0.0.1:${SANDBOX_MCP_PORT:-8080}:8080"
     volumes:
-      # 每个租户的根是 /sandbox/<safe(principal)>，全在这两个卷里。
-      - ./sandbox:/sandbox
-      # 审计日志在沙盒外（模型擦不掉）。bwrap 模式下由只读根保证，这里靠分卷。
-      - ./logs:/logs
+      # 沙盒数据与审计日志用**命名卷**，不用宿主目录。宿主 bind 有两个坑：
+      #   1. Docker 以 root 建缺失的宿主目录，而容器以非 root 的 fka 运行，写不进
+      #      （症状：容器起来即退出，`mkdir /sandbox/tmp: permission denied`）；
+      #   2. 若落到仓库里，这些 root/10001 属主的目录会污染构建上下文，非 root
+      #      stat 不了，下次 `docker build` 直接失败。
+      # 命名卷首次由镜像内容初始化，属主就是镜像里 chown 过的 fka。
+      - sandbox:/sandbox
+      - logs:/logs
     # 容器即边界：根只读，只留沙盒与日志两处可写，/tmp 走内存。
     read_only: true
     tmpfs:
@@ -41,3 +47,7 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+
+volumes:
+  sandbox:
+  logs:

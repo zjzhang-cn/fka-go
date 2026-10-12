@@ -11,6 +11,10 @@ docs/
 .env.*
 .sandbox/
 sandbox/
+# 沙盒容器若误用宿主 bind（见 docker-compose.yml，现已改命名卷），这两个目录会带
+# root/10001 属主落进仓库，非 root stat 不了会让构建上下文扫描直接失败；显式排掉。
+mcp/mcp_sandbox/sandbox
+mcp/mcp_sandbox/logs
 Dockerfile*
 docker-compose*
 .dockerignore

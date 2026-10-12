@@ -20,6 +20,7 @@
 #   _ID 是内部槽位标识，写死 account_001，不用配）
 #   WEB_CHANNEL_ADDR（默认 127.0.0.1:8787，留空则不接网页渠道）
 #   WEB_CHANNEL_USER / WEB_CHANNEL_TOKEN（网页用户表：默认用户 admin + 随机令牌）
+#   SANDBOX_MCP_PORT（沙盒容器发布到宿主回环的端口；默认从 8080 起找空闲的）
 #
 # 安装根的锚点与 fka 一致（$FKA_HOME → 可执行文件目录 → cwd）。默认用 <仓库>/bin，
 # 因为 `make` 系列产出的二进制就在那儿。
@@ -98,13 +99,51 @@ if [ "$DO_DOCKER" -eq 1 ]; then
     step "构建沙盒镜像 fka-sandbox:latest"
     make -C "$REPO" docker-sandbox
     step "启动沙盒容器"
-    docker compose -f "$REPO/mcp/mcp_sandbox/docker-compose.yml" up -d
+    # compose 有两种形态：v2 插件 `docker compose` 与 v1 独立命令 `docker-compose`。
+    # 两者都没有时**降级跳过**而不是失败——照「可选能力缺失不阻断」的规矩，其余
+    # 安装照常完成；sandbox 工具暂时连不上，补齐 compose 后重跑本脚本即可。
+    if docker compose version >/dev/null 2>&1; then
+      COMPOSE=(docker compose)
+    elif command -v docker-compose >/dev/null 2>&1; then
+      COMPOSE=(docker-compose)
+    else
+      COMPOSE=()
+    fi
+    if [ "${#COMPOSE[@]}" -gt 0 ]; then
+      # 宿主端口优先级：显式设的 SANDBOX_MCP_PORT > 上次 mcp.json 里记的端口 > 从
+      # 8080 起找空闲的。**必须复用上次记的端口**，否则重跑时会把正在运行的容器
+      # 占着的端口当成「被占用」而一路前移，每次重跑都换端口并重建容器。
+      if [ -z "${SANDBOX_MCP_PORT:-}" ] && [ -f "$HOME_DIR/mcp.json" ]; then
+        SANDBOX_MCP_PORT="$(grep -o '127\.0\.0\.1:[0-9]*' "$HOME_DIR/mcp.json" 2>/dev/null | head -1 | cut -d: -f2 || true)"
+      fi
+      if [ -z "${SANDBOX_MCP_PORT:-}" ]; then
+        SANDBOX_MCP_PORT=8080
+        while (exec 3<>"/dev/tcp/127.0.0.1/$SANDBOX_MCP_PORT") 2>/dev/null; do
+          SANDBOX_MCP_PORT=$((SANDBOX_MCP_PORT + 1))
+          [ "$SANDBOX_MCP_PORT" -gt 8180 ] && { SANDBOX_MCP_PORT=8080; break; }
+        done
+      fi
+      echo "沙盒容器宿主端口：$SANDBOX_MCP_PORT"
+      # 先 down 再 up：老的 docker-compose v1 在「重建已有容器」时会读镜像的
+      # ContainerConfig 来合并卷绑定，而新版 Docker 已不下发该字段，重建必崩
+      # （KeyError: 'ContainerConfig'）。先移除容器让它走「新建」路径即可绕开；
+      # 数据在命名卷里，down 不带 -v 不会丢。
+      SANDBOX_MCP_PORT="$SANDBOX_MCP_PORT" \
+        "${COMPOSE[@]}" -f "$REPO/mcp/mcp_sandbox/docker-compose.yml" down >/dev/null 2>&1 || true
+      SANDBOX_MCP_PORT="$SANDBOX_MCP_PORT" \
+        "${COMPOSE[@]}" -f "$REPO/mcp/mcp_sandbox/docker-compose.yml" up -d
+    else
+      warn "没装 docker compose（v2 插件或 v1 docker-compose 都没有），跳过启动沙盒容器；sandbox 工具将连不上（补齐后重跑本脚本即可）"
+    fi
   else
     warn "没装 docker，跳过沙盒容器；sandbox 工具将连不上（补齐后再跑一次本脚本即可）"
   fi
 else
   step "跳过沙盒容器（--no-docker）"
 fi
+
+# 没走到 docker 分支时（--no-docker / 没装 docker），mcp.json 仍按默认端口写 URL。
+SANDBOX_MCP_PORT="${SANDBOX_MCP_PORT:-8080}"
 
 # ── 3. .env（含密钥，默认不覆盖）────────────────────────
 ENV_FILE="$HOME_DIR/.env"
@@ -167,7 +206,7 @@ if [ -f "$MCP_FILE" ]; then cp "$MCP_FILE" "$MCP_FILE.bak"; fi
 cat > "$MCP_FILE" <<EOF
 {
   "mcpServers": {
-    "sandbox": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" },
+    "sandbox": { "url": "http://127.0.0.1:$SANDBOX_MCP_PORT/mcp", "transport": "http" },
     "memory": {
       "command": "$HOME_DIR/fka-memory",
       "args": ["--db", "memory.sqlite"],
@@ -245,8 +284,9 @@ cat <<EOF
   FKA_HOME=$HOME_DIR $HOME_DIR/fka tools
 
 说明：
-- sandbox 工具走容器 http://127.0.0.1:8080/mcp，容器没起时会被跳过并 WARN
-  （补跑： docker compose -f $REPO/mcp/mcp_sandbox/docker-compose.yml up -d）
+- sandbox 工具走容器 http://127.0.0.1:$SANDBOX_MCP_PORT/mcp，容器没起时会被跳过并 WARN
+  （补跑： docker compose -f $REPO/mcp/mcp_sandbox/docker-compose.yml up -d
+    或本机只有 v1 时： docker-compose -f $REPO/mcp/mcp_sandbox/docker-compose.yml up -d）
 - .env 里 LLM_API_KEY 若是占位值，先改成真实 key
 - 直接用 ./fka 时的安装根就是 ${HOME_DIR}，配置也读这里
 EOF
