@@ -51,14 +51,14 @@ cgo 那行靠 build tag 判定（`CGO_ENABLED=0` 时 cgo 包根本不编译，�
 所以它**只可能来自构建方式，不可能来自运行时猜测**。
 
 **`make verify` 是提交前该跑的那一条。** 里面的 `smoke` 会在**隔离的临时目录**里
-装一个技能与一个 MCP server，然后断言 `fka tools` 真的列出了它们、并且子进程写的
+装一个技能与一个 MCP server，然后断言 `fka list all` 真的列出了它们、并且子进程写的
 文件落进了 `mcp.json` 指定的工作目录——因为「技能读到了吗」「server 连上了吗」
 「server 在哪个目录跑」这三件事**静默失败时从界面上看不出来**：工具列表就是空的
 （或者照常有），而你没法区分「没配」与「配了但没生效」。
 
 ```bash
-# 列出模型现在能看到的工具与五类放行情况
-FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external ./bin/fka tools
+# 列出技能 / 工具 / MCP 资源 / 提示词 / 服务器（all 给全部）
+FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external ./bin/fka list all
 
 # 无头跑一轮工具循环问答（不经过任何渠道）
 FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
@@ -165,12 +165,12 @@ server 里的相对路径稳定，就得显式写 `cwd`**（写 `"."` 就是安�
 `list` 返 `[]`（空列表是合法答案，不是失败），`load` 会把该放哪的目录说清楚。
 所以「技能列表是空的」是正常状态，不是没装好。
 
-`./fka tools` 会**直接列出发现到的技能**（名字 + 目录名 + 说明），不只是那两个
+`./fka list skill` 会**直接列出发现到的技能**（名字 + 目录名 + 说明），不只是那两个
 查技能的工具——因为「我改了 skills/ 目录，它怎么没反应」是最常见的一类问题，
 而 `skills__list` 的存在只说明「有个办法能查」，回答不了「生效了吗」：
 
 ```
-── 技能（发现到的）
+── 技能
    备份照片        <backup>        把手机里的照片归档到 NAS
    报销流程        <photo-album>   走完报销的每一步
    来自：/path/to/fka/skills
@@ -347,8 +347,8 @@ fka-go/                     **仓库根就是模块根**（没有 go/ 那一层�
 └── AGENTS.md              给 agent 看的：踩过才知道的规矩
 ```
 
-`skills/` **不入库**（每个安装自己放），所以仓库里没有这个目录——`fka tools` 的
-技能段为空是正常状态，不是没装好。
+`skills/` **不入库**（每个安装自己放），所以仓库里没有这个目录——`fka list skill`
+的技能段为空是正常状态，不是没装好。
 
 **本仓库不做文档 / NAS / 向量那条线。** 它在 `1fae643` 与 `0fb673b` 之后
 **整个搬出去了**：要那些能力就接一个外部 MCP server（见上面「能力从哪来」）。

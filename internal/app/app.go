@@ -59,8 +59,10 @@ type App struct {
 	Agent *agent.Runner
 	// History 会话历史存储。SESSION_HISTORY=0 时为 nil
 	History llm.SessionHistoryStore
-	// McpServers 读到的 MCP 服务器名（按字母序）。给 `fka tools` 展示
+	// McpServers 读到的 MCP 服务器名（按字母序）。给 `fka list` 展示
 	McpServers []string
+	// McpCatalog 能列 resources / prompts 的 MCP 源（没配 MCP 时为 nil）。给 `fka list`
+	McpCatalog mcp.Catalog
 	// McpConfigPath 实际读到的 mcp.json 路径
 	McpConfigPath string
 	// McpConfigured 有没有读到 MCP 配置
@@ -267,7 +269,12 @@ func (a *App) registerMcp() {
 	}
 
 	a.McpConfigured = true
-	a.Tools.Use(mcp.NewSource(mcp.SourceOptions{Servers: read.Servers}))
+	source := mcp.NewSource(mcp.SourceOptions{Servers: read.Servers})
+	a.Tools.Use(source)
+	// 具体源额外实现 Catalog：把 resources / prompts 清单留给 `fka list`
+	if catalog, ok := source.(mcp.Catalog); ok {
+		a.McpCatalog = catalog
+	}
 	for name := range read.Servers {
 		a.McpServers = append(a.McpServers, name)
 	}

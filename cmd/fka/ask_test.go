@@ -158,16 +158,16 @@ func Test认错时把像的那个说清楚(t *testing.T) {
 }
 
 // Test布尔参数给没给要分得清 `--json` 不取值，
-// **「没给」与「给了」在结果上必须不同**（tools 的输出格式就靠它分）
+// **「没给」与「给了」在结果上必须不同**（list 的输出格式就靠它分）
 func Test布尔参数给没给要分得清(t *testing.T) {
-	if hasFlag(mustParse(t, "tools"), "--json") {
+	if hasFlag(mustParse(t, "list"), "--json") {
 		t.Error("没给不该认成给了")
 	}
-	if !hasFlag(mustParse(t, "tools", "--json"), "--json") {
+	if !hasFlag(mustParse(t, "list", "--json"), "--json") {
 		t.Error("给了该认出来")
 	}
-	// **给在子命令之前也一样**：`fka --json tools`
-	if !hasFlag(mustParse(t, "--json", "tools"), "--json") {
+	// **给在子命令之前也一样**：`fka --json list`
+	if !hasFlag(mustParse(t, "--json", "list"), "--json") {
 		t.Error("子命令之前给了也该认出来")
 	}
 }

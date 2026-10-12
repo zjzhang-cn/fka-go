@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +10,6 @@ import (
 	"strings"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
-	"github.com/zjzhang-cn/fka-go/internal/tools"
-	"github.com/zjzhang-cn/fka-go/internal/tools/skills"
 )
 
 // runAsk 无头跑一轮问答。
@@ -77,7 +74,7 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		fmt.Fprintln(os.Stderr, "  记忆与文档走 MCP，而 MCP 工具一律是 external 类：")
 		fmt.Fprintf(os.Stderr, "  请设 LLM_TOOL_EFFECTS=read,external，并在 %s 里配好服务器。\n",
 			application.McpConfigPath)
-		fmt.Fprintln(os.Stderr, "  跑 `fka tools` 看现在放行了什么。")
+		fmt.Fprintln(os.Stderr, "  跑 `fka list tool` 看现在放行了什么。")
 		return exitFail
 	}
 
@@ -163,111 +160,6 @@ func sessionID(parsed cliArgs) string {
 		return given
 	}
 	return newCliSessionID()
-}
-
-// runTools 列出模型现在能看到的工具，以及被挡下的那些与原因。
-func runTools(ctx context.Context, parsed cliArgs) int {
-	application := build(ctx)
-	defer application.Close()
-
-	application.WarmMcp(ctx)
-
-	asJSON := hasFlag(parsed, "--json")
-	listed, err := application.Tools.Tools(ctx, tools.Context{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "列工具失败：%s\n", err.Error())
-		return exitFail
-	}
-
-	policy := application.Policy
-
-	if asJSON {
-		payload := map[string]any{
-			"effects":     policy.Allowed(),
-			"policy":      tools.DescribeToolPolicy(policy),
-			"tools":       listed,
-			"mcp_servers": application.McpServers,
-			// **技能本身也进去**：只给 tools 的话，问「我那个技能生效了吗」
-			// 只能从 skills__list 的描述里去猜
-			"skills":      discoveredSkills(application.SkillsDir),
-			"skills_dirs": application.SkillsDir,
-		}
-		encoded, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "序列化失败：%s\n", err.Error())
-			return exitFail
-		}
-		fmt.Println(string(encoded))
-		return exitOK
-	}
-
-	fmt.Printf("放行范围：%s\n", tools.DescribeToolPolicy(policy))
-	fmt.Println()
-
-	if len(listed) == 0 {
-		fmt.Println("模型现在看不到任何工具。")
-		fmt.Printf("MCP 配置：%s", application.McpConfigPath)
-		if application.McpConfigured {
-			fmt.Printf("（已配 %d 个服务器：%s）", len(application.McpServers),
-				strings.Join(application.McpServers, "、"))
-		} else {
-			fmt.Print("（没有配）")
-		}
-		fmt.Println()
-		return exitOK
-	}
-
-	printSkills(application.SkillsDir)
-
-	// 按源分组，源内按注册顺序——与模型看到的顺序一致，排查时少一层猜测
-	current := ""
-	for _, tool := range listed {
-		if tool.SourceID != current {
-			current = tool.SourceID
-			fmt.Printf("── %s（%s）\n", tool.Label, tool.SourceID)
-		}
-		fmt.Printf("   %-44s %-9s %s\n", tool.FullName, tool.Spec.Effect, firstLine(tool.Spec.Description))
-	}
-	return exitOK
-}
-
-// printSkills 列出**发现到的技能**，不只是那两个查技能的工具。
-//
-// ## 为什么工具清单不够
-//
-// `skills__list` 的存在只说明「有个办法能查」——它回答不了「我那个技能生效了吗」。
-// 而「我改了 skills/ 目录，它怎么没反应」是最常见的一类问题，答案就在这一段里。
-//
-// 空目录也要说清**目录在哪**：那比只说「没有技能」有用——模型能据此告诉用户
-// 「放这儿就行」，人也能立刻看出自己是不是看错了地方（见 README 的「安装根」）。
-func printSkills(dirs []string) {
-	found := discoveredSkills(dirs)
-
-	fmt.Println()
-	fmt.Println("── 技能（发现到的）")
-	if len(found) == 0 {
-		fmt.Println("   （空）这是正常状态，不是没装好——往下面任一目录放 <名字>/SKILL.md：")
-		for _, dir := range dirs {
-			fmt.Printf("     %s\n", dir)
-		}
-		return
-	}
-	for _, skill := range found {
-		// **目录名也打出来**：front matter 里的 name 可能与目录名不同，
-		// 而 skills__load 两个都认——只显示一个会让人搞不清自己建的是哪个
-		fmt.Printf("   %-24s %-28s %s\n", skill.Name, "<"+skill.Dir+">", firstLine(skill.Description))
-	}
-	fmt.Printf("   来自：%s\n", strings.Join(dirs, "、"))
-}
-
-// discoveredSkills 发现到的技能。**不因为任何一个读不出来就整体失败**——
-// 一个坏技能不该让整份清单消失，那正好是最需要看到清单的时候。
-func discoveredSkills(dirs []string) []skills.Skill {
-	found := skills.Discover(dirs)
-	if found == nil {
-		return []skills.Skill{}
-	}
-	return found
 }
 
 // ask 自己的三个参数名与环境变量名。**成对放在一起**：它们只有在这一个文件里

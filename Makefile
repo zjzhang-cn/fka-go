@@ -269,7 +269,7 @@ ci: verify test-race test-count
 #
 #   1. 空配置：服务该**明确说**「没有接上渠道」并以 1 退出，而不是安静地
 #      收不到任何消息。
-#   2. 装好：skills 与 MCP server 该真的出现在 `fka tools` 里——**两条能力
+#   2. 装好：skills 与 MCP server 该真的出现在 `fka list all` 里——**两条能力
 #      来源各验一次**。
 #
 # 刻意**不要求 LLM**：它验的是「装好了没有」，不是「模型答不答得出」。
@@ -278,19 +278,19 @@ ci: verify test-race test-count
 smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@rm -rf $(smoke_dir); mkdir -p $(smoke_dir)
 	@echo "$(BOLD)── 1. 空配置 ──$(RESET)"
-	@# **落盘再截前 3 行，而不是 `fka tools | head -3`**：recipe 开着 pipefail，
-	@# 而 head 读够就退出，fka tools 写剩余部分时收到 SIGPIPE（141）——
-	@# 整条 smoke 于是挂在「打印工具列表」上，跟渠道接没接上毫无关系。
-	@$(FKA) tools > $(smoke_dir)/tools.txt
+	@# **落盘再截前 3 行，而不是 `fka list all | head -3`**：recipe 开着 pipefail，
+	@# 而 head 读够就退出，fka list 写剩余部分时收到 SIGPIPE（141）——
+	@# 整条 smoke 于是挂在「打印清单」上，跟渠道接没接上毫无关系。
+	@$(FKA) list all > $(smoke_dir)/tools.txt
 	@head -3 $(smoke_dir)/tools.txt
 	@# **结构化输出不许被日志污染**：`--json` 的第一个字节必须是 `{`。
 	@# 默认控制台级别一旦退回 info/debug，日志就插到 JSON 前面，而**退出码仍是 0**
 	@# ——调用方只看到「JSON 解析失败」，看不出是日志干的。这一步是那条的闸门。
-	@$(FKA) tools --json > $(smoke_dir)/tools.json
+	@$(FKA) list all --json > $(smoke_dir)/tools.json
 	@if [ "$$(head -c 1 $(smoke_dir)/tools.json)" = "{" ]; then \
-		echo "$(BOLD)✓$(RESET) tools --json 从 JSON 开头，没被日志污染"; \
+		echo "$(BOLD)✓$(RESET) list all --json 从 JSON 开头，没被日志污染"; \
 	else \
-		echo "$(BOLD)✗$(RESET) tools --json 被日志污染了，第一行是："; \
+		echo "$(BOLD)✗$(RESET) list all --json 被日志污染了，第一行是："; \
 		head -1 $(smoke_dir)/tools.json; exit 1; \
 	fi
 	@# **再补一刀：默认级别本来就放行的 WARN 也不许顶在结果前面**。
@@ -300,13 +300,13 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@# 而且**两头都断言**：stdout 仍是纯 JSON、stderr 里确实有那条告警（否则
 	@# 「没污染」也可能是「被吞了」这种假通过）。
 	@# `LOG_LEVEL=` 显式清空，免得环境里已有的取值把它抬到 warn 以上。
-	@LOG_LEVEL= LLM_TOOL_EFFECTS=read,typo $(FKA) tools --json > $(smoke_dir)/tools-warn.json 2> $(smoke_dir)/tools-warn.err
+	@LOG_LEVEL= LLM_TOOL_EFFECTS=read,typo $(FKA) list all --json > $(smoke_dir)/tools-warn.json 2> $(smoke_dir)/tools-warn.err
 	@if [ "$$(head -c 1 $(smoke_dir)/tools-warn.json)" != "{" ]; then \
 		echo "$(BOLD)✗$(RESET) WARN 污染了 stdout，第一行是："; \
 		head -1 $(smoke_dir)/tools-warn.json; exit 1; \
 	fi
 	@if grep -q "认不出的取值" $(smoke_dir)/tools-warn.err; then \
-		echo "$(BOLD)✓$(RESET) 即使先记了一条 WARN，tools --json 仍从 JSON 开头"; \
+		echo "$(BOLD)✓$(RESET) 即使先记了一条 WARN，list all --json 仍从 JSON 开头"; \
 	else \
 		echo "$(BOLD)✗$(RESET) 告警没出现在 stderr——被吞了？stderr 内容是："; \
 		cat $(smoke_dir)/tools-warn.err; exit 1; \
@@ -508,7 +508,7 @@ smoke-wiring: build
 	@printf '{"mcpServers":{"memory":{"command":"%s","args":["--db","cwd-probe/memory.sqlite"],"cwd":"."},"sandbox":{"command":"%s"}}}' \
 		"$(smoke_home)/bin/fka-memory" "$(smoke_home)/bin/fka-sandbox" > $(smoke_home)/mcp.json
 	@FKA_HOME=$(smoke_home) LLM_TOOL_EFFECTS=read,external \
-		$(smoke_home)/bin/fka tools > $(smoke_home)/out.txt 2>&1 || true
+		$(smoke_home)/bin/fka list all > $(smoke_home)/out.txt 2>&1 || true
 	@cat $(smoke_home)/out.txt
 	@for want in skills__load skills__list mcp__memory__search_memories mcp__memory__remember_memory mcp__sandbox__run mcp__sandbox__read; do \
 		if grep -q "$$want" $(smoke_home)/out.txt; then \
@@ -542,9 +542,9 @@ ask: build ## 无头问一句：make ask QUESTION="…"
 	@test -n "$(QUESTION)" || { echo "用法：make ask QUESTION=\"...\""; exit 2; }
 	$(FKA) ask $(if $(PRINCIPAL),--principal $(PRINCIPAL),) "$(QUESTION)"
 
-.PHONY: tools
-tools: build ## 列出模型现在能看到的工具
-	$(FKA) tools
+.PHONY: list
+list: build ## 按类型列出技能/工具/资源/提示词：make list LIST=all
+	$(FKA) list $(or $(LIST),all)
 
 # ── 真机（需要真实微信账号）─────────────────────────────
 

@@ -107,7 +107,7 @@ func runChat(ctx context.Context, parsed cliArgs) int {
 		fmt.Fprintln(os.Stderr, "现在没有任何工具被放行，chat 无从跑起。")
 		fmt.Fprintf(os.Stderr, "  请设 LLM_TOOL_EFFECTS=read,external，并在 %s 里配好服务器。\n",
 			application.McpConfigPath)
-		fmt.Fprintln(os.Stderr, "  跑 `fka tools` 看现在放行了什么。")
+		fmt.Fprintln(os.Stderr, "  跑 `fka list tool` 看现在放行了什么。")
 		return exitFail
 	}
 

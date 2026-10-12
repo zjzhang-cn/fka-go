@@ -187,7 +187,7 @@ func Test认错了会一路传到run(t *testing.T) {
 
 // Test默认控制台级别不污染stdout 这条钉的是**默认值**，不是某次显式指定。
 //
-// CLI 的 stdout 是给人和脚本消费的结果输出：`fka tools --json` 的第一行必须是
+// CLI 的 stdout 是给人和脚本消费的结果输出：`fka list all --json` 的第一行必须是
 // `{`。默认值一旦退回 info/debug，日志就会插到 JSON 前面，而**退出码仍是 0**——
 // 调用方只看到「解析失败」，看不出是日志干的（`make smoke` 里也有一条同样的断言）。
 //
@@ -195,7 +195,7 @@ func Test认错了会一路传到run(t *testing.T) {
 func Test默认控制台级别不污染stdout(t *testing.T) {
 	if defaultConsoleLevel < config.LevelWarn {
 		t.Errorf("默认控制台级别是 %v：info/debug 会被打进 stdout，"+
-			"`fka tools --json` 就不再是合法 JSON 了", defaultConsoleLevel)
+			"`fka list all --json` 就不再是合法 JSON 了", defaultConsoleLevel)
 	}
 	if defaultConsoleLevel != config.DefaultConsoleLevel {
 		t.Errorf("CLI 的默认级别 %v 与 config.DefaultConsoleLevel %v 不一致——"+

@@ -23,7 +23,7 @@ const logLevelEnv = "LOG_LEVEL"
 //
 // **值只有一处出处**：`config.DefaultConsoleLevel`（那边是 Warn）。
 // 这里刻意不再写字面量——两处各写一份时，改一处只会影响一半路径，
-// 而漏掉的那半条路正好是 `fka tools --json`：日志插进 JSON 前面，
+// 而漏掉的那半条路正好是 `fka list all --json`：日志插进 JSON 前面，
 // 退出码却仍是 0，调用方只看到「解析失败」，看不出是日志干的。
 const defaultConsoleLevel = config.DefaultConsoleLevel
 

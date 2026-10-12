@@ -10,7 +10,7 @@
 //
 //	ask    无头跑一轮工具循环问答（不经过渠道）
 //	chat   交互式多轮问答（不经过渠道，回答写 stdout、提示写 stderr）
-//	tools  列出模型现在能看到的工具与五类放行情况
+//	list   按类型列出技能、工具、MCP 资源/提示词、服务器
 //	serve  常驻：接渠道、收消息、跑问答
 //	login  扫码登录渠道账号
 //	version  版本、提交、构建时间
@@ -109,8 +109,8 @@ func run(args []string) int {
 		return runAsk(ctx, parsed)
 	case "chat":
 		return runChat(ctx, parsed)
-	case "tools":
-		return runTools(ctx, parsed)
+	case "list":
+		return runList(ctx, parsed)
 	case "serve":
 		return runServe(ctx, parsed)
 	case "login":
@@ -133,7 +133,7 @@ func printUsage() {
 用法：
   fka ask [参数] <问题>  无头跑一轮工具循环问答
   fka chat [参数]       交互式多轮问答（回答写 stdout，提示与颜色写 stderr）
-  fka tools [--json]    列出模型现在能看到的工具与五类放行情况
+  fka list <类型> [--json]  列出技能 / 工具 / 资源 / 提示词 / 服务器（all 给全部）
   fka serve             常驻：接渠道、收消息、跑问答
   fka login [--account N]  扫码登录（不给就用第一个空槽位）
   fka version           版本信息

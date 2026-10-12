@@ -37,10 +37,10 @@
 已验证的链路（`make verify` 的 `smoke` 每次都在跑这四条）：
 
 ```
-fka tools                       # 真机装一个 skill + 一个 MCP server，断言四个工具都列出来了
+fka list all                    # 真机装一个 skill + 一个 MCP server，断言四个工具都列出来了
   → 技能读到没、server 连上没有，这两件事静默失败时界面上完全看不出来
 
-fka tools --json                # 第一个字节必须是 `{`——日志混进 stdout 时退出码仍是 0
+fka list all --json             # 第一个字节必须是 `{`——日志混进 stdout 时退出码仍是 0
 fka version                     # 零副作用：连 logs/ 都不该建（惰性日志器 + 纯输出命令先返回）
 
 make smoke 的 smoke-memory      # 记忆的端到端，**走真实二进制与真实 SQLite**
