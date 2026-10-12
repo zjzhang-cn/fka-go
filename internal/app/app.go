@@ -319,8 +319,9 @@ func (a *App) Serve(ctx context.Context) error {
 
 	// goroutine 代替 Node 版的 worker：**不阻塞 StartAll**，而接缝的投递是非阻塞的。
 	//
-	// dispatcher **按账号分片**——同账号串行、账号间并行，见 messages/dispatch.go
-	// 里为什么这么切。顺带一提，并发上限不用配：worker 数 = 账号数。
+	// dispatcher **按账号+身份分片**——同「账号+身份」串行、不同之间并行，见
+	// messages/dispatch.go 里为什么这么切。顺带一提，并发上限不用配：
+	// worker 数 = 见到过的「账号 × 身份」数。
 	dispatched := make(chan struct{})
 	go func() {
 		defer close(dispatched)

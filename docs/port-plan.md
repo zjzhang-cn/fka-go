@@ -81,7 +81,7 @@ make smoke 的 smoke-sandbox     # 沙盒 bash 的端到端，**真起 bwrap**
 | **装配 + CLI** | `internal/app`、`cmd/fka` | 44 | 构造函数链替代 cordis.yml；`ask`/`chat`/`tools`/`serve`/`login`/`version`；**参数只解析一次**（认不出的以 2 退出，绝不当问题）；控制台级别只有一处出处；`chat` 真终端上由 readline 接管行编辑（中文回退按宽度擦除） |
 | **iLink 协议层** | `internal/channels/ilink/bot` | 97 | uint64 无损、snake_case、`ret` 缺席算成功、**4xx/非 JSON 应答不算成功**、**游标先落盘再上抛（落盘失败要上报）**、过期清游标、ECB 按块、PKCS#7 逐字节核对、**大响应体的超时归读 body 的那一层**、**失败轮次不算成功（退避才会递增）**、**扫码中间态如实上报且不重复**、**收发都有大小上限** |
 | **iLink 适配层** | `internal/channels/ilink` | 36 | 归一化、**能力声明与发送器一致**、每次重读账号表（不缓存）、入站先记上下文再上抛、**会话上下文有上限（留最近的 N 条）**、过期不被 offline 覆盖（**且停机不在轮询自己的 goroutine 上等自己**）、启动失败不留「已启动」假状态、`.env` 块就地替换 |
-| **消息层** | `internal/messages` | 17 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号分片、账号间并行**；身份缺失就拒答；**回话带上工具那一步的 ctx**；发不出去只记日志、不发第二条 |
+| **消息层** | `internal/messages` | 17 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号+身份分片**（同「账号+身份」串行、不同之间并行，身份为空时退回账号）；身份缺失就拒答；**回话带上工具那一步的 ctx**；发不出去只记日志、不发第二条 |
 | **技能源** | `internal/tools/skills` | 21 | **无条件注册**（目录空不藏工具）；极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录时 list 返 `[]` 而 load 说清放哪 |
 | **渠道接缝** | `internal/channels` | 16 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；可选能力靠**类型断言**而不是 `ok=false`；**契约上每个方法都有活着的调用方**（`contract_test.go`） |
 | **网页渠道（SSE）** | `internal/channels/web` | 15 | SSE 收 + POST 发；**token→HttpOnly cookie 认证**（EventSource/`<img>` 带不了头）；会话 id 校验（进 SessionKey/历史文件名）；**实现 EmitterProvider**（流式推 reasoning/tool，**最终答案走 Senders.Text、Answer 置空避免重复**）；出站媒体内存暂存 + `/files/{id}`；静态目录缺失给说明不 500；未配置不产实例、有地址没令牌拒绝启用 |

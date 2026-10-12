@@ -54,8 +54,9 @@ const (
 // defaultAccount 这个渠道默认的账号标识。**刻意不叫 "web"**：账号是跨渠道的选择器，
 // 与渠道种类同名只会让人分不清说的是种类还是账号。用 WEB_CHANNEL_ACCOUNT 覆盖。
 //
-// 单账号渠道——由此带来一个要写明的代价：接缝按账号分片，所以**所有网页会话
-// 串行执行**。要多用户并发得改成「一个用户一个账号实例」。
+// **单账号**：所有用户共用这一个 AccountID，身份区分靠 PrincipalID。分片键已
+// 含身份（见 `internal/messages/dispatch.go` 的 `shardKeyOf`），所以**不同 token
+// 的用户并行、同一用户的会话串行**——历史单文件与上下文前后依赖只约束后者。
 const defaultAccount = "default"
 
 // 环境变量。
