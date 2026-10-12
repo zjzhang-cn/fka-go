@@ -641,3 +641,37 @@ func TestRun_没清空则照常落盘(t *testing.T) {
 		t.Error("没清空时本轮该照常落盘")
 	}
 }
+
+// TestRun_Ephemeral不读也不写历史 CLI 一次性问答（`fka ask` 不带 --session）走
+// Ephemeral：既不把旧历史带进上下文，也不把本轮写回文件——否则每次 ask 都会留下
+// 一个永不复用的 cli-*.jsonl。
+func TestRun_Ephemeral不读也不写历史(t *testing.T) {
+	dir := t.TempDir()
+	store := llm.NewSessionHistory(dir)
+	store.Append("s", []llm.ChatMessage{{Role: llm.RoleUser, Content: "旧问题"}})
+
+	source := &fakeSource{
+		specs:   []tools.Spec{searchSpec()},
+		replies: map[string]string{"search": "结果"},
+	}
+	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
+	chat, seen := scriptedChat(t, "fake__search", `{"q":"x"}`, "答案")
+
+	runner := &Runner{chat: chat, tools: registry, MaxSteps: 5, enabled: true, sessionHistory: store}
+	if _, err := runner.Run(context.Background(), RunnerInput{
+		SessionID: "s", PrincipalID: "u", Question: "问一句", Ephemeral: true,
+	}); err != nil {
+		t.Fatalf("Run 返错：%v", err)
+	}
+
+	// 不写：历史仍是调用前那一条
+	if got := store.Load("s"); len(got) != 1 {
+		t.Errorf("Ephemeral 不该落盘，历史该仍是 1 条，实际 %d：%+v", len(got), got)
+	}
+	// 不读：发给模型的消息里没有旧问题
+	for _, message := range (*seen)[0] {
+		if message.Content == "旧问题" {
+			t.Errorf("Ephemeral 不该读历史，却把旧问题带进了上下文：%+v", (*seen)[0])
+		}
+	}
+}

@@ -31,6 +31,10 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 	}
 
 	principal := flagOrEnv(parsed, principalFlag, principalEnv, "cli")
+	// **显式给了 `--session` / `FKA_SESSION` 才算「要续会话」**：只有那时才读历史、
+	// 也只有那时才落盘。不给就是纯一次性问答，不产生（也读不到）会话历史文件——
+	// 否则每次 `ask` 都会留下一个永不复用的 `cli-*.jsonl`。
+	explicitSession := flagOrEnv(parsed, sessionFlag, sessionEnv, "") != ""
 	session := sessionID(parsed)
 
 	// `@路径` 的引用在这里展开：文本正文追加在末尾，图片作为本轮附件。
@@ -84,6 +88,8 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		Question:    question,
 		Images:      expanded.images,
 		Emitter:     &askEmitter{ui: os.Stderr, out: os.Stdout},
+		// 没显式给会话就是一次性问答：不读也不写历史
+		Ephemeral: !explicitSession,
 	})
 	if err != nil {
 		// 模型的错如实报，**不静默降级**——与原实现同一条理由：
@@ -93,10 +99,14 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 	}
 
 	if debugEnabled() {
-		// **会话 id 印出来**：没给 `--session` 时它是每次新生成的，
-		// 而「接着刚才那条 CLI 问的」只能靠这个 id —— 不印出来就等于没法接续
-		fmt.Fprintf(os.Stderr, "\n[debug] session=%s steps=%d stoppedBy=%s tools=%s\n",
-			session, result.Steps, result.StoppedBy, strings.Join(result.UsedTools, ", "))
+		// **会话 id 印出来**，但只在显式给了 `--session` 时才有「续会话」的意义：
+		// 没给的话这轮是 Ephemeral，什么都没落盘，拿这个 id 也续不上
+		hint := ""
+		if !explicitSession {
+			hint = "（未落盘；要续会话请显式给 --session）"
+		}
+		fmt.Fprintf(os.Stderr, "\n[debug] session=%s%s steps=%d stoppedBy=%s tools=%s\n",
+			session, hint, result.Steps, result.StoppedBy, strings.Join(result.UsedTools, ", "))
 	}
 	return exitOK
 }
@@ -153,6 +163,9 @@ func (e *askEmitter) Answer(text string) {
 // 于是**每一次**不带 `--session` 的 `ask` 都在续上一个——「问音乐商店销量」之后
 // 再问「今天天气」，模型会拿前一个问题当上下文。命令行里什么都没变，
 // 而这个错只在**恰好问到相关话题**时显形，定位起来毫无线索。
+//
+// **兜底生成的 id 只用于日志与 `[debug]` 回显**：不带 `--session` 的 ask 走
+// `Ephemeral`，既不读也不写历史（见 runAsk），所以这个 id 不会被任何文件复用。
 //
 // 显式给了 `--session` 的用法一个字没变：那是**要**连续会话的场合。
 func sessionID(parsed cliArgs) string {

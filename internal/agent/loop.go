@@ -162,8 +162,12 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), sections)
 
 	// 历史前缀：会话文件里那份，逐字原样（含工具调用与工具结果）。
-	// 存储关掉时（SESSION_HISTORY=0）就没有历史，这一轮从零开始。
-	prior := llm.LoadHistoryPrefix(r.sessionHistory, input.SessionID)
+	// 存储关掉时（SESSION_HISTORY=0）就没有历史，这一轮从零开始；`Ephemeral`
+	// （CLI 一次性问答）同样不读——它没有可续的上下文。
+	var prior []llm.ChatMessage
+	if !input.Ephemeral {
+		prior = llm.LoadHistoryPrefix(r.sessionHistory, input.SessionID)
+	}
 
 	// 本轮 user 消息**只算一次**：预算与实际发出的必须是同一份文本。
 	// 预算按 input.Question 算、发出时再走一遍 userContent（拼上引用正文）的话，
@@ -197,7 +201,8 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 「清空历史」+ 工具调用 + 答复又会被写回，下一轮依旧带上它，等于没清。
 	historyCleared := false
 	persistTurn := func() {
-		if r.sessionHistory != nil && !historyCleared {
+		// Ephemeral（CLI 一次性问答）不落盘：不给 `--session` 时没有下一轮来续它
+		if r.sessionHistory != nil && !historyCleared && !input.Ephemeral {
 			r.sessionHistory.Append(input.SessionID, persistable(messages[turnStart:]))
 		}
 	}

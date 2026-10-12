@@ -67,6 +67,10 @@ type RunnerInput struct {
 	// Reply 以 Bot 的身份回话（发文件）。**逐条消息给**——「能发给谁」取决这条
 	// 消息的会话与回复令牌，那是消息层的事实。工具层不该知道。
 	Reply tools.Reply
+	// Ephemeral 这一轮**不进也不出会话历史**。给 CLI 的一次性问答用：`fka ask`
+	// 不带 `--session` 时没有可续的上下文，落盘只会每次生成一个永不复用的
+	// `cli-*.jsonl`（垃圾）。渠道与带 `--session` 的 ask 都走正常读写。
+	Ephemeral bool
 }
 
 // Runner 跑一轮问答。**现在有没有任何工具由 HasTools 回答**：消息层据此决定走

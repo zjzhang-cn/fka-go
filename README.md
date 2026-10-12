@@ -64,7 +64,7 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external ./bin/fka list all
 FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
   FKA_PRINCIPAL=zhang ./bin/fka ask "记一条：2026年3月全家去了三亚"
 
-# 接着上一条 CLI 问的继续（不给 --session 就是每次一个新会话）
+# 接着上一条 CLI 问的继续（要续会话就显式给 --session）
 ./bin/fka ask --session cli-3f2a9c1e-7b4d-4a2f-8e6c-1d5b0a9c3e7f "那去年呢"
 
 # 交互式多轮问答：整场复用一个会话，回答写 stdout、提示与颜色写 stderr（Ctrl-D 退出）
@@ -75,10 +75,12 @@ FKA_HOME=/path/to/fka LLM_TOOL_EFFECTS=read,external \
 FKA_HOME=/path/to/fka ./bin/fka serve
 ```
 
-**`ask` 不给 `--session` 时每次都是一个新会话**（`cli-<uuid>`，落在
-`<安装根>/data/history/cli-<uuid>.jsonl`）。这是有意的：兜底曾是固定的一个名字，
-于是**每一条**不带参数的 `ask` 都在续上一条——「模型忽然提起你半小时前随口问过的
-那件事」，而命令行里什么都没变。想连续会话就显式给 `--session`（或 `FKA_SESSION`）。
+**`ask` 不给 `--session` 时是纯一次性问答，不产生会话历史**：既不读旧历史，也不把
+本轮写进 `<安装根>/data/history/`。兜底曾是固定的一个名字，于是**每一条**不带参数的
+`ask` 都在续上一条——「模型忽然提起你半小时前随口问过的那件事」，而命令行里什么都没变；
+而每次新生成一个随机会话又会留下一个永不复用的 `cli-*.jsonl`。所以默认干脆不落盘。
+想连续会话就显式给 `--session`（或 `FKA_SESSION`）——只有那时才读写历史。
+`FKA_DEBUG=1` 打印的会话 id 也只是这轮的名字，没落盘就续不上。
 
 **`ask` 把过程信息写到 stderr**：推理 `[推理] …`（`LLM_SHOW_REASONING=0` 可关）、
 每次工具调用 `[工具] 名字（原样参数）→ 结果`、以及答案前的一行 `[助手]`。答案本身
