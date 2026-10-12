@@ -1,4 +1,4 @@
-// bash MCP server 的工具实现。
+// sandbox MCP server 的工具实现。
 //
 // ## 这个 server 提供什么
 //
@@ -25,10 +25,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/zjzhang-cn/fka-go/mcp/bash/internal/log"
+	"github.com/zjzhang-cn/fka-go/mcp/mcp_sandbox/internal/log"
 )
 
-// 工具名。**刻意不带前缀**——前缀由上层注册表加（`mcp__bash__`）。
+// 工具名。**刻意不带前缀**——前缀由上层注册表加（`mcp__sandbox__`）。
 const (
 	ToolRun    = "run"
 	ToolRead   = "read"
@@ -54,18 +54,18 @@ func runDescription(allowPip bool) string {
 
 // metaPrincipalKey agent 经 MCP `_meta` 传来的调用方身份键。
 //
-// **必须与 agent 侧 internal/tools/mcp 的同名常量逐字一致**——bash 自给自足
+// **必须与 agent 侧 internal/tools/mcp 的同名常量逐字一致**——sandbox 自给自足
 // （边界测试不许 import 树内别的包），所以这串字面量在两边各写一份，改动要一起改。
 const metaPrincipalKey = "fka/principal"
 
-// bashServer 工具实现。**只有本目录内的 main 与测试用得到**。
+// sandboxServer 工具实现。**只有本目录内的 main 与测试用得到**。
 //
 // ## 多租户：每个 principal 一个沙盒根
 //
 // `opts.Root` 是**基根**；真正跑命令的根是 `<基根>/<safe(principal)>`，按需创建。
 // 身份从 MCP `_meta` 来（agent 注入，模型改不了）——没有身份就 **fail-closed**，
 // 绝不落到共享目录。
-type bashServer struct {
+type sandboxServer struct {
 	opts    Options
 	execLog *ExecLog
 
@@ -75,7 +75,7 @@ type bashServer struct {
 
 // register 把工具挂到 MCP server 上。`opts.Root` 是基根。
 func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
-	s := &bashServer{opts: opts, execLog: execLog, sandboxes: map[string]*Sandbox{}}
+	s := &sandboxServer{opts: opts, execLog: execLog, sandboxes: map[string]*Sandbox{}}
 
 	mcpServer.AddTool(mcp.NewTool(ToolRun,
 		mcp.WithDescription(runDescription(opts.AllowPip)),
@@ -118,7 +118,7 @@ func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
 
 // sandboxOf 取出这次调用的沙盒。**fail-closed**：拿不到身份就拒绝，绝不落到共享
 // 目录——那等于「绕过 agent 就全共享」，是多租户下最坏的失败形态。
-func (s *bashServer) sandboxOf(request mcp.CallToolRequest) (*Sandbox, *mcp.CallToolResult) {
+func (s *sandboxServer) sandboxOf(request mcp.CallToolRequest) (*Sandbox, *mcp.CallToolResult) {
 	principal := principalOf(request)
 	if principal == "" {
 		return nil, fail("这次调用没带调用方身份（_meta." + metaPrincipalKey + "），已拒绝执行。")
@@ -132,7 +132,7 @@ func (s *bashServer) sandboxOf(request mcp.CallToolRequest) (*Sandbox, *mcp.Call
 }
 
 // sandboxFor 取该租户的沙盒，没有就**按需建**（懒创建，缓存起来）。
-func (s *bashServer) sandboxFor(principal string) (*Sandbox, error) {
+func (s *sandboxServer) sandboxFor(principal string) (*Sandbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sb, ok := s.sandboxes[principal]; ok {
@@ -184,7 +184,7 @@ func safeSegment(value string) string {
 	return cleaned
 }
 
-func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *sandboxServer) handleRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	command := strings.TrimSpace(request.GetString("command", ""))
 	if command == "" {
 		return fail("command 是必填的：要执行哪条 shell 命令。"), nil
@@ -238,7 +238,7 @@ func (s *bashServer) handleRun(ctx context.Context, request mcp.CallToolRequest)
 }
 
 // recordExec 落一条执行日志。execLog 为 nil（测试）时静默跳过。
-func (s *bashServer) recordExec(rec execRecord) {
+func (s *sandboxServer) recordExec(rec execRecord) {
 	s.execLog.Record(rec)
 }
 
@@ -249,7 +249,7 @@ func (s *bashServer) recordExec(rec execRecord) {
 // 文本给一个 text 内容块；图片给一个 text 说明 + 一个 **`type:"image"` 内容块**
 // （base64 + mimeType），模型因此能直接把图当图看；二进制只说明类型与大小。数据全部
 // 经 `CallToolResult` 走 MCP，不依赖 agent 能读本地路径。
-func (s *bashServer) handleRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *sandboxServer) handleRead(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	path := strings.TrimSpace(request.GetString("path", ""))
 	if path == "" {
 		return fail("path 是必填的：要读沙盒里的哪个文件。"), nil
@@ -308,8 +308,8 @@ var ExportMaxBytes int64 = 32 << 20
 //
 // 与 read 同一条理由：server 可能在别的机器上（HTTP/SSE），文件内容只能以数据穿过
 // MCP 通道。区别是**受众**——read 给模型看，export 给用户收。这个意图用 MCP 标准的
-// `annotations.audience=["user"]` 表达，agent 据此经渠道送出，**不需要认识 bash**。
-func (s *bashServer) handleExport(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+// `annotations.audience=["user"]` 表达，agent 据此经渠道送出，**不需要认识 sandbox**。
+func (s *sandboxServer) handleExport(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	raw := strings.TrimSpace(request.GetString("path", ""))
 	if raw == "" {
 		return fail("path 是必填的：要发给用户的沙盒文件。"), nil
@@ -345,7 +345,7 @@ func (s *bashServer) handleExport(ctx context.Context, request mcp.CallToolReque
 		MIMEType: mime,
 		Blob:     base64.StdEncoding.EncodeToString(data),
 	})
-	// **意图就在这一行**：受众是用户。agent 只认这个字段，不认它来自 bash。
+	// **意图就在这一行**：受众是用户。agent 只认这个字段，不认它来自 sandbox。
 	resource.Annotations = &mcp.Annotations{Audience: []mcp.Role{mcp.RoleUser}}
 
 	header := fmt.Sprintf("──── %s（%s，%s）────\n（已交给渠道发给用户）",

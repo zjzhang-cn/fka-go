@@ -1,25 +1,26 @@
 # syntax=docker/dockerfile:1
 #
-# fka-bash 沙盒容器：把 mcp/bash 和 python3 / nodejs 一起打进一个镜像。
+# fka-sandbox 沙盒容器：把 mcp/mcp_sandbox 和 python3 / nodejs 一起打进一个镜像。
 #
 # ## 不在容器里编译
 #
-# 镜像**不构建** fka-bash —— 它假设 `bin/fka-bash-linux-<arch>` 已经存在，
+# 镜像**不构建** fka-sandbox —— 它假设 `bin/fka-sandbox-linux-<arch>` 已经存在，
 # 由宿主交叉编译好（零 CGO，一条 `GOOS=linux go build` 就够；见 Makefile 的
-# `docker-bash`）。这样镜像里没有 Go 工具链，构建也快得多、可复现。
+# `docker-sandbox`）。这样镜像里没有 Go 工具链，构建也快得多、可复现。
 #
-#   make docker-bash          # 交叉编译 linux/amd64,arm64 并构建镜像
-#   或手动：
-#     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/fka-bash-linux-arm64 ./mcp/bash
-#     docker build -f mcp/bash/Dockerfile -t fka-bash .
+#   make docker-sandbox          # 交叉编译 linux/amd64,arm64 并构建镜像
+#   或手动（**必须传 --build-arg TARGETARCH**：没装 buildx 时 legacy builder
+#   不会自动注入它，`COPY bin/fka-sandbox-linux-` 会报 file not found）：
+#     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/fka-sandbox-linux-arm64 ./mcp/mcp_sandbox
+#     docker build -f mcp/mcp_sandbox/Dockerfile --build-arg TARGETARCH=arm64 -t fka-sandbox .
 #
-# 上下文必须是**仓库根**（要能 COPY 到 bin/），Dockerfile 自己则在 mcp/bash/。
+# 上下文必须是**仓库根**（要能 COPY 到 bin/），Dockerfile 自己则在 mcp/mcp_sandbox/。
 #
 # ## 为什么容器里用 direct 模式
 #
 # 宿主部署时默认用 Bubblewrap 起命名空间沙盒（见 sandbox.go）。容器化时**反过来**：
 # Docker 容器自己就是那道边界——文件系统、网络、PID、user 全在容器内，所以容器里的
-# fka-bash 走 `--mode direct`，不再叠一层 bwrap（那需要额外 capability、且是重复隔离）。
+# fka-sandbox 走 `--mode direct`，不再叠一层 bwrap（那需要额外 capability、且是重复隔离）。
 #
 # **direct 档不是「关掉沙盒」**：命令白名单/黑名单、cwd 的词法+符号链接越界检查、
 # 硬超时、输出上限、多租户子目录全部照旧。它只是把「OS 级命名空间」那一层交给 Docker。
@@ -35,7 +36,7 @@
 # user namespace），所以 `/sandbox` 下的兄弟租户目录对同 uid 是可读的。要真正
 # 「禁止跨用户读取」得在容器内另加机制（Landlock）或每租户一容器。
 
-# ── 运行阶段：Ubuntu + python3 + nodejs + fka-bash ─────────
+# ── 运行阶段：Ubuntu + python3 + nodejs + fka-sandbox ─────────
 FROM ubuntu:24.04
 
 # TARGETARCH（amd64 / arm64）由 BuildKit 注入，用来挑对应架构的预编译二进制。
@@ -62,7 +63,7 @@ RUN sed -i \
     && rm -rf /var/lib/apt/lists/*
 
 # 宿主交叉编译好的静态二进制（零 CGO）。COPY 保留可执行位。
-COPY bin/fka-bash-linux-${TARGETARCH} /usr/local/bin/fka-bash
+COPY bin/fka-sandbox-linux-${TARGETARCH} /usr/local/bin/fka-sandbox
 
 # 沙盒根（可挂卷）与审计日志目录（**必须与沙盒根分开**：模型能写沙盒，不能擦自己的审计）。
 # 目录归非 root 用户所有；**server 与它拉起的沙箱命令都以此用户运行**，不要 root。
@@ -73,19 +74,19 @@ USER fka
 VOLUME ["/sandbox", "/logs"]
 
 # 配置全部走环境变量（main.go 的解析优先级是 --flag > env > 默认）。
-#   BASH_SANDBOX_MODE=direct  —— 容器即边界，不再叠 bwrap
-#   BASH_MCP_TRANSPORT=http   —— 容器无 stdin，用 streamable HTTP 供 agent 连
-#   FKA_LOG_DIR=/logs         —— 执行日志落在挂载卷，不写进只读根
-#   PIP_BREAK_SYSTEM_PACKAGES=1 —— Ubuntu 24.04 是 PEP 668 externally-managed，放开系统 pip
-ENV BASH_SANDBOX_ROOT=/sandbox \
-    BASH_SANDBOX_MODE=direct \
-    BASH_MCP_TRANSPORT=http \
-    BASH_MCP_ADDR=0.0.0.0:8080 \
+#   SANDBOX_MODE=direct           —— 容器即边界，不再叠 bwrap
+#   SANDBOX_MCP_TRANSPORT=http    —— 容器无 stdin，用 streamable HTTP 供 agent 连
+#   FKA_LOG_DIR=/logs             —— 执行日志落在挂载卷，不写进只读根
+#   PIP_BREAK_SYSTEM_PACKAGES=1   —— Ubuntu 24.04 是 PEP 668 externally-managed，放开系统 pip
+ENV SANDBOX_ROOT=/sandbox \
+    SANDBOX_MODE=direct \
+    SANDBOX_MCP_TRANSPORT=http \
+    SANDBOX_MCP_ADDR=0.0.0.0:8080 \
     FKA_LOG_DIR=/logs \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
 EXPOSE 8080
 
 # 容器内听 0.0.0.0 是惯例（由宿主 publish 决定对外面）；HTTP transport 挂 /mcp。
-# 用 `docker run <image> --help` 可覆盖成任意 fka-bash 参数。
-ENTRYPOINT ["fka-bash"]
+# 用 `docker run <image> --help` 可覆盖成任意 fka-sandbox 参数。
+ENTRYPOINT ["fka-sandbox"]

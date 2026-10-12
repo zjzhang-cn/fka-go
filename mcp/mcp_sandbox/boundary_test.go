@@ -1,11 +1,11 @@
-// bash server 的边界测试：**这个 server 自给自足**。
+// sandbox server 的边界测试：**这个 server 自给自足**。
 //
 // ## 为什么这条要专门用测试守
 //
-// Go 的 `internal` 规则已经保证了「`mcp/bash/internal/...` 只有 bash 树能 import」——
+// Go 的 `internal` 规则已经保证了「`mcp/mcp_sandbox/internal/...` 只有 bash 树能 import」——
 // 那是编译器的事，本测试不重复。
 //
-// 但它**没有**保证「bash 不 import 树外的东西」：`mcp/bash` 完全可以 import
+// 但它**没有**保证「bash 不 import 树外的东西」：`mcp/mcp_sandbox` 完全可以 import
 // `fka-go/internal/config` 或别的 server 的包而不报错（它们都在 `fka-go/` 之下）。
 // 而那正是要防的——一旦伸手，这个 server 就跟别人的装配、配置、生命周期绑在一起，
 // 它不再是「能单独构建、部署、换掉的能力」。
@@ -26,7 +26,7 @@ import (
 // TestBash不依赖树外任何包 bash 的每个 .go 文件都只许 import：
 //
 //   - 标准库；
-//   - `fka-go/mcp/bash/...`（**它自己**的 internal）；
+//   - `fka-go/mcp/mcp_sandbox/...`（**它自己**的 internal）；
 //   - 第三方库（mark3labs —— 它不认识本仓库的任何一个包）。
 //
 // 出现别的 `fka-go/...` 路径就失败，并报出**哪个文件第几行**。
@@ -36,7 +36,7 @@ func TestBash不依赖树外任何包(t *testing.T) {
 		t.Fatalf("拿不到工作目录：%v", err)
 	}
 
-	const ownPrefix = "github.com/zjzhang-cn/fka-go/mcp/bash"
+	const ownPrefix = "github.com/zjzhang-cn/fka-go/mcp/mcp_sandbox"
 	const repoPrefix = "github.com/zjzhang-cn/fka-go"
 
 	fset := token.NewFileSet()
@@ -90,7 +90,7 @@ func TestBash不依赖树外任何包(t *testing.T) {
 		t.Fatalf("一个 .go 文件都没扫到——测试本身失效了（工作目录 %s）", root)
 	}
 	if len(violations) > 0 {
-		t.Errorf("bash server 必须自给自足，不许依赖树外的包：\n  %s",
+		t.Errorf("sandbox server 必须自给自足，不许依赖树外的包：\n  %s",
 			strings.Join(violations, "\n  "))
 	}
 }

@@ -35,10 +35,10 @@ SHELL := /bin/bash
 FKA_HOME ?= $(CURDIR)
 export FKA_HOME
 
-BIN        := $(FKA_HOME)/bin
-FKA        := $(BIN)/fka
-FKA_MEMORY := $(BIN)/fka-memory
-FKA_BASH   := $(BIN)/fka-bash
+BIN         := $(FKA_HOME)/bin
+FKA         := $(BIN)/fka
+FKA_MEMORY  := $(BIN)/fka-memory
+FKA_SANDBOX := $(BIN)/fka-sandbox
 
 # 零 CGO 硬约束。**每个构建目标都显式带上**，不靠外部环境变量——
 # 靠环境变量的话，一次 `CGO_ENABLED=1 make` 就悄悄破了这个约束。
@@ -90,10 +90,10 @@ GOFLAGS_BUILD := -trimpath -ldflags "$(LDFLAGS)"
 # ── 构建 ────────────────────────────────────────────────
 
 .PHONY: build
-build: $(FKA) $(FKA_MEMORY) $(FKA_BASH) ## 构建全部可执行文件（零 CGO）
+build: $(FKA) $(FKA_MEMORY) $(FKA_SANDBOX) ## 构建全部可执行文件（零 CGO）
 	@echo "$(BOLD)✓$(RESET) $(FKA)  $(DIM)$(VERSION)$(RESET)"
 	@echo "$(BOLD)✓$(RESET) $(FKA_MEMORY)  $(DIM)$(VERSION)$(RESET)"
-	@echo "$(BOLD)✓$(RESET) $(FKA_BASH)  $(DIM)$(VERSION)$(RESET)"
+	@echo "$(BOLD)✓$(RESET) $(FKA_SANDBOX)  $(DIM)$(VERSION)$(RESET)"
 
 $(FKA): $(shell find cmd internal -name '*.go' 2>/dev/null) go.mod go.sum
 	@mkdir -p $(BIN)
@@ -105,28 +105,34 @@ $(FKA_MEMORY): $(shell find mcp/memory -name '*.go' 2>/dev/null) go.mod go.sum
 	@mkdir -p $(BIN)
 	$(GO) build $(GOFLAGS) $(GOFLAGS_BUILD) -o $@ ./mcp/memory
 
-# 沙盒 bash MCP server。**默认沙盒根是 <FKA_HOME>/sandbox**，启动时建。
-$(FKA_BASH): $(shell find mcp/bash -name '*.go' 2>/dev/null) go.mod go.sum
+# 沙盒 sandbox MCP server。**默认沙盒根是 <FKA_HOME>/sandbox**，启动时建。
+$(FKA_SANDBOX): $(shell find mcp/mcp_sandbox -name '*.go' 2>/dev/null) go.mod go.sum
 	@mkdir -p $(BIN)
-	$(GO) build $(GOFLAGS) $(GOFLAGS_BUILD) -o $@ ./mcp/bash
+	$(GO) build $(GOFLAGS) $(GOFLAGS_BUILD) -o $@ ./mcp/mcp_sandbox
 
 .PHONY: rebuild
 rebuild: ## 强制重建（改了依赖之后用）
-	@rm -f $(FKA) $(FKA_MEMORY) $(FKA_BASH)
+	@rm -f $(FKA) $(FKA_MEMORY) $(FKA_SANDBOX)
 	@$(MAKE) --no-print-directory build
 
 # ── 容器 ────────────────────────────────────────────────
 #
-# 沙盒容器。**镜像里不编译**（见 mcp/bash/Dockerfile）：先把 fka-bash 交叉编译成
-# linux 静态二进制，再 COPY 进去。两种架构都编，BuildKit 的 TARGETARCH 自动挑。
-DOCKER_IMAGE ?= fka-bash:latest
+# 沙盒容器。**镜像里不编译**（见 mcp/mcp_sandbox/Dockerfile）：先把 fka-sandbox 交叉编译成
+# linux 静态二进制，再 COPY 进去。两种架构都编，Dockerfile 用 TARGETARCH 挑。
+#
+# TARGETARCH 由 BuildKit 注入，但**本机不一定装了 buildx**：没有时就退回 legacy
+# builder，而 legacy builder 不设 TARGETARCH，`COPY bin/fka-sandbox-linux-` 直接报
+# "file not found"。所以这里**显式按宿主架构传 --build-arg**——单平台构建本来只
+# 出宿主那一份镜像，显式传与 BuildKit 的默认取值一致。DOCKER_ARCH 可覆盖。
+DOCKER_IMAGE ?= fka-sandbox:latest
+DOCKER_ARCH  ?= $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
-.PHONY: docker-bash
-docker-bash: ## 交叉编译 fka-bash(linux/amd64,arm64) 并构建沙盒镜像
+.PHONY: docker-sandbox
+docker-sandbox: ## 交叉编译 fka-sandbox(linux/amd64,arm64) 并构建沙盒镜像
 	@mkdir -p $(BIN)
-	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-bash-linux-amd64 ./mcp/bash
-	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-bash-linux-arm64 ./mcp/bash
-	docker build -f mcp/bash/Dockerfile -t $(DOCKER_IMAGE) .
+	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-sandbox-linux-amd64 ./mcp/mcp_sandbox
+	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-sandbox-linux-arm64 ./mcp/mcp_sandbox
+	docker build -f mcp/mcp_sandbox/Dockerfile --build-arg TARGETARCH=$(DOCKER_ARCH) -t $(DOCKER_IMAGE) .
 	@echo "$(BOLD)✓$(RESET) $(DOCKER_IMAGE)"
 
 # ── 一键配置 ────────────────────────────────────────────
@@ -164,8 +170,8 @@ release: ## 交叉编译全部平台到 dist/（带 sha256）
 			$(GO) build $(GOFLAGS_BUILD) -o $${out%.exe}-memory \
 			./mcp/memory || exit 1; \
 		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 \
-			$(GO) build $(GOFLAGS_BUILD) -o $${out%.exe}-bash \
-			./mcp/bash || exit 1; \
+			$(GO) build $(GOFLAGS_BUILD) -o $${out%.exe}-sandbox \
+			./mcp/mcp_sandbox || exit 1; \
 		echo "✓"; \
 	done
 	@cd dist && shasum -a 256 ./* > SHA256SUMS
@@ -181,14 +187,14 @@ PREFIX ?= /usr/local
 .PHONY: install
 install: build ## 装到 PREFIX（默认 /usr/local）
 	@install -d $(DESTDIR)$(PREFIX)/bin
-	@install -m 0755 $(FKA) $(FKA_MEMORY) $(FKA_BASH) $(DESTDIR)$(PREFIX)/bin/
+	@install -m 0755 $(FKA) $(FKA_MEMORY) $(FKA_SANDBOX) $(DESTDIR)$(PREFIX)/bin/
 	@echo "$(BOLD)✓$(RESET) 装到 $(DESTDIR)$(PREFIX)/bin"
 	@echo "  注意：fka 默认拿可执行文件所在目录当安装根，"
 	@echo "       所以配置请放 $(DESTDIR)$(PREFIX)/bin/$(BOLD).env$(RESET)，或用 FKA_HOME 指过去。"
 
 .PHONY: uninstall
 uninstall: ## 从 PREFIX 卸掉
-	@rm -f $(DESTDIR)$(PREFIX)/bin/fka $(DESTDIR)$(PREFIX)/bin/fka-memory $(DESTDIR)$(PREFIX)/bin/fka-bash
+	@rm -f $(DESTDIR)$(PREFIX)/bin/fka $(DESTDIR)$(PREFIX)/bin/fka-memory $(DESTDIR)$(PREFIX)/bin/fka-sandbox
 	@echo "$(BOLD)✓$(RESET) 已卸载（配置与 data 保留）")
 
 # ── 闸门 ────────────────────────────────────────────────
@@ -330,7 +336,7 @@ smoke: build ## 冒烟：空配置与装好两种情况下都该表现正确
 	@$(MAKE) --no-print-directory smoke-memory
 	@echo
 	@echo "$(BOLD)── 6. 沙盒 bash 的端到端：跑得动、越界被拒、只读根挡写、文件经 MCP 读回 ──$(RESET)"
-	@$(MAKE) --no-print-directory smoke-bash
+	@$(MAKE) --no-print-directory smoke-sandbox
 
 # JSON-RPC 报文。stdio 传输**按行分帧**，所以一行一条。
 #
@@ -342,13 +348,13 @@ mem_remember = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"r
 mem_search_owner = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_memories","arguments":{"query":"冒烟","viewer_wxid":"wx-smoke"}}}
 mem_search_other = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_memories","arguments":{"query":"冒烟","viewer_wxid":"wx-other"}}}
 
-# bash 沙盒的 JSON-RPC 报文。工具名是 `run`，前缀由上层注册表加。
+# sandbox 沙盒的 JSON-RPC 报文。工具名是 `run`，前缀由上层注册表加。
 # 多租户：每次调用都带 _meta 身份。**缺身份会被 fail-closed 拒掉**，
 # 而 smoke 是直接喂 JSON-RPC（不经 agent），所以身份得在这几帧里写上。
-bash_run    = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd -P && printf sandbox-ok"},"_meta":{"fka/principal":"smoke"}}}
-bash_escape = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd","cwd":"../.."},"_meta":{"fka/principal":"smoke"}}}
-bash_ro     = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run","arguments":{"command":"printf x > /etc/leak-fka-smoke 2>/dev/null || echo write-blocked"},"_meta":{"fka/principal":"smoke"}}}
-bash_read   = {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read","arguments":{"path":"note.txt"},"_meta":{"fka/principal":"smoke"}}}
+sandbox_run    = {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd -P && printf sandbox-ok"},"_meta":{"fka/principal":"smoke"}}}
+sandbox_escape = {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run","arguments":{"command":"pwd","cwd":"../.."},"_meta":{"fka/principal":"smoke"}}}
+sandbox_ro     = {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run","arguments":{"command":"printf x > /etc/leak-fka-smoke 2>/dev/null || echo write-blocked"},"_meta":{"fka/principal":"smoke"}}}
+sandbox_read   = {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read","arguments":{"path":"note.txt"},"_meta":{"fka/principal":"smoke"}}}
 
 # smoke-memory 记忆 server 的**端到端**闸门：A 进程记、B 进程查回来、再验权限边界。
 #
@@ -402,7 +408,7 @@ smoke-memory: build
 		head -1 $(smoke_dir)/memory/search.json; exit 1; \
 	fi
 
-# smoke-bash 沙盒 bash server 的**端到端**闸门：真起 bwrap、真跑命令、真验隔离。
+# smoke-sandbox 沙盒 sandbox server 的**端到端**闸门：真起 bwrap、真跑命令、真验隔离。
 #
 # ## 为什么必须走协议 + 真 bwrap
 #
@@ -418,49 +424,49 @@ smoke-memory: build
 #
 # 没有 bubblewrap 时**明确失败**而不是跳过：它现在是这个 server 的硬依赖，
 # 「没装」正是最该在闸门上暴露的事。
-.PHONY: smoke-bash
-smoke-bash: build
+.PHONY: smoke-sandbox
+smoke-sandbox: build
 	@if ! command -v bwrap >/dev/null 2>&1; then \
-		echo "$(BOLD)✗$(RESET) 没装 bubblewrap，bash 沙盒起不来。装：apt install bubblewrap"; \
+		echo "$(BOLD)✗$(RESET) 没装 bubblewrap，sandbox 沙盒起不来。装：apt install bubblewrap"; \
 		exit 1; \
 	fi
-	@rm -rf $(smoke_dir)/bash; mkdir -p $(smoke_dir)/bash/root/smoke
+	@rm -rf $(smoke_dir)/sandbox; mkdir -p $(smoke_dir)/sandbox/root/smoke
 	@# 先在宿主上种一个文件给 read 读。**不在同一条流里 run 写完再 read**：SDK 并发
 	@# 处理请求，两条挨着发会赛跑（read 可能先跑到），而 read 本身的行为不该赌这个时序。
 	@# 路径是多租户子目录：下面几帧的 _meta 身份是 smoke，根是 <基根>/smoke。
-	@printf 'file-content' > $(smoke_dir)/bash/root/smoke/note.txt
-	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(bash_run)' '$(bash_escape)' '$(bash_ro)' '$(bash_read)'; sleep 2; } \
-		| $(FKA_BASH) --root $(smoke_dir)/bash/root \
-		> $(smoke_dir)/bash/out.json 2> $(smoke_dir)/bash/out.err
-	@if grep '"id":2' $(smoke_dir)/bash/out.json | grep -q "sandbox-ok"; then \
+	@printf 'file-content' > $(smoke_dir)/sandbox/root/smoke/note.txt
+	@{ printf '%s\n' '$(mem_init)' '$(mem_inited)' '$(sandbox_run)' '$(sandbox_escape)' '$(sandbox_ro)' '$(sandbox_read)'; sleep 2; } \
+		| $(FKA_SANDBOX) --root $(smoke_dir)/sandbox/root \
+		> $(smoke_dir)/sandbox/out.json 2> $(smoke_dir)/sandbox/out.err
+	@if grep '"id":2' $(smoke_dir)/sandbox/out.json | grep -q "sandbox-ok"; then \
 		echo "$(BOLD)✓$(RESET) 命令跑起来了（且在沙盒根内）"; \
 	else \
 		echo "$(BOLD)✗$(RESET) 命令没跑起来："; \
-		cat $(smoke_dir)/bash/out.json; tail -5 $(smoke_dir)/bash/out.err; exit 1; \
+		cat $(smoke_dir)/sandbox/out.json; tail -5 $(smoke_dir)/sandbox/out.err; exit 1; \
 	fi
-	@if grep '"id":3' $(smoke_dir)/bash/out.json | grep -q "越出"; then \
+	@if grep '"id":3' $(smoke_dir)/sandbox/out.json | grep -q "越出"; then \
 		echo "$(BOLD)✓$(RESET) cwd 越界被拒"; \
 	else \
 		echo "$(BOLD)✗$(RESET) cwd=../.. 没被拒："; \
-		grep '"id":3' $(smoke_dir)/bash/out.json; exit 1; \
+		grep '"id":3' $(smoke_dir)/sandbox/out.json; exit 1; \
 	fi
-	@if grep '"id":4' $(smoke_dir)/bash/out.json | grep -q "write-blocked"; then \
+	@if grep '"id":4' $(smoke_dir)/sandbox/out.json | grep -q "write-blocked"; then \
 		echo "$(BOLD)✓$(RESET) 只读根绑定挡住了沙盒外的写"; \
 	else \
 		echo "$(BOLD)✗$(RESET) 往 /etc 写没被挡住——沙盒没生效："; \
-		grep '"id":4' $(smoke_dir)/bash/out.json; exit 1; \
+		grep '"id":4' $(smoke_dir)/sandbox/out.json; exit 1; \
 	fi
-	@if grep '"id":5' $(smoke_dir)/bash/out.json | grep -q "file-content"; then \
+	@if grep '"id":5' $(smoke_dir)/sandbox/out.json | grep -q "file-content"; then \
 		echo "$(BOLD)✓$(RESET) read 经 MCP 内容块把沙盒文件读回给了模型"; \
 	else \
 		echo "$(BOLD)✗$(RESET) read 没把沙盒文件读回来："; \
-		grep '"id":5' $(smoke_dir)/bash/out.json; exit 1; \
+		grep '"id":5' $(smoke_dir)/sandbox/out.json; exit 1; \
 	fi
-	@if [ "$$(head -c 1 $(smoke_dir)/bash/out.json)" = "{" ]; then \
+	@if [ "$$(head -c 1 $(smoke_dir)/sandbox/out.json)" = "{" ]; then \
 		echo "$(BOLD)✓$(RESET) stdout 只有 JSON-RPC 帧，日志没混进来"; \
 	else \
 		echo "$(BOLD)✗$(RESET) stdout 被日志污染了，协议流就此报废："; \
-		head -1 $(smoke_dir)/bash/out.json; exit 1; \
+		head -1 $(smoke_dir)/sandbox/out.json; exit 1; \
 	fi
 
 # smoke-wiring 单独跑第 4 步。**这是能力链路唯一的自动闸门**——
@@ -476,20 +482,20 @@ smoke-bash: build
 .PHONY: smoke-wiring
 smoke-wiring: build
 	@if ! command -v bwrap >/dev/null 2>&1; then \
-		echo "$(BOLD)✗$(RESET) 没装 bubblewrap，bash MCP server 起不来。装：apt install bubblewrap"; \
+		echo "$(BOLD)✗$(RESET) 没装 bubblewrap，sandbox MCP server 起不来。装：apt install bubblewrap"; \
 		exit 1; \
 	fi
 	@rm -rf $(smoke_home)
 	@mkdir -p $(smoke_home)/bin $(smoke_home)/skills/echo $(smoke_home)/cwd-probe
-	@cp $(FKA) $(FKA_MEMORY) $(FKA_BASH) $(smoke_home)/bin/
+	@cp $(FKA) $(FKA_MEMORY) $(FKA_SANDBOX) $(smoke_home)/bin/
 	@printf -- '---\nname: 回声\ndescription: 复述输入\n---\n原样复述一遍。\n' \
 		> $(smoke_home)/skills/echo/SKILL.md
-	@printf '{"mcpServers":{"memory":{"command":"%s","args":["--db","cwd-probe/memory.sqlite"],"cwd":"."},"bash":{"command":"%s"}}}' \
-		"$(smoke_home)/bin/fka-memory" "$(smoke_home)/bin/fka-bash" > $(smoke_home)/mcp.json
+	@printf '{"mcpServers":{"memory":{"command":"%s","args":["--db","cwd-probe/memory.sqlite"],"cwd":"."},"sandbox":{"command":"%s"}}}' \
+		"$(smoke_home)/bin/fka-memory" "$(smoke_home)/bin/fka-sandbox" > $(smoke_home)/mcp.json
 	@FKA_HOME=$(smoke_home) LLM_TOOL_EFFECTS=read,external \
 		$(smoke_home)/bin/fka tools > $(smoke_home)/out.txt 2>&1 || true
 	@cat $(smoke_home)/out.txt
-	@for want in skills__load skills__list mcp__memory__search_memories mcp__memory__remember_memory mcp__bash__run mcp__bash__read; do \
+	@for want in skills__load skills__list mcp__memory__search_memories mcp__memory__remember_memory mcp__sandbox__run mcp__sandbox__read; do \
 		if grep -q "$$want" $(smoke_home)/out.txt; then \
 			echo "$(BOLD)✓$(RESET) $$want"; \
 		else \
@@ -547,7 +553,7 @@ real-check: ## 真机检查（需要已登录的账号）
 
 .PHONY: clean
 clean: ## 删构建产物与覆盖率文件（**不碰 .env / data** —— 那是你的数据）
-	rm -f $(FKA) $(FKA_MEMORY) $(FKA_BASH) coverage.out
+	rm -f $(FKA) $(FKA_MEMORY) $(FKA_SANDBOX) coverage.out
 	rm -rf $(FKA_HOME)/logs $(smoke_dir)
 
 .PHONY: distclean

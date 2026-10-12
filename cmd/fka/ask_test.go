@@ -226,9 +226,9 @@ func Test会话id正好用满文件名预算(t *testing.T) {
 // 三者经 firstLine 压成一行（与 chat 的显示同口径）。
 func Test工具行带上标签与压行(t *testing.T) {
 	line := toolLine(agent.ToolEvent{
-		Name: "mcp__bash__run", Arguments: `{"command":"ls"}`, Result: "a\nb\nc",
+		Name: "mcp__sandbox__run", Arguments: `{"command":"ls"}`, Result: "a\nb\nc",
 	})
-	for _, want := range []string{"[工具]", "mcp__bash__run", `{"command":"ls"}`, "a b c"} {
+	for _, want := range []string{"[工具]", "mcp__sandbox__run", `{"command":"ls"}`, "a b c"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("工具行该含 %q：%s", want, line)
 		}
@@ -242,13 +242,13 @@ func Test应答器_过程只进stderr答案只进stdout(t *testing.T) {
 	emitter := &askEmitter{out: &out, ui: &ui}
 
 	emitter.Reasoning("先想一下")
-	emitter.Tool(agent.ToolEvent{Name: "mcp__bash__run", Arguments: `{"command":"ls"}`, Result: "ok"})
+	emitter.Tool(agent.ToolEvent{Name: "mcp__sandbox__run", Arguments: `{"command":"ls"}`, Result: "ok"})
 	emitter.Answer("这是答案")
 
 	if !strings.Contains(ui.String(), "[推理] 先想一下") {
 		t.Errorf("stderr 该有带前缀的推理：%q", ui.String())
 	}
-	if !strings.Contains(ui.String(), "[工具] mcp__bash__run") {
+	if !strings.Contains(ui.String(), "[工具] mcp__sandbox__run") {
 		t.Errorf("stderr 该有工具行：%q", ui.String())
 	}
 	if !strings.Contains(ui.String(), "[助手]") {

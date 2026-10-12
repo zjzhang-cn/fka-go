@@ -187,7 +187,7 @@ func NewSandbox(opts Options) (*Sandbox, error) {
 			return nil, fmt.Errorf(
 				"沙盒模式是 bwrap，但找不到 Bubblewrap（%s）。请安装 bubblewrap"+
 					"（Debian/Ubuntu: apt install bubblewrap），或用 --bwrap 指定路径；"+
-					"确要降级到纯 Go 的不隔离模式，设 BASH_SANDBOX_MODE=direct 并明白它挡不住 cd", name)
+					"确要降级到纯 Go 的不隔离模式，设 SANDBOX_MODE=direct 并明白它挡不住 cd", name)
 		}
 		s.Bwrap = resolved
 	}

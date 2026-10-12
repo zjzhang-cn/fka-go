@@ -16,7 +16,7 @@
 // ## 格式：JSON Lines，一行一条
 //
 // 一行一个 JSON 对象，`jq` / `grep` 都好使。命令里的换行由 JSON 转义，
-// **一条记录始终占一行**。按 UTC 日期轮转，文件名 `bash-exec-<日期>.log`。
+// **一条记录始终占一行**。按 UTC 日期轮转，文件名 `sandbox-exec-<日期>.log`。
 package main
 
 import (
@@ -32,7 +32,7 @@ import (
 const execLogDateLayout = "2006-01-02"
 
 // execLogPrefix 执行日志文件名前缀。
-const execLogPrefix = "bash-exec-"
+const execLogPrefix = "sandbox-exec-"
 
 // execRecord 一条执行记录。**只记元信息不记输出正文**：输出走 stdout/stderr 那条
 // 路，这里要的是「什么时候、在哪个目录、跑了什么、结果如何」。

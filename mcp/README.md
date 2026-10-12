@@ -8,7 +8,7 @@
 | server | 入口 | 能力 | 文档 |
 |---|---|---|---|
 | `fka-memory` | `./mcp/memory` | 家庭记忆（SQLite） | 本文件 |
-| `fka-bash` | `./mcp/bash` | 沙盒 bash 执行（Bubblewrap） | [`bash/README.md`](bash/README.md) |
+| `fka-sandbox` | `./mcp/mcp_sandbox` | 沙盒 bash 执行（Bubblewrap） | [`mcp_sandbox/README.md`](mcp_sandbox/README.md) |
 
 `bin/fka-memory` 是一个**独立进程**（stdio），由主程序从 `mcp.json` 当子进程拉起。崩了不影响主程序。
 

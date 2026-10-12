@@ -20,7 +20,7 @@
 //   - 求值符号链接后必须仍在根内（挡 `link -> /etc`）；
 //   - 只发**普通文件**、且不超过大小上限。
 //
-// 根默认是 `<安装根>/sandbox`——与 `fka-bash` 的沙盒根同一个目录，于是「模型用
+// 根默认是 `<安装根>/sandbox`——与 `fka-sandbox` 的沙盒根同一个目录，于是「模型用
 // bash 造一个文件、再把它发出去」天然成立，而模型能发的也只有它本就能读写的那些
 // 文件。要放宽（例如允许发某个共享目录）就设 `FKA_SEND_ROOT`。
 //
@@ -60,9 +60,9 @@ const DefaultMaxBytes int64 = 64 << 20
 // EnvRoot 覆盖发送根的环境变量。
 const EnvRoot = "FKA_SEND_ROOT"
 
-// sandboxRootEnv 与 `fka-bash` 共用的沙盒根环境变量。默认根跟着它走，
+// sandboxRootEnv 与 `fka-sandbox` 共用的沙盒根环境变量。默认根跟着它走，
 // 好让「bash 造文件、reply 发文件」在改动沙盒位置后仍然对得上。
-const sandboxRootEnv = "BASH_SANDBOX_ROOT"
+const sandboxRootEnv = "SANDBOX_ROOT"
 
 var (
 	textSpec = tools.Spec{
@@ -109,10 +109,10 @@ type Options struct {
 	MaxBytes int64
 }
 
-// ResolveRoot 定出发送根：FKA_SEND_ROOT > BASH_SANDBOX_ROOT > <安装根>/sandbox。
+// ResolveRoot 定出发送根：FKA_SEND_ROOT > SANDBOX_ROOT > <安装根>/sandbox。
 //
 // **必须绝对化**：相对路径会按进程 cwd 解析，而 cwd 取决于从哪个目录拉起——
-// 同一份配置在不同目录下会指向不同的根，且不报错（与 `fka-bash` 的 resolveRoot
+// 同一份配置在不同目录下会指向不同的根，且不报错（与 `fka-sandbox` 的 resolveRoot
 // 是同一个教训）。
 func ResolveRoot() string {
 	root := strings.TrimSpace(os.Getenv(EnvRoot))

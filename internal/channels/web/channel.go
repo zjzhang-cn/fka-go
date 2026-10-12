@@ -151,7 +151,7 @@ func (c *Channel) sendMedia(p channels.SendMediaParams, kind string) (channels.S
 //  3. 扩展名——嗅探认不出的（**SVG** 是 XML 文本、mov/mkv/ogg/m4a 等）按后缀补。
 //
 // 关键一条：`text/*`、`application/octet-stream` 这类**不是渲染类型**，不能无条件信任。
-// `mcp__bash__export` 把 SVG 嗅探成 `text/xml` 就是这么来的——它带着正确的文件名到这儿，
+// `mcp__sandbox__export` 把 SVG 嗅探成 `text/xml` 就是这么来的——它带着正确的文件名到这儿，
 // 有后缀就该让后缀把它纠回 `image/svg+xml`，否则浏览器拿着 `text/xml` 不解码。
 func mediaMime(name, declared string, data []byte) string {
 	declared = strings.TrimSpace(declared)

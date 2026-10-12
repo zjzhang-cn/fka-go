@@ -12,9 +12,9 @@ import (
 	"testing"
 )
 
-func testTenantServer(t *testing.T, base string) *bashServer {
+func testTenantServer(t *testing.T, base string) *sandboxServer {
 	t.Helper()
-	return &bashServer{opts: Options{Root: base, Mode: ModeDirect}, sandboxes: map[string]*Sandbox{}}
+	return &sandboxServer{opts: Options{Root: base, Mode: ModeDirect}, sandboxes: map[string]*Sandbox{}}
 }
 
 // Test多租户_缺身份被拒 fail-closed：没有 `_meta` 身份就拒绝，绝不落到共享目录——

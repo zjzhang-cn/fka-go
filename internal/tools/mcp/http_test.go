@@ -230,7 +230,7 @@ func newMetaServer() *mcpserver.MCPServer {
 }
 
 // Test工具调用_带上_meta身份 ctx 上有 principal 时，client 要把它经标准 `_meta`
-// 传给 server；没有就不带。**模型改不了这个字段**——bash 的多租户隔离靠它。
+// 传给 server；没有就不带。**模型改不了这个字段**——sandbox 的多租户隔离靠它。
 func Test工具调用_带上_meta身份(t *testing.T) {
 	httpServer := httptest.NewServer(mcpserver.NewStreamableHTTPServer(newMetaServer()))
 	defer httpServer.Close()

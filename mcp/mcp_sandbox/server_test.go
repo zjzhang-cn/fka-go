@@ -33,14 +33,14 @@ func callRequestAs(principal string, args map[string]any) mcp.CallToolRequest {
 
 // newTestServer 造一个把 testPrincipal **直接映射到 s** 的 server：用例把文件种在
 // s.Root 里，所以让 test 租户的根就是 s.Root（不走 `<根>/<user>` 那一层）。
-func newTestServer(s *Sandbox) *bashServer {
-	return &bashServer{
+func newTestServer(s *Sandbox) *sandboxServer {
+	return &sandboxServer{
 		opts:      Options{Root: s.Root},
 		sandboxes: map[string]*Sandbox{testPrincipal: s},
 	}
 }
 
-func withExecLog(s *bashServer, execLog *ExecLog) *bashServer {
+func withExecLog(s *sandboxServer, execLog *ExecLog) *sandboxServer {
 	s.execLog = execLog
 	return s
 }

@@ -18,10 +18,10 @@ import (
 
 // MetaPrincipalKey 把调用方身份经 MCP `_meta` 传给 server 的键。
 //
-// **必须与 mcp/bash 的 metaPrincipalKey 逐字一致**——bash 自给自足（边界测试不许
+// **必须与 mcp/mcp_sandbox 的 metaPrincipalKey 逐字一致**——sandbox 自给自足（边界测试不许
 // import 树内别的包），所以两边各写一份字面量，改动要一起改。
 //
-// 用 `_meta` 而不是工具参数：**模型改不了它**。bash 的多租户文件隔离靠它，
+// 用 `_meta` 而不是工具参数：**模型改不了它**。sandbox 的多租户文件隔离靠它，
 // 用不到身份的 server 直接忽略即可（标准字段，不影响它们）。
 const MetaPrincipalKey = "fka/principal"
 
@@ -299,7 +299,7 @@ func (c *connection) CallTool(ctx context.Context, name string, args map[string]
 			request := mcp.CallToolRequest{
 				Params: mcp.CallToolParams{Name: name, Arguments: args},
 			}
-			// 把调用方身份经 `_meta` 带上（模型碰不到）。多租户的 bash 靠它隔离。
+			// 把调用方身份经 `_meta` 带上（模型碰不到）。多租户的 sandbox 靠它隔离。
 			if principal := principalOf(ctx); principal != "" {
 				request.Params.Meta = mcp.NewMetaFromMap(map[string]any{MetaPrincipalKey: principal})
 			}

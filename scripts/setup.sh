@@ -8,7 +8,7 @@
 #
 # 选项：
 #   --home DIR     安装根（默认 $FKA_HOME，再默认 <仓库>/bin）
-#   --no-docker    不构建/启动沙盒容器（bash 工具将不可用）
+#   --no-docker    不构建/启动沙盒容器（sandbox 工具将不可用）
 #   --no-build     不重新编译二进制（用已有的）
 #   --ilink        接入微信 iLink（**默认不接**；给了才读 ILINK_ACCOUNT_1_* 写进 .env）
 #   --force        覆盖已存在的 .env（**会丢已有的密钥**；默认保留不覆盖）
@@ -72,21 +72,21 @@ echo "安装根：  $HOME_DIR"
 # ── 1. 编译 Go 二进制（零 CGO）───────────────────────────
 if [ "$DO_BUILD" -eq 1 ]; then
   need go
-  step "编译二进制（fka / fka-memory / fka-bash）"
+  step "编译二进制（fka / fka-memory / fka-sandbox）"
   make -C "$REPO" build
   # make 把产物写到 <仓库>/bin；安装根不同就搬过去。
   if [ "$HOME_DIR" != "$REPO/bin" ]; then
-    cp "$REPO/bin/fka" "$REPO/bin/fka-memory" "$REPO/bin/fka-bash" "$HOME_DIR/"
+    cp "$REPO/bin/fka" "$REPO/bin/fka-memory" "$REPO/bin/fka-sandbox" "$HOME_DIR/"
   fi
 else
   step "跳过编译（--no-build）"
-  for b in fka fka-memory fka-bash; do
+  for b in fka fka-memory fka-sandbox; do
     if [ ! -x "$HOME_DIR/$b" ] && [ ! -x "$REPO/bin/$b" ]; then
       die "没有可用的 $b 二进制（去掉 --no-build，或先 make build）"
     fi
   done
   if [ "$HOME_DIR" != "$REPO/bin" ]; then
-    for b in fka fka-memory fka-bash; do
+    for b in fka fka-memory fka-sandbox; do
       [ -x "$HOME_DIR/$b" ] || cp "$REPO/bin/$b" "$HOME_DIR/"
     done
   fi
@@ -95,12 +95,12 @@ fi
 # ── 2. 沙盒容器（镜像里不编译，宿主编译 + COPY）───────────
 if [ "$DO_DOCKER" -eq 1 ]; then
   if command -v docker >/dev/null 2>&1; then
-    step "构建沙盒镜像 fka-bash:latest"
-    make -C "$REPO" docker-bash
+    step "构建沙盒镜像 fka-sandbox:latest"
+    make -C "$REPO" docker-sandbox
     step "启动沙盒容器"
-    docker compose -f "$REPO/mcp/bash/docker-compose.yml" up -d
+    docker compose -f "$REPO/mcp/mcp_sandbox/docker-compose.yml" up -d
   else
-    warn "没装 docker，跳过沙盒容器；bash 工具将连不上（补齐后再跑一次本脚本即可）"
+    warn "没装 docker，跳过沙盒容器；sandbox 工具将连不上（补齐后再跑一次本脚本即可）"
   fi
 else
   step "跳过沙盒容器（--no-docker）"
@@ -167,7 +167,7 @@ if [ -f "$MCP_FILE" ]; then cp "$MCP_FILE" "$MCP_FILE.bak"; fi
 cat > "$MCP_FILE" <<EOF
 {
   "mcpServers": {
-    "bash": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" },
+    "sandbox": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" },
     "memory": {
       "command": "$HOME_DIR/fka-memory",
       "args": ["--db", "memory.sqlite"],
@@ -245,8 +245,8 @@ cat <<EOF
   FKA_HOME=$HOME_DIR $HOME_DIR/fka tools
 
 说明：
-- bash 工具走容器 http://127.0.0.1:8080/mcp，容器没起时会被跳过并 WARN
-  （补跑： docker compose -f $REPO/mcp/bash/docker-compose.yml up -d）
+- sandbox 工具走容器 http://127.0.0.1:8080/mcp，容器没起时会被跳过并 WARN
+  （补跑： docker compose -f $REPO/mcp/mcp_sandbox/docker-compose.yml up -d）
 - .env 里 LLM_API_KEY 若是占位值，先改成真实 key
 - 直接用 ./fka 时的安装根就是 ${HOME_DIR}，配置也读这里
 EOF

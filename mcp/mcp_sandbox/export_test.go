@@ -44,7 +44,7 @@ func exportedResource(t *testing.T, result *mcp.CallToolResult) mcp.BlobResource
 }
 
 // TestExport_返回给用户的资源块 导出成功时：有头、有 blob、blob 解码等于原文、
-// 且标注了 audience=user——agent 只认这个字段，不认它来自 bash。
+// 且标注了 audience=user——agent 只认这个字段，不认它来自 sandbox。
 func TestExport_返回给用户的资源块(t *testing.T) {
 	s := newTestSandbox(t)
 	writeFile(t, s, "报告.txt", []byte("hello 用户"))

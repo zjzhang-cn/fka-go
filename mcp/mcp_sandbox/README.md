@@ -1,9 +1,9 @@
-# mcp/bash —— 沙盒 bash MCP server
+# mcp/mcp_sandbox —— 沙盒执行 MCP server
 
 **这里是能力，不是 agent。** agent 在 [`internal/`](../../internal) 里，它**不认识任何数据的存储**——
 它的本事全靠 MCP server 与 skill 顶上，本目录就是其中之一。
 
-`bin/fka-bash` 是一个**独立进程**。默认走 **stdio**，由主程序从 `mcp.json` 当子进程拉起；
+`bin/fka-sandbox` 是一个**独立进程**。默认走 **stdio**，由主程序从 `mcp.json` 当子进程拉起；
 `--transport` 可以让它在**同一份工具实现**上换成 **HTTP+SSE** 或 **streamable HTTP**。
 崩了不影响主程序。
 
@@ -49,8 +49,8 @@
 // <安装根>/mcp.json
 {
   "mcpServers": {
-    "bash": {
-      "command": "/path/to/bin/fka-bash",
+    "sandbox": {
+      "command": "/path/to/bin/fka-sandbox",
       "args": ["--root", "/path/to/sandbox"]
     }
   }
@@ -70,8 +70,8 @@ LLM_TOOL_EFFECTS=read,external
 传输由参数决定，**工具实现一行不改**：
 
 ```bash
-bin/fka-bash --transport sse  --addr 127.0.0.1:8080   # 老式 HTTP+SSE，路径 /sse
-bin/fka-bash --transport http --addr 127.0.0.1:8080   # streamable HTTP，路径 /mcp
+bin/fka-sandbox --transport sse  --addr 127.0.0.1:8080   # 老式 HTTP+SSE，路径 /sse
+bin/fka-sandbox --transport http --addr 127.0.0.1:8080   # streamable HTTP，路径 /mcp
 ```
 
 此时主程序那份 `mcp.json` 换成一端 `url`（不再拉子进程）：
@@ -79,7 +79,7 @@ bin/fka-bash --transport http --addr 127.0.0.1:8080   # streamable HTTP，路径
 ```jsonc
 {
   "mcpServers": {
-    "bash": { "url": "http://127.0.0.1:8080/sse", "transport": "sse" }
+    "sandbox": { "url": "http://127.0.0.1:8080/sse", "transport": "sse" }
   }
 }
 ```
@@ -90,7 +90,7 @@ bin/fka-bash --transport http --addr 127.0.0.1:8080   # streamable HTTP，路径
 | `sse` | 老式 HTTP+SSE：GET 开着一条流，服务端先给 `endpoint` 事件告诉你往哪 POST |
 | `http` | streamable HTTP：直接 POST 那个 url，响应就在响应体里 |
 
-全部参数一览：`fka-bash -h`（或 `--help`）。它也走 stderr——stdio 档下 stdout 是
+全部参数一览：`fka-sandbox -h`（或 `--help`）。它也走 stderr——stdio 档下 stdout 是
 JSON-RPC 通道，帮助不能往那里写。帮助**早于沙盒构造**：没装 bwrap 也能看。
 
 ⚠️ **默认只听 `127.0.0.1:8080`**。这个 server 能在沙盒里跑命令，默认绑 `0.0.0.0`
@@ -101,28 +101,28 @@ JSON-RPC 通道，帮助不能往那里写。帮助**早于沙盒构造**：没�
 
 ## 容器化：把整道沙盒装进 Docker
 
-`Dockerfile` + `docker-compose.yml` 把 **fka-bash + python3 + nodejs** 打成一个镜像，
+`Dockerfile` + `docker-compose.yml` 把 **fka-sandbox + python3 + nodejs** 打成一个镜像，
 让「连 python/node 都在里面」的开箱沙盒一条命令起来：
 
 ```bash
-make docker-bash                                       # 交叉编译 fka-bash(linux) 并构建镜像
-docker compose -f mcp/bash/docker-compose.yml up -d    # 起容器
+make docker-sandbox                                       # 交叉编译 fka-sandbox(linux) 并构建镜像
+docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d    # 起容器
 # 宿主侧 mcp.json 指向容器发布的端口：
-# { "mcpServers": { "bash": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" } } }
+# { "mcpServers": { "sandbox": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" } } }
 ```
 
-**镜像里不编译**（省掉容器内的 Go 工具链）：`docker-bash` 先在宿主把 fka-bash
-交叉编译成 `bin/fka-bash-linux-<arch>`，Dockerfile 只 `COPY` 它进去。手动等价于：
+**镜像里不编译**（省掉容器内的 Go 工具链）：`docker-sandbox` 先在宿主把 fka-sandbox
+交叉编译成 `bin/fka-sandbox-linux-<arch>`，Dockerfile 只 `COPY` 它进去。手动等价于：
 
 ```bash
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/fka-bash-linux-arm64 ./mcp/bash
-docker build -f mcp/bash/Dockerfile -t fka-bash .
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/fka-sandbox-linux-arm64 ./mcp/mcp_sandbox
+docker build -f mcp/mcp_sandbox/Dockerfile -t fka-sandbox .
 ```
 
 ### 边界换了一处：容器即沙盒
 
 宿主部署用 **bwrap 起命名空间**；容器里 **Docker 就是那道边界**——文件系统、网络、
-PID、user 全在容器内——所以容器里的 fka-bash 走 **`--mode direct`**，不再叠一层 bwrap
+PID、user 全在容器内——所以容器里的 fka-sandbox 走 **`--mode direct`**，不再叠一层 bwrap
 （那需要额外 capability，且是重复隔离）。
 
 **`direct` 不是「关掉沙盒」**：命令白名单/黑名单、cwd 词法+符号链接越界、硬超时、
@@ -146,7 +146,7 @@ PID、user 全在容器内——所以容器里的 fka-bash 走 **`--mode direct
 与主程序同一个 module，从仓库根构建：
 
 ```bash
-CGO_ENABLED=0 go build -o bin/fka-bash ./mcp/bash   # 零 CGO
+CGO_ENABLED=0 go build -o bin/fka-sandbox ./mcp/mcp_sandbox   # 零 CGO
 ```
 
 依赖只有 `mark3labs/mcp-go`。Bubblewrap 是**运行期**依赖（不是编译期、也不要 CGO）。
@@ -155,20 +155,20 @@ CGO_ENABLED=0 go build -o bin/fka-bash ./mcp/bash   # 零 CGO
 
 | 参数 | 环境变量 | 说明 |
 |---|---|---|
-| `--root` | `BASH_SANDBOX_ROOT` | 沙盒根，默认 `<安装根>/sandbox` |
-| `--mode` | `BASH_SANDBOX_MODE` | `bwrap`（默认）或 `direct` |
-| `--bwrap` | `BASH_BWRAP` | Bubblewrap 路径，默认从 PATH 找 |
-| `--share-net` | `BASH_SHARE_NET` | 保留宿主网络（默认独立网络） |
-| — | `BASH_BWRAP_ARGS` | 追加给 bwrap 的参数（空白分隔） |
-| `--allow` | `BASH_ALLOW` | 命令白名单（非空即白名单模式） |
-| `--deny` | `BASH_DENY` | 追加命令黑名单（内置那份不能清空） |
-| `--transport` | `BASH_MCP_TRANSPORT` | `stdio`（默认）/ `sse` / `http`，控制启动方式 |
-| `--addr` | `BASH_MCP_ADDR` | SSE / http 的监听地址，默认 `127.0.0.1:8080` |
+| `--root` | `SANDBOX_ROOT` | 沙盒根，默认 `<安装根>/sandbox` |
+| `--mode` | `SANDBOX_MODE` | `bwrap`（默认）或 `direct` |
+| `--bwrap` | `SANDBOX_BWRAP` | Bubblewrap 路径，默认从 PATH 找 |
+| `--share-net` | `SANDBOX_SHARE_NET` | 保留宿主网络（默认独立网络） |
+| — | `SANDBOX_BWRAP_ARGS` | 追加给 bwrap 的参数（空白分隔） |
+| `--allow` | `SANDBOX_ALLOW` | 命令白名单（非空即白名单模式） |
+| `--deny` | `SANDBOX_DENY` | 追加命令黑名单（内置那份不能清空） |
+| `--transport` | `SANDBOX_MCP_TRANSPORT` | `stdio`（默认）/ `sse` / `http`，控制启动方式 |
+| `--addr` | `SANDBOX_MCP_ADDR` | SSE / http 的监听地址，默认 `127.0.0.1:8080` |
 
 ## 执行日志
 
 每条 `run` 命令**默认**落一行 JSON（JSON Lines）到
-`<安装根>/logs/bash-exec-<UTC日期>.log`（`FKA_LOG_DIR` 可改目录，安装根按
+`<安装根>/logs/sandbox-exec-<UTC日期>.log`（`FKA_LOG_DIR` 可改目录，安装根按
 `$FKA_HOME` → 可执行文件目录 → cwd 三级回退）。`read` 不记。
 
 ```json
@@ -205,8 +205,8 @@ stdout 是 JSON-RPC 的通道。**任何** `fmt.Println` 都会插进协议流�
 ## 目录
 
 ```
-mcp/bash/
-├── Dockerfile             容器化：fka-bash + python3 + nodejs（容器即沙盒）
+mcp/mcp_sandbox/
+├── Dockerfile             容器化：fka-sandbox + python3 + nodejs（容器即沙盒）
 ├── docker-compose.yml     一条命令起容器（硬化参数 + /sandbox、/logs 双卷）
 ├── boundary_test.go       边界测试：不许依赖树外的包；server 必须是 main 包
 ├── main.go                启动（沙盒路径/模式/策略解析、--transport 选传输）

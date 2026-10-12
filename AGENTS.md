@@ -15,7 +15,7 @@ Go 版 agent 工具循环 + 两个渠道（微信 iLink、网页 SSE）。**它�
 回话」（文字 / 文件 / 图片）也做成工具交给模型，好让它能先发说明再发文件。它不拥有
 数据、不出网、不拉进程，所以没破坏上面那条原则。三个工具的 effect 都是 `send`，
 **默认关着**（`LLM_TOOL_EFFECTS` 默认只有 `read`）；发文件只认**发送根**内的相对路径
-（默认 `<安装根>/sandbox`，即 `fka-bash` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
+（默认 `<安装根>/sandbox`，即 `fka-sandbox` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
 逃逸、非普通文件、超上限都在 `reply.resolve` 里拒掉。见 `docs/decisions.md` 第 17 条。
 
 其二是 `internal/tools/history`：会话历史是 agent **自己落盘的状态**
@@ -25,7 +25,7 @@ Go 版 agent 工具循环 + 两个渠道（微信 iLink、网页 SSE）。**它�
 
 **远端沙盒（SSE）的文件走另一条路：字节端到端。** 沙盒用 MCP 标准内容块返回字节，
 `annotations.audience=["user"]` 表示「给用户」；agent **只认这个字段、不认来源**，由
-循环经渠道投递（`mcp/bash` 的 `export` 工具是第一个这么做的）。投递与 reply 同一道
+循环经渠道投递（`mcp/mcp_sandbox` 的 `export` 工具是第一个这么做的）。投递与 reply 同一道
 `send` 闸门。这条把沙盒与 agent 的耦合从「共享一块磁盘」降成「遵守同一个 MCP 字段」——
 见 `docs/decisions.md` 第 18 条。
 
@@ -200,10 +200,10 @@ internal/messages   入站消息 → 工具循环 → 按原路答复
 internal/prompts    系统提示词
 internal/tools      契约 + 五类 effect 放行 + 注册表 + mcp/ + skills/
 mcp/memory          独立 MCP server（memories 一张表，PRAGMA user_version 迁移）
-mcp/bash            独立 MCP server（沙盒 bash 执行；默认 bwrap 命名空间隔离）
+mcp/mcp_sandbox     独立 MCP server（沙盒 bash 执行；默认 bwrap 命名空间隔离）
 ```
 
-> `fka-bash` 是**第二个** MCP server，同样自给自足（boundary 测试禁止引树外包）。
+> `fka-sandbox` 是**第二个** MCP server，同样自给自足（boundary 测试禁止引树外包）。
 > 它默认用 **Bubblewrap** 做真实隔离：**只读绑定宿主的最小必要部分**（`/usr /bin /lib /etc` 等），
 > 宿主其余部分（安装根 `.env`/`data`/`logs`、家目录、**兄弟租户目录**）在沙盒里**根本不存在**；
 > 只有该租户根可写；独立网络/PID/user；

@@ -125,7 +125,7 @@ func TestBwrap_写边界是真的(t *testing.T) {
 	}
 
 	// 沙盒外（/etc）写不进去——只读根绑定
-	outside, err := s.Run(context.Background(), RunRequest{Command: "printf x > /etc/leak-fka-bash"})
+	outside, err := s.Run(context.Background(), RunRequest{Command: "printf x > /etc/leak-fka-sandbox"})
 	if err != nil {
 		t.Fatalf("Run 返错：%v", err)
 	}

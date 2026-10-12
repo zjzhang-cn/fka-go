@@ -43,7 +43,7 @@ func TestTransport参数决定启动方式(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("BASH_MCP_TRANSPORT", c.env)
+			t.Setenv("SANDBOX_MCP_TRANSPORT", c.env)
 			if got := resolveTransport(c.args); got != c.want {
 				t.Errorf("resolveTransport = %q，期望 %q", got, c.want)
 			}
@@ -68,7 +68,7 @@ func TestAddr参数决定监听地址(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("BASH_MCP_ADDR", c.env)
+			t.Setenv("SANDBOX_MCP_ADDR", c.env)
 			if got := resolveAddr(c.args); got != c.want {
 				t.Errorf("resolveAddr = %q，期望 %q", got, c.want)
 			}
@@ -79,7 +79,7 @@ func TestAddr参数决定监听地址(t *testing.T) {
 // Test默认地址只绑回环 默认监听地址不能是 0.0.0.0 / 空主机：这个 server 能在沙盒里
 // 跑命令，默认暴露到同网段等于把命令执行权敞开。要对外必须显式写 --addr。
 func Test默认地址只绑回环(t *testing.T) {
-	os.Unsetenv("BASH_MCP_ADDR")
+	os.Unsetenv("SANDBOX_MCP_ADDR")
 	if got := resolveAddr(nil); got != "127.0.0.1:8080" {
 		t.Errorf("默认地址 = %q，必须是本地回环", got)
 	}
@@ -91,7 +91,7 @@ func Test默认地址只绑回环(t *testing.T) {
 func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 	requireBash(t)
 
-	mcpServer := server.NewMCPServer("fka-bash", "0.1.0",
+	mcpServer := server.NewMCPServer("fka-sandbox", "0.1.0",
 		server.WithToolCapabilities(true))
 	register(mcpServer, Options{Root: newTestSandbox(t).Root}, nil)
 
@@ -115,7 +115,7 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 	if _, err := client.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_LEGACY_PROTOCOL_VERSION,
-			ClientInfo:      mcp.Implementation{Name: "bash-sse-test", Version: "0.0.1"},
+			ClientInfo:      mcp.Implementation{Name: "sandbox-sse-test", Version: "0.0.1"},
 		},
 	}); err != nil {
 		t.Fatalf("握手失败：%v", err)
@@ -198,7 +198,7 @@ func TestHelp参数直接以0退出(t *testing.T) {
 
 // TestReadOnlyExtra_解析 参数与环境变量合并，按系统路径分隔符切分。
 func TestReadOnlyExtra_解析(t *testing.T) {
-	t.Setenv("BASH_RO_BINDS", "/opt/node:/home/me/conda")
+	t.Setenv("SANDBOX_RO_BINDS", "/opt/node:/home/me/conda")
 	got := sandboxReadOnlyExtra([]string{"--ro-bind", "/x:/y"})
 	want := []string{"/x", "/y", "/opt/node", "/home/me/conda"}
 	if len(got) != len(want) {

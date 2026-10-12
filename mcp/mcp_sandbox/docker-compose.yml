@@ -1,10 +1,10 @@
-# fka-bash 沙盒容器编排：一条命令起一个「已经装好 python3 / nodejs 的隔离沙盒」。
+# fka-sandbox 沙盒容器编排：一条命令起一个「已经装好 python3 / nodejs 的隔离沙盒」。
 #
-#   make docker-bash                                    # 先交叉编译并构建镜像
-#   docker compose -f mcp/bash/docker-compose.yml up -d
+#   make docker-sandbox                                    # 先交叉编译并构建镜像
+#   docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d
 #
-# 镜像里不编译 fka-bash，build 段要求 bin/fka-bash-linux-<arch> 已存在（见 Dockerfile）。
-# 所以别直接 `up --build` 而不先跑 `make docker-bash`。
+# 镜像里不编译 fka-sandbox，build 段要求 bin/fka-sandbox-linux-<arch> 已存在（见 Dockerfile）。
+# 所以别直接 `up --build` 而不先跑 `make docker-sandbox`。
 #
 # ## 边界在哪
 #
@@ -15,15 +15,15 @@
 # ## 网络
 #
 # MCP 用 HTTP 传输，agent 必须能连到 8080——所以容器**默认是通网的**（与 bwrap
-# 「默认独立网络」不同）。若本部署允许模型联网装包，设 BASH_ALLOW_PIP=1 让工具说明
+# 「默认独立网络」不同）。若本部署允许模型联网装包，设 SANDBOX_ALLOW_PIP=1 让工具说明
 # 与事实一致；若要断掉外网，改用 `network_mode: none` 并让 agent 经别的方式连（或
 # 仅保留一个只连 agent 的内部网络）。
 services:
-  bash:
+  sandbox:
     build:
       context: ../..
-      dockerfile: mcp/bash/Dockerfile
-    image: fka-bash:latest
+      dockerfile: mcp/mcp_sandbox/Dockerfile
+    image: fka-sandbox:latest
     ports:
       # 只发布到宿主回环：这是个能执行命令的 server，别默认暴露给同网段。
       - "127.0.0.1:8080:8080"

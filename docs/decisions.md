@@ -322,7 +322,7 @@ effect 都是 `send`，**默认关着**；这是整个仓库**唯一的内置工
    产品的结构性暴露。所以 `reply.resolve` 每次调用都过四道闸：只认**相对路径**
    （绝对路径与 `..` 拒）、求值符号链接后仍须在**发送根**内、只发**普通文件**、不超
    **64MiB**（与 iLink 出站上限取齐）。
-2. **发送根默认是 `<安装根>/sandbox`**（与 `fka-bash` 的沙盒根同目录，`BASH_SANDBOX_ROOT`
+2. **发送根默认是 `<安装根>/sandbox`**（与 `fka-sandbox` 的沙盒根同目录，`SANDBOX_ROOT`
    或 `FKA_SEND_ROOT` 可改）。落在沙盒里意味着「模型能发的，正是它本就能读写的那些
    文件」，没有把权限放大。要放开到别处就显式设 `FKA_SEND_ROOT`。
 3. **iLink 仍然无法主动发起会话**（`context_token` 只能从收到的消息里捕获，见第 7 条）。
@@ -354,9 +354,9 @@ effect 都是 `send`，**默认关着**；这是整个仓库**唯一的内置工
 与 audience 字段。agent 不特判来源（不看工具名、不看 server 名），任何 MCP server 返回
 audience=user 的块都能被投递；沙盒也不需要知道渠道、传输、用户。**耦合从「两个进程共享
 一块磁盘」降成「两个进程遵守同一个 MCP 字段」。** 反过来说，agent 里一旦出现
-`if tool == "bash__export"`，这条解耦当场作废——所以它没有。
+`if tool == "sandbox__export"`，这条解耦当场作废——所以它没有。
 
-**新增 bash `export` 工具**（`read` 不动，仍是"给模型看"，不自动外发）。模型要「把文件
+**新增 sandbox `export` 工具**（`read` 不动，仍是"给模型看"，不自动外发）。模型要「把文件
 给用户」时用 export；这解决了「模型只是读图却被自动发出去」的错误。
 
 **闸门：** 投递要求 `LLM_TOOL_EFFECTS` 含 `send`（与 reply 同一道闸）。MCP 工具都是
@@ -410,9 +410,9 @@ SSE 是它最自然的落点：推理增量与工具调用边发生边推。**�
 以前一致。启用时必须至少配一个用户（用户表，或单用户回落的 `WEB_CHANNEL_TOKEN`），
 否则拒绝启用。
 
-## 20. MCP bash 多租户隔离
+## 20. MCP sandbox 多租户隔离
 
-**问题：** `fka-bash` 是一个进程、一个沙盒根，所有会话共享同一棵树——A 建的文件 B
+**问题：** `fka-sandbox` 是一个进程、一个沙盒根，所有会话共享同一棵树——A 建的文件 B
 能看到。而内容不可信早就是既成前提（提示注入），所以隔离不能只防手滑。
 
 **决定：每个 `PrincipalID` 一个沙盒子目录。**
@@ -421,7 +421,7 @@ SSE 是它最自然的落点：推理增量与工具调用边发生边推。**�
   注入 `_meta["fka/principal"]`。**模型改不了它**（不是工具参数），stdio/HTTP 都通。
   反过来说，**不能用工具参数**（记忆 server 的 `viewer_wxid` 就是那种）——那能被提示
   注入改写；对文件系统来说，改写 = 读别人的文件，比 SQL 过滤漏一行严重得多。
-- bash server 从 `_meta` 取身份，把根切成 `<基根>/<safe(principal)>`，按需创建。
+- sandbox server 从 `_meta` 取身份，把根切成 `<基根>/<safe(principal)>`，按需创建。
   `run`/`read`/`export` 全在这一层里执行；bwrap 只把这层绑成可写并 chdir。
 - **缺身份 fail-closed**：没有 `_meta` 直接拒绝，**绝不落到共享目录**——那等于
   「绕过 agent 就全共享」，多租户下最坏的失败形态。
@@ -432,12 +432,12 @@ SSE 是它最自然的落点：推理增量与工具调用边发生边推。**�
   `logs/*`，以及**兄弟租户目录**——单租户时可接受，多租户下就是凭证泄漏。
 - **自装工具链点名挂进来**：最小根只绑 `/usr /bin /lib /etc` 等系统位，而 node（常在
   `/opt`）、conda/python（常在 `~`）、nvm/pyenv 都不在里面——不挂的话沙盒里
-  `command not found`。用 `BASH_RO_BINDS`（冒号分隔的路径）或 `--ro-bind` 把它们
+  `command not found`。用 `SANDBOX_RO_BINDS`（冒号分隔的路径）或 `--ro-bind` 把它们
   **只读**挂进去；只暴露点名的目录，不放整个 `/opt` 或家目录。系统包管理器装的
   解释器（在 `/usr` 下）本来就能用。
 
-**解耦：** 两侧只共享一个协议字段（`_meta` 的键），bash 不认识 agent、agent 不认识
-bash；键在两边各写一份字面量（bash 自给自足，不能 import 树内包），改动要一起改。
+**解耦：** 两侧只共享一个协议字段（`_meta` 的键），sandbox 不认识 agent、agent 不认识
+sandbox；键在两边各写一份字面量（sandbox 自给自足，不能 import 树内包），改动要一起改。
 
 **已接受的代价：**
 - `safeSegment` 把非法字符换成 `_`、截到 64 字符，理论上两个不同身份可能撞目录名；

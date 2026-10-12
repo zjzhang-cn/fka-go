@@ -2,7 +2,7 @@
 //
 // ## 为什么自己有一份而不共用 agent 或 memory 的
 //
-// `mcp/bash` 自给自足：`boundary_test.go` 扫 import，禁止它引用本仓库树外的任何包
+// `mcp/mcp_sandbox` 自给自足：`boundary_test.go` 扫 import，禁止它引用本仓库树外的任何包
 // （`mcp/memory/internal/log` 也在禁止之列）。共用一份要么让两个 server 互相依赖，
 // 要么引入第三个「工具库仓库」——都不值得为 120 行代码。**该复制的就复制**，
 // logger 是最容易独立的一块。代价是这份与 `mcp/memory/internal/log` 的同名文件
