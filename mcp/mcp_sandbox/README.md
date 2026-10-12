@@ -137,9 +137,33 @@ PID、user 全在容器内——所以容器里的 fka-sandbox 走 **`--mode dir
 | 解释器 | 只读绑宿主那几份 | 镜像内自带 python3 / nodejs，**与宿主无关** |
 | 审计日志 | 落在安装根 `logs/`（只读根保护） | 落在挂载的 `/logs`（与 `/sandbox` 分开） |
 
-基础镜像是 **`ubuntu:24.04`**（自带 python3.12 与 nodejs 18），环境变量见 Dockerfile；
-`PIP_BREAK_SYSTEM_PACKAGES=1` 是为了让 Ubuntu 24.04 上 `pip install` 不被 PEP 668 拦下。
-构建上下文必须是**仓库根**（要 `COPY` 到 `bin/`）。
+基础镜像是 **`ubuntu:24.04`**（自带 python3.12 与 nodejs 18），环境变量见 Dockerfile：
+`SANDBOX_ALLOW_PIP=1` 声明本容器默认通网、可 `pip install`；`PIP_BREAK_SYSTEM_PACKAGES=1`
+绕过 Ubuntu 的 PEP 668；`PIP_USER=1` 配合只读根，把 pip 安装落到 `$HOME/.local`
+（= 沙盒根，可写），该目录已在 `PATH` 最前。构建上下文必须是**仓库根**（要 `COPY` 到 `bin/`）。
+
+### 预装的 Python 库
+
+高频任务（数据处理、出图、读写 Excel/图片）预置进镜像，省去每次会话 pip 联网装；长尾库
+仍可 `pip install`。默认装：
+
+| 开关（build-arg） | 默认 | 预装 |
+|---|---|---|
+| （总是装） | — | `requests`、`openpyxl`、`pillow`、`tzdata` |
+| `SANDBOX_PY_DATA` | `1` | `numpy`、`pandas` |
+| `SANDBOX_PY_PLOT` | `1` | `matplotlib` + `fonts-noto-cjk`（**中文图不再画成方框**） |
+| `SANDBOX_PY_DOCS` | `0` | `lxml`、`bs4` + `pypdf`、`reportlab` |
+| `SANDBOX_PY_MEDIA` | `0` | `ffmpeg` |
+| `SANDBOX_PY_SCIPY` | `0` | `scipy` |
+
+裁剪精简镜像（例如只要 shell 与数据）：
+
+```bash
+make docker-sandbox SANDBOX_PY_DATA=0 SANDBOX_PY_PLOT=0
+```
+
+库都装在**系统** site-packages（沙盒里直接用），**不装 `/sandbox`**——那是每租户单独的卷，
+装进去别人看不到。
 
 ## 构建
 

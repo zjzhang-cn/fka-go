@@ -127,12 +127,27 @@ rebuild: ## 强制重建（改了依赖之后用）
 DOCKER_IMAGE ?= fka-sandbox:latest
 DOCKER_ARCH  ?= $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
+# 镜像里预装的 Python 库开关（见 mcp/mcp_sandbox/Dockerfile）。默认「数据 + 可视化」；
+# 精简部署可 `make docker-sandbox SANDBOX_PY_DATA=0 SANDBOX_PY_PLOT=0` 一键裁掉。
+SANDBOX_PY_DATA  ?= 1
+SANDBOX_PY_PLOT  ?= 1
+SANDBOX_PY_DOCS  ?= 0
+SANDBOX_PY_MEDIA ?= 0
+SANDBOX_PY_SCIPY ?= 0
+
 .PHONY: docker-sandbox
 docker-sandbox: ## 交叉编译 fka-sandbox(linux/amd64,arm64) 并构建沙盒镜像
 	@mkdir -p $(BIN)
 	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-sandbox-linux-amd64 ./mcp/mcp_sandbox
 	GOOS=linux GOARCH=arm64 $(GO) build $(GOFLAGS_BUILD) -o $(BIN)/fka-sandbox-linux-arm64 ./mcp/mcp_sandbox
-	docker build -f mcp/mcp_sandbox/Dockerfile --build-arg TARGETARCH=$(DOCKER_ARCH) -t $(DOCKER_IMAGE) .
+	docker build -f mcp/mcp_sandbox/Dockerfile \
+		--build-arg TARGETARCH=$(DOCKER_ARCH) \
+		--build-arg SANDBOX_PY_DATA=$(SANDBOX_PY_DATA) \
+		--build-arg SANDBOX_PY_PLOT=$(SANDBOX_PY_PLOT) \
+		--build-arg SANDBOX_PY_DOCS=$(SANDBOX_PY_DOCS) \
+		--build-arg SANDBOX_PY_MEDIA=$(SANDBOX_PY_MEDIA) \
+		--build-arg SANDBOX_PY_SCIPY=$(SANDBOX_PY_SCIPY) \
+		-t $(DOCKER_IMAGE) .
 	@echo "$(BOLD)✓$(RESET) $(DOCKER_IMAGE)"
 
 # ── 一键配置 ────────────────────────────────────────────

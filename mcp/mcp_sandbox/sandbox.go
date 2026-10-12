@@ -457,6 +457,16 @@ func (s *Sandbox) environ() []string {
 		out = append(out, kv)
 	}
 	out = append(out, "HOME="+s.Root, "TMPDIR="+s.tmpDir)
+	// pip 默认装到 $HOME/.local（系统 site-packages 在只读根下写不了），把它的 bin
+	// 加进 PATH，装完的 console script 才能直接跑。$HOME = 沙盒根，所以是沙盒内的
+	// 相对位置，不越界。
+	localBin := filepath.Join(s.Root, ".local", "bin")
+	for i, kv := range out {
+		if strings.HasPrefix(kv, "PATH=") {
+			out[i] = "PATH=" + localBin + string(os.PathListSeparator) + strings.TrimPrefix(kv, "PATH=")
+			break
+		}
+	}
 	return out
 }
 

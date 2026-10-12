@@ -87,6 +87,19 @@ func TestSandbox_HOME落进沙盒(t *testing.T) {
 	}
 }
 
+// TestSandbox_pip用户目录进PATH pip 默认装到 $HOME/.local（只读根下系统
+// site-packages 写不了），把它的 bin 放进 PATH，装完的 console script 才能直接跑。
+func TestSandbox_pip用户目录进PATH(t *testing.T) {
+	requireBash(t)
+	s := newTestSandbox(t)
+
+	result := runOK(t, s, RunRequest{Command: `printf '%s' "$PATH"`})
+	want := filepath.Join(s.Root, ".local", "bin")
+	if !strings.HasPrefix(result.Stdout, want) {
+		t.Errorf("PATH 该以 %s 开头（pip 装的脚本优先），实际 %s", want, result.Stdout)
+	}
+}
+
 // TestSandbox_cwd越界被拒 词法越界（..、绝对路径）与符号链接越界三条都要拒。
 func TestSandbox_cwd越界被拒(t *testing.T) {
 	requireBash(t)
