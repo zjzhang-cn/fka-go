@@ -17,10 +17,12 @@ coverage.html
 # data/        SQLite 记忆库 + 游标
 # logs/        按天轮转的运行日志（会含用户消息内容）
 # sandbox/     沙盒 sandbox server 的工作目录（模型在里面落文件）
+# web-users.json  网页渠道的用户表（含登录令牌）
 .env
 .env.*
 !.env.example
 mcp.json
+web-users.json
 data/
 logs/
 sandbox/
