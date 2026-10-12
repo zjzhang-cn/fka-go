@@ -29,6 +29,13 @@ services:
       # 宿主端口可用 SANDBOX_MCP_PORT 覆盖（默认 8080）；被别的进程占用时换一个，
       # setup.sh 会把这个端口写进 mcp.json 的 url，两边保持一致。
       - "127.0.0.1:${SANDBOX_MCP_PORT:-8080}:8080"
+    environment:
+      # 没带 MCP `_meta` 身份（fka/principal）的调用方回落到具名租户 `default`。
+      # 容器默认走 HTTP 且可被直接连（health check / 手工 curl），那些调用没有 agent
+      # 注入的身份——宿主部署默认 fail-closed 是对的，容器里给它们一个名字更实用。
+      # **仅兜底**：agent 带身份的调用照旧以 `_meta` 为准；`SANDBOX_DEFAULT_PRINCIPAL`
+      # 可覆盖（设空串即恢复 fail-closed）。
+      - SANDBOX_DEFAULT_PRINCIPAL=${SANDBOX_DEFAULT_PRINCIPAL:-default}
     volumes:
       # 沙盒数据与审计日志用**命名卷**，不用宿主目录。宿主 bind 有两个坑：
       #   1. Docker 以 root 建缺失的宿主目录，而容器以非 root 的 fka 运行，写不进
