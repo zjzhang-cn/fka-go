@@ -96,7 +96,7 @@ fi
 # ── 2. 沙盒容器（镜像里不编译，宿主编译 + COPY）───────────
 if [ "$DO_DOCKER" -eq 1 ]; then
   if command -v docker >/dev/null 2>&1; then
-    step "构建沙盒镜像 fka-sandbox:latest"
+    step "构建沙盒镜像 docker.io/zjzhang/fka-sandbox:latest"
     make -C "$REPO" docker-sandbox
     step "启动沙盒容器"
     # compose 有两种形态：v2 插件 `docker compose` 与 v1 独立命令 `docker-compose`。

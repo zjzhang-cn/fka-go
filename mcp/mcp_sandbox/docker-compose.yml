@@ -23,7 +23,7 @@ services:
     build:
       context: ../..
       dockerfile: mcp/mcp_sandbox/Dockerfile
-    image: fka-sandbox:latest
+    image: docker.io/zjzhang/fka-sandbox:latest
     ports:
       # 只发布到宿主回环：这是个能执行命令的 server，别默认暴露给同网段。
       # 宿主端口可用 SANDBOX_MCP_PORT 覆盖（默认 8080）；被别的进程占用时换一个，

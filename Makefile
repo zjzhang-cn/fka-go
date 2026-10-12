@@ -124,7 +124,7 @@ rebuild: ## 强制重建（改了依赖之后用）
 # builder，而 legacy builder 不设 TARGETARCH，`COPY bin/fka-sandbox-linux-` 直接报
 # "file not found"。所以这里**显式按宿主架构传 --build-arg**——单平台构建本来只
 # 出宿主那一份镜像，显式传与 BuildKit 的默认取值一致。DOCKER_ARCH 可覆盖。
-DOCKER_IMAGE ?= fka-sandbox:latest
+DOCKER_IMAGE ?= docker.io/zjzhang/fka-sandbox:latest
 DOCKER_ARCH  ?= $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
 # 镜像里预装的 Python 库开关（见 mcp/mcp_sandbox/Dockerfile）。默认「数据 + 可视化」；
