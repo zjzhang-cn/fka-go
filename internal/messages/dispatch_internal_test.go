@@ -24,7 +24,7 @@ func Test分片键带渠道种类(t *testing.T) {
 	})
 
 	if first != "ilink:account_002" {
-		t.Errorf("分片键该是 渠道:账号，实际 %q", first)
+		t.Errorf("分片键该是 渠道:账号（身份为空时不缀尾），实际 %q", first)
 	}
 	if first == second {
 		t.Errorf("两个渠道种类的同号账号不该撞进同一个分片：%q", first)
@@ -36,5 +36,33 @@ func Test分片键带渠道种类(t *testing.T) {
 	})
 	if again != first {
 		t.Errorf("同一账号的分片键该稳定：%q vs %q", first, again)
+	}
+}
+
+// Test分片键带身份 单账号渠道（web 的所有 token 共用一个 AccountID）里，
+// **两个身份必须落进两个分片**，否则它们被塞进同一个 worker 串行执行——
+// 症状是「两个 token 也并行不起来」。
+//
+// 反过来也要钉：同一账号同一身份必须稳定在同一分片，否则同一路会话的历史
+// 会被两个 worker 交叉写。
+func Test分片键带身份(t *testing.T) {
+	alice := shardKeyOf(channels.Event{
+		Message: channels.InboundMessage{ChannelID: "web", AccountID: "default", PrincipalID: "web:alice"},
+	})
+	bob := shardKeyOf(channels.Event{
+		Message: channels.InboundMessage{ChannelID: "web", AccountID: "default", PrincipalID: "web:bob"},
+	})
+	aliceAgain := shardKeyOf(channels.Event{
+		Message: channels.InboundMessage{ChannelID: "web", AccountID: "default", PrincipalID: "web:alice"},
+	})
+
+	if alice == bob {
+		t.Fatalf("同账号下两个身份不该撞进同一个分片：%q", alice)
+	}
+	if alice != aliceAgain {
+		t.Errorf("同一身份的分片键该稳定：%q vs %q", alice, aliceAgain)
+	}
+	if alice != "web:default:web:alice" {
+		t.Errorf("分片键该是 渠道:账号:身份，实际 %q", alice)
 	}
 }

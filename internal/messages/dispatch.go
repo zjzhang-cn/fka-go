@@ -1,31 +1,38 @@
-// 本文件是**常驻消息循环的形状**：一条 dispatcher 读订阅流，按账号把事件分给
-// 各自的 worker。
+// 本文件是**常驻消息循环的形状**：一条 dispatcher 读订阅流，按「账号 + 身份」
+// 把事件分给各自的 worker。
 //
 // ## 它为什么是这一层的事
 //
-// 「同一账号的消息要按顺序处理、不同账号之间不用互相等」是**消息层的性质**：
+// 「同一路会话要按顺序处理、不同路之间不用互相等」是**消息层的性质**：
 // 接缝不认这个（它只管投递），渠道层不认这个（一个渠道实例只看自己那一个账号），
-// 工具循环也不认。所以按账号分片这件事整个落在 `internal/messages`。
+// 工具循环也不认。所以分片这件事整个落在 `internal/messages`。
 //
-// ## 为什么按账号，而不是按会话、也不是每条消息一个 goroutine
+// ## 为什么按「账号 + 身份」，而不是只按账号、也不是每条消息一个 goroutine
 //
-// **同账号必须串行**。两件事都要求它：
+// **同一个「账号 + 身份」必须串行**。两件事都要求它：
 //
 //   - 历史是**单文件 append**（`llm/session.go`），并发写会交叉；
-//   - 模型上下文有前后依赖——同一会话两条消息并发跑，会各自基于**同一份旧历史**
+//   - 模型上下文有前后依赖——同一路两条消息并发跑，会各自基于**同一份旧历史**
 //     作答，答完再交叉落进文件。那不会报错，历史会静静地错掉。
 //
-// 而「不同账号之间」没有任何共享状态：`agent.Runner` 无状态（每次调用把依赖
-// 按值传走）、`tools.Registry` 有锁、MCP 的 stdio 传输按 request id 解复用、
-// 会话历史早就备好了 per-path 锁。所以账号之间并行是白捡的。
+// 而不同「账号 + 身份」之间没有任何共享状态：`agent.Runner` 无状态（每次调用把
+// 依赖按值传走）、`tools.Registry` 有锁、MCP 的 stdio 传输按 request id 解复用、
+// 会话历史早就备好了 per-path 锁。所以并行是白捡的。
 //
-// **按会话更细，但用户要的是「多个账号同时干活」**，而同一账号里连续说话本来
-// 就该按顺序答——按会话分片会让同一个人的两条消息并发作答，与直觉相悖。
+// **身份为什么也必须进分片键**：会话历史的文件名是 `渠道:账号:会话`，而**会话
+// 这一格早就按身份分了命名空间**——web 的会话键显式前缀 PrincipalID（见
+// `channels/web` 的 `sessionConversation`），ilink 的会话就是发信人的私聊。
+// 两个身份天然写两份历史，却共用一个 `AccountID`（web 是**所有 token 共用一个
+// 账号**），只按账号分片就把它们塞进同一个 worker 白等——这正是「两个 token
+// 也并行不起来」的原因。身份为空时退回 `channel:account`，与旧行为一致。
+//
+// **按会话更细，但不要**：同一路里连续说话本来就该按顺序答——按会话分片会让
+// 同一个人的两条消息并发作答，与直觉相悖。
 //
 // ## 并发上限为什么不用配
 //
-// worker 数量 = 见到过消息的账号数，**不随消息量增长**。所以并发天然有界在
-// 账号数上，不需要额外的信号量或环境变量。想再压一层得先有第二个理由。
+// worker 数量 = 见到过消息的「账号 × 身份」数，**不随消息量增长**。所以并发
+// 天然有界，不需要额外的信号量或环境变量。想再压一层得先有第二个理由。
 package messages
 
 import (
@@ -82,8 +89,16 @@ func runAccountWorker(handler *Handler, queue <-chan channels.Event, workers *sy
 	}
 }
 
-// shardKeyOf 分片键。**带渠道种类**：AccountID 只在渠道内唯一（渠道种类之间也
-// 可能撞号），接缝自己的查找键也是 `channel:account`——见 seam.go 的 `key()`。
+// shardKeyOf 分片键。**带渠道种类与身份**：
+//
+//   - 带渠道：AccountID 只在渠道内唯一（渠道种类之间也可能撞号），接缝自己的
+//     查找键也是 `channel:account`——见 seam.go 的 `key()`；
+//   - 带身份：同一账号下不同身份各写自己的会话历史，并行不冲突（web 的多 token
+//     就靠这一格拆开）。身份为空时退回 `channel:account`，与旧行为逐字一致。
 func shardKeyOf(event channels.Event) string {
-	return event.Message.ChannelID + ":" + event.Message.AccountID
+	key := event.Message.ChannelID + ":" + event.Message.AccountID
+	if principal := event.Message.PrincipalID; principal != "" {
+		key += ":" + principal
+	}
+	return key
 }

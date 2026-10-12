@@ -205,6 +205,54 @@ func Test同一账号串行处理(t *testing.T) {
 	}
 }
 
+// Test同账号不同身份并行处理 单账号渠道（web）里，不同用户**共用一个
+// AccountID**，但各写各的会话历史——他们必须能并行，否则一个人的长问题会挡住
+// 另一个人。
+//
+// 这正是「两个 token 也并行不起来」的回归用例：分片键只按账号切时它会红。
+func Test同账号不同身份并行处理(t *testing.T) {
+	model, service, handler, byAccount := gatedFixture(t)
+
+	subscription := service.Subscribe()
+	stopped := make(chan struct{})
+	go func() {
+		messages.Dispatch(handler, subscription)()
+		close(stopped)
+	}()
+	service.StartAll(context.Background())
+	defer func() {
+		subscription.Close()
+		model.open()
+		<-stopped
+	}()
+
+	channel := byAccount["acct-1"]
+
+	first := messageOf("acct-1", "m1", "alice 的问题")
+	first.PrincipalID = "web:alice"
+	first.ConversationID = "alice-room"
+	channel.onMessage(first)
+	select {
+	case <-model.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("alice 的消息没进模型")
+	}
+
+	// alice 还卡着，同账号的 bob 就该已经进来了
+	second := messageOf("acct-1", "m2", "bob 的问题")
+	second.PrincipalID = "web:bob"
+	second.ConversationID = "bob-room"
+	channel.onMessage(second)
+	select {
+	case question := <-model.entered:
+		if question != "bob 的问题" {
+			t.Errorf("先进来的是 %q，期望 bob 那条", question)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("同账号下 bob 在 alice 卡着时进不来——分片键没带身份")
+	}
+}
+
 // Test停机后不留goroutine 订阅流关闭之后 Dispatch **必须返回**，且返回时
 // 那些账号 worker 都退出了。
 //
