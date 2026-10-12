@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -214,6 +215,44 @@ func TestSource_get_prompt分发(t *testing.T) {
 	missing, _ := src.Call(context.Background(), "svc__get_prompt", map[string]any{}, tools.Context{})
 	if missing.OK || !strings.Contains(missing.Content, "name") {
 		t.Errorf("缺 name 该给一句可改正的话：OK=%v %q", missing.OK, missing.Content)
+	}
+}
+
+// TestGetPrompt_空参数也发arguments对象 空参数必须是 `{}` 而不是缺省——官方 TS SDK
+// 的 server 在 prompt 声明了参数 schema 时，收到缺省的 arguments 会报
+// `expected object, received undefined`。这里用一个「参数缺失就报错」的 server 钉住它。
+func TestGetPrompt_空参数也发arguments对象(t *testing.T) {
+	server := mcpserver.NewMCPServer("argcheck", "0.0.1")
+	server.AddPrompt(
+		mcpapi.NewPrompt("p", mcpapi.WithPromptDescription("检查参数是否传了对象")),
+		func(_ context.Context, request mcpapi.GetPromptRequest) (*mcpapi.GetPromptResult, error) {
+			if request.Params.Arguments == nil {
+				return nil, fmt.Errorf("arguments 缺失：客户端必须发成对象")
+			}
+			return mcpapi.NewGetPromptResult("", []mcpapi.PromptMessage{
+				mcpapi.NewPromptMessage(mcpapi.RoleUser, mcpapi.NewTextContent("ok")),
+			}), nil
+		},
+	)
+
+	httpServer := httptest.NewServer(mcpserver.NewStreamableHTTPServer(server))
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	connection, err := ConnectMcpServer(ctx, "argcheck", ServerConfig{URL: httpServer.URL + "/mcp"})
+	if err != nil {
+		t.Fatalf("该连上：%v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	result, err := connection.GetPrompt(ctx, "p", nil)
+	if err != nil {
+		t.Fatalf("空参数取提示词不该失败：%v", err)
+	}
+	if !strings.Contains(result.Content, "ok") {
+		t.Errorf("渲染结果不对：%q", result.Content)
 	}
 }
 

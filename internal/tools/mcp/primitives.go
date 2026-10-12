@@ -23,8 +23,11 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
@@ -144,12 +147,20 @@ func (c *connection) ListPrompts(ctx context.Context) ([]PromptInfo, error) {
 
 // GetPrompt 渲染一个提示词模板。消息的角色（user/assistant）**保留在文本里**：
 // 结果最终是一条工具消息，不标出角色，模型就分不清哪段是它自己该说的。
+//
+// ## 为什么不直接用 SDK 的 client.GetPrompt
+//
+// SDK 的 `GetPromptParams.Arguments` 带 `omitempty`，参数为空时 `arguments` 会被整个
+// 从 JSON 里丢掉。而官方 TS SDK 的 server 只要 prompt 声明了参数 schema，收到**缺省**
+// 的 `arguments` 就直接报 `expected object, received undefined`——于是「不传参数」这个
+// 完全正常的用法反而失败。空参数必须发成 `{}`，SDK 的结构体给不了这个，只能自己拼
+// 一个 `arguments` 不带 `omitempty` 的参数对象，经底层 transport 发同一帧 `prompts/get`。
+//
+// 代价是绕过了 SDK 的多轮往返（elicitation）处理。prompt 基本不触发它，这里认了。
 func (c *connection) GetPrompt(ctx context.Context, name string, args map[string]string) (CallResult, error) {
 	return withTimeout(ctx, RequestTimeoutMs, "取 MCP 提示词 "+c.name,
 		func(ctx context.Context) (CallResult, error) {
-			params := mcp.GetPromptParams{Name: name, Arguments: args}
-			params.Meta = principalMeta(ctx)
-			result, err := c.client.GetPrompt(ctx, mcp.GetPromptRequest{Params: params})
+			result, err := c.rawGetPrompt(ctx, name, args)
 			if err != nil {
 				return CallResult{}, err
 			}
@@ -171,6 +182,43 @@ func (c *connection) GetPrompt(ctx context.Context, name string, args map[string
 			}
 			return out, nil
 		})
+}
+
+// getPromptParams prompts/get 的参数。`Arguments` **不带 omitempty**——这正是这个类型
+// 存在的理由：空参数也要序列化成 `{}`（见 GetPrompt 头注释）。
+type getPromptParams struct {
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments"`
+	Meta      *mcp.Meta         `json:"_meta,omitempty"`
+}
+
+// promptRequestSeq 自己发 `prompts/get` 时用的请求 id 序号。用**字符串** id（SDK 只发
+// 数字 id），两条 id 空间不会撞，底层按 `RequestId.String()` 匹配响应。
+var promptRequestSeq atomic.Uint64
+
+// rawGetPrompt 经底层 transport 发一帧 prompts/get。
+func (c *connection) rawGetPrompt(ctx context.Context, name string, args map[string]string) (*mcp.GetPromptResult, error) {
+	if args == nil {
+		args = map[string]string{}
+	}
+	request := transport.JSONRPCRequest{
+		JSONRPC: mcp.JSONRPC_VERSION,
+		ID:      mcp.NewRequestId("fka-prompt-" + strconv.FormatUint(promptRequestSeq.Add(1), 10)),
+		Method:  string(mcp.MethodPromptsGet),
+		Params: getPromptParams{
+			Name:      name,
+			Arguments: args,
+			Meta:      principalMeta(ctx),
+		},
+	}
+	response, err := c.client.GetTransport().SendRequest(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, response.Error.AsError()
+	}
+	return mcp.ParseGetPromptResult(&response.Result)
 }
 
 // principalMeta 把调用方身份塞进 `_meta`，与 CallTool 同一条（模型碰不到）。
