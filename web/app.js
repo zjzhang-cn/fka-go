@@ -55,6 +55,14 @@
     return line;
   }
 
+  // 一轮的真实 token 用量（服务端报的，经 usage 事件推来）。**没给总数就省略
+  // 「（共 …）」**；全零时服务端根本不推这一帧。
+  function usageText(data) {
+    var line = "入 " + (data.promptTokens || 0) + " / 出 " + (data.completionTokens || 0);
+    if (data.totalTokens) line += "（共 " + data.totalTokens + "）";
+    return "用量：" + line;
+  }
+
   // 后缀 → 类别，给「MIME 认不出来」兜底。服务端的 Content-Type 大多已经具体
   // （含 svg、视频、音频），但通配（image/*）、空串、或嗅探认不出的类型要有第二条路。
   var EXT_KIND = {
@@ -181,6 +189,11 @@
     });
     source.addEventListener("file", function (ev) {
       addMedia(JSON.parse(ev.data));
+    });
+    source.addEventListener("usage", function (ev) {
+      // 轮末的账目：每个会话只看自己的用量。过程事件（推理/工具）之后到。
+      addNote("usage", usageText(JSON.parse(ev.data)));
+      reasoningLine = null;
     });
     source.addEventListener("error", function () {
       // EventSource 会自己重连；连不上时它也会触发这里

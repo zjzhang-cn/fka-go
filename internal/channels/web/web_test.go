@@ -562,6 +562,36 @@ func TestEmitter_不重复发答案(t *testing.T) {
 	}
 }
 
+// TestEmitter_用量通知推帧 用量经可选接口 `channels.Notifier` 到达逐条消息的回显
+// 对象，转成一帧 `usage` 推给该会话。**长在回显对象上**而非渠道上，因为它才知道会话。
+func TestEmitter_用量通知推帧(t *testing.T) {
+	c := testChannel(t)
+	ctx := config.Bind(context.Background(), config.Context{"conversation": "conv"})
+
+	client := c.hub.join("conv")
+	defer c.hub.leave("conv", client)
+
+	notifier, ok := c.Emitter(ctx).(channels.Notifier)
+	if !ok {
+		t.Fatal("sseEmitter 该实现 channels.Notifier")
+	}
+	notifier.Notify(channels.UsageNotice{Usage: channels.TokenUsage{
+		PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
+	}})
+
+	select {
+	case frame := <-client.ch:
+		got := string(frame)
+		for _, want := range []string{"event: usage", `"promptTokens":10`, `"completionTokens":5`, `"totalTokens":15`} {
+			if !strings.Contains(got, want) {
+				t.Errorf("用量帧该含 %q：%s", want, got)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("用量通知没推出来")
+	}
+}
+
 // TestProvider_账号可配且默认不叫web 账号名进会话键、进而进历史文件名，所以要能改；
 // 默认刻意不与渠道种类同名。
 func TestProvider_账号可配且默认不叫web(t *testing.T) {

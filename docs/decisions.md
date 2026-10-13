@@ -524,8 +524,15 @@ sandbox；键在两边各写一份字面量（sandbox 自给自足，不能 impo
 **回退：** 换端点若建流 400 且错误文本含 `stream_options`，删 `baseRequest` 里那
 一行即回退（用量随之回到零值，展示层自动不打那一行）。
 
-**不做（留作后续）：** 网页 SSE 的用量事件与微信回执——机制已就位（网页回显对象
-实现 `channels.Notifier` 即可），但那要动本轮冻结的 web 包；不引 tokenizer；不加开关。
+**网页已接上：** `web` 渠道的逐条消息回显对象（`sseEmitter`）实现 `channels.Notifier`，
+把用量推一帧 `event: usage`（`promptTokens/completionTokens/totalTokens`），前端
+`app.js` 渲染成一行 `用量：入 X / 出 Y（共 Z）`、样式 `.note.usage` 更淡。
+**通知长在回显对象上而不是渠道上**——用量属于某条会话，而渠道实例是多会话共享的，
+没有「当前会话」可指；`sseEmitter` 是逐条消息造的，知道发给哪个房间（接缝适配器
+`channelEcho` 先问渠道、再问回显对象）。
+
+**不做（留作后续）：** 微信回执——机制已就位（iLink 的回显对象实现
+`channels.Notifier` 即可）；不引 tokenizer；不加开关。
 
 ---
 

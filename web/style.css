@@ -89,6 +89,9 @@ main {
 .note.tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .note.error { color: #d0463b; }
 
+/* 用量（一轮的账目）：比过程提示更淡，不抢眼。 */
+.note.usage { opacity: 0.7; }
+
 /* 推理块与工具 / 应答块一致：整段显示、不截断、不自己滚动。左侧一道细线
    把它和工具 / 错误提示区分开。 */
 .note.reasoning {
