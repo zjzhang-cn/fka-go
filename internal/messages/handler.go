@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/zjzhang-cn/fka-go/internal/agent"
 	"github.com/zjzhang-cn/fka-go/internal/channels"
@@ -35,6 +36,9 @@ const (
 	replyAgentFail = "这一轮没能答出来：%s"
 	replyNotText   = "我只处理文字问题。图片、文件这些我现在接不住——发文字给我就行。"
 	replyEmpty     = "我没想出该怎么回。要不换个说法？"
+	// replyStopped 用户中途喊停（网页「停止」按钮）造成的一轮结束。**不是错误**——
+	// 一句平静的话，别让用户以为出了故障。
+	replyStopped = "（已停止）"
 )
 
 // Runner 工具循环在消息层需要的那一部分。
@@ -61,11 +65,42 @@ type Runner interface {
 type Handler struct {
 	// Runner 工具循环。缺席时也是一个实现了 Runner 的对象，见上
 	Runner Runner
+
+	// turns 会话键 → 取消函数。**正在跑的那一轮**（一个会话至多一轮，worker 串行）。
+	// `CancelTurn` 取出来 cancel，工具循环的 ctx 随之取消、流被掐断。
+	mu    sync.Mutex
+	turns map[string]context.CancelFunc
 }
 
 // NewHandler 造消息处理器。
 func NewHandler(runner Runner) *Handler {
-	return &Handler{Runner: runner}
+	return &Handler{Runner: runner, turns: map[string]context.CancelFunc{}}
+}
+
+// CancelTurn 取消某个会话进行中的一轮（实现 `channels.TurnController`）。
+// 返回是否真的取消了一个——没有在跑时回 false，让渠道能如实说「没有进行中的一轮」。
+func (h *Handler) CancelTurn(sessionKey string) bool {
+	h.mu.Lock()
+	cancel, ok := h.turns[sessionKey]
+	h.mu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// setTurn / clearTurn 登记与摘除一个会话的取消函数。
+func (h *Handler) setTurn(sessionKey string, cancel context.CancelFunc) {
+	h.mu.Lock()
+	h.turns[sessionKey] = cancel
+	h.mu.Unlock()
+}
+
+func (h *Handler) clearTurn(sessionKey string) {
+	h.mu.Lock()
+	delete(h.turns, sessionKey)
+	h.mu.Unlock()
 }
 
 // Handle 处理一条入站消息。**永不返错**——
@@ -73,7 +108,9 @@ func NewHandler(runner Runner) *Handler {
 // 调用点在长驻的消息循环里，抛出去会中断**后续所有消息**的处理。所以这里的失败
 // 一律变成回给用户的一句话，而真相进日志。
 //
-// 编排（判定 + 跑循环 + 归类）在 `Ask` 里；这里只做「绑定归属 → 收到 → 发送」。
+// 编排（判定 + 跑循环 + 归类）在 `Ask` 里；这里只做「绑定归属 → 收到 → 发送」，
+// 外加两件只有这一层做得了的事：把这一轮登记成**可取消**的（网页「停止」按钮），
+// 以及把**执行中状态**通知给渠道（发送键切成停止键）。
 // CLI 那条路走的是同一个 `Ask`，于是「加一个渠道零改业务层」对命令行也成立。
 func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	message := event.Message
@@ -88,6 +125,22 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	// 也不能用全局变量——消息处理是按账号并行的（见 `dispatch.go`），
 	// 详见 `internal/config/scope.go`。
 	ctx = config.Bind(ctx, messageFields(message))
+
+	// **这一轮可取消**：从这条消息衍生一个可取消的 ctx，登记到 turns。
+	// 工具循环/模型请求都跑在它下面，取消它就能立刻掐断（流式请求当场读不到数据）。
+	// 键与会话键一致，渠道按同一条规则算出要停的是哪一场。
+	sessionKey := channels.SessionKeyOf(&message)
+	ctx, cancel := context.WithCancel(ctx)
+	h.setTurn(sessionKey, cancel)
+
+	// **执行中状态**：进这条消息就是「一轮开始」，出它就是「一轮结束」。
+	// 覆盖空问题/缺身份这类不走工具循环的拒答——前端只认这一对通知切键，不必自己猜。
+	notifyChannel(ctx, channel, channels.TurnStateNotice{Running: true})
+	defer func() {
+		h.clearTurn(sessionKey)
+		cancel()
+		notifyChannel(ctx, channel, channels.TurnStateNotice{Running: false})
+	}()
 
 	// ── 收到 ────────────────────────────────────────────────
 	//
@@ -145,6 +198,27 @@ func emitterFor(ctx context.Context, channel channels.Channel) agent.Emitter {
 		}
 	}
 	return channelEcho{channel: channel, inner: echo}
+}
+
+// notifyChannel 把一个渠道通知交给渠道。**谁能收就发给谁**：渠道本身实现了
+// `channels.Notifier` 就给它（CLI 走这条）；否则问它的 `EmitterProvider`（多会话
+// 渠道把 Notifier 长在逐条消息的回显对象上，网页走这条）。两边都没有就静默丢弃。
+//
+// 与 `channelEcho.Notify` 的区别：那条是**工具循环**发来的（用量），走 agent 自己的
+// Notice；这条是**消息层**发的（执行中状态），直接用渠道的 Notice——执行中状态只有
+// 消息层知道（含不走工具循环的拒答）。
+func notifyChannel(ctx context.Context, channel channels.Channel, notice channels.Notice) {
+	if notifier, ok := channel.(channels.Notifier); ok {
+		notifier.Notify(notice)
+		return
+	}
+	if provider, ok := channel.(channels.EmitterProvider); ok {
+		if emitter := provider.Emitter(ctx); emitter != nil {
+			if notifier, ok := emitter.(channels.Notifier); ok {
+				notifier.Notify(notice)
+			}
+		}
+	}
 }
 
 // channelEcho 把渠道的 `channels.Emitter` 适配成工具循环要的 `agent.Emitter`，

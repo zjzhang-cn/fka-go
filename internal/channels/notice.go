@@ -41,6 +41,16 @@ type UsageNotice struct {
 
 func (UsageNotice) notice() {}
 
+// TurnStateNotice 会话**执行中状态**的变化：true = 一轮开始、false = 一轮结束。
+//
+// 前端据此把「发送」切成「停止」（执行中）并在结束时切回来。**由消息层发**——
+// 它才知道「一条入站消息正在处理」（含空问题/缺身份这类不走工具循环的拒答）。
+type TurnStateNotice struct {
+	Running bool
+}
+
+func (TurnStateNotice) notice() {}
+
 // Notifier **可选**能力：渠道想收非过程通知（用量等）就实现它。
 //
 // 与 `AddressResolver` / `EmitterProvider` 同一条规矩：调用方用**类型断言**探测，

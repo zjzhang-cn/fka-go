@@ -111,6 +111,13 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		Images:      in.Images,
 	})
 	if err != nil {
+		// **被喊停不是错误**：网页「停止」按钮或终端 Ctrl-C 取消的是这一轮的 ctx，
+		// 工具循环随之返回一个 ctx 错。回一句平静的话（`Cause` 仍带上，CLI 靠它区分
+		// 「已中断」与真失败）。
+		if ctx.Err() != nil {
+			config.Log().Info(config.TypeMSG, "这一轮被取消", mergeFields(fields, config.Context{"error": err.Error()}))
+			return AskOutcome{Explain: replyStopped, Cause: err}
+		}
 		// **工具循环缺席要说清是缺席**，不能混进「这一轮没答出来」——用户看到
 		// 「稍后再试」只会再问一次，而真因是没配模型或 LLM_TOOLS=off。
 		if errors.Is(err, agent.ErrNoRunner) {

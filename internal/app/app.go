@@ -324,6 +324,14 @@ func (a *App) Serve(ctx context.Context) error {
 	subscription := a.Channels.Subscribe()
 	defer subscription.Close()
 
+	// **把取消入口递给渠道**（见 channels.TurnControllable）：网页那类带按钮的前端
+	// 靠它中途停止。必须在 StartAll 之前——渠道一起来就可能收到消息，那时停止键就该能按。
+	for _, channel := range a.Channels.Instances() {
+		if controllable, ok := channel.(channels.TurnControllable); ok {
+			controllable.SetTurnController(a.Messages)
+		}
+	}
+
 	// goroutine 代替 Node 版的 worker：**不阻塞 StartAll**，而接缝的投递是非阻塞的。
 	//
 	// dispatcher **按账号+身份分片**——同「账号+身份」串行、不同之间并行，见

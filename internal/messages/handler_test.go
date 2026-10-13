@@ -40,6 +40,8 @@ type fakeChannel struct {
 	mu     sync.Mutex
 	texts  []sentText
 	medias []sentMedia
+	// notices 收到的渠道通知（执行中状态等）。实现了 channels.Notifier，消息层就会发。
+	notices []channels.Notice
 
 	// sendTextErr 让发送失败，用来验「发不出去只记日志、不再发第二条解释」
 	sendTextErr error
@@ -104,6 +106,20 @@ func (c *fakeChannel) sentMedias() []sentMedia {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]sentMedia(nil), c.medias...)
+}
+
+// Notify 收渠道通知。这个假渠道实现了 channels.Notifier，于是消息层的执行中状态
+// 会发给它（而不是退回日志回显）。
+func (c *fakeChannel) Notify(notice channels.Notice) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notices = append(c.notices, notice)
+}
+
+func (c *fakeChannel) noticesOf() []channels.Notice {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]channels.Notice(nil), c.notices...)
 }
 
 // fakeProvider 一种渠道，可以产出多个账号。
