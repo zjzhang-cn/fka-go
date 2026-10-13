@@ -77,8 +77,12 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 	fields := config.FieldsOf(ctx)
 
 	// ── 没有可答的内容，先说清楚 ────────────────────────────
+	//
+	// 文字与图片都没有（文件/语音/视频这些也走这条）才拒答。**只有图**也是一条可答的
+	// 消息——图片部分在下面取回成附件。
 	question := strings.TrimSpace(message.Text())
-	if question == "" {
+	imageParts := imagePartsOf(message)
+	if question == "" && len(imageParts) == 0 {
 		config.Log().Info(config.TypeMSG, "收到不能作答的消息", fields)
 		return AskOutcome{Explain: replyNotText}
 	}
@@ -98,6 +102,27 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		sessionID = channels.SessionKeyOf(&message)
 	}
 
+	// ── 入站图片：取回成附件 ────────────────────────────────
+	//
+	// **唯一转换点在 images.go**：两条来源（CLI 的 `@图片` 在 `in.Images`，渠道产出的
+	// 图片 part 在这里取回）归到同一个 `RunnerInput.Images`，agent/llm 不必知道图从
+	// 哪来，也不必认识任何渠道。
+	images := append([]llm.ImageAttachment(nil), in.Images...)
+	if len(imageParts) > 0 {
+		fetched, failures := fetchInboundImages(ctx, channel, imageParts)
+		images = append(images, fetched...)
+		// 只发图、一张都没取回来：如实说，别跑模型空猜
+		if question == "" && len(images) == 0 {
+			config.Log().Warn(config.TypeMSG, "入站图片没有一张取回来", mergeFields(fields,
+				config.Context{"failures": strings.Join(failures, "；")}))
+			return AskOutcome{Explain: replyImageUnavailable}
+		}
+	}
+	// 纯图（文字为空）补一句默认提示语：空文本 + 图片块各家模型接受度不一
+	if question == "" {
+		question = defaultImageQuestion
+	}
+
 	// ── 跑一轮 ─────────────────────────────────────────────
 	result, err := h.Runner.Run(ctx, agent.RunnerInput{
 		SessionID:   sessionID,
@@ -108,7 +133,7 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		Reply:       newChannelReply(channel, message),
 		Emitter:     emitterFor(ctx, channel),
 		Ephemeral:   in.Ephemeral,
-		Images:      in.Images,
+		Images:      images,
 	})
 	if err != nil {
 		// **被喊停不是错误**：网页「停止」按钮或终端 Ctrl-C 取消的是这一轮的 ctx，

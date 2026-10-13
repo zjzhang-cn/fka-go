@@ -41,8 +41,6 @@ import (
 var pendingConsumers = map[string]string{
 	"Status": "port-plan 待办 #3（运维端口的状态出口）。注意它现在与 `Provider.Ops().Status()` " +
 		"是两条路：后者读账号表、已实现；这条是渠道自己的视图，还没有消费者。",
-	"FetchMedia": "port-plan 已知的债「iLink 的媒体路径」。消息层现在收到媒体会如实拒答" +
-		"（agent 不拥有存储），要读图时接的就是这个可选能力。",
 }
 
 // TestContract_渠道接缝的每个方法都有活着的调用方 见文件头。

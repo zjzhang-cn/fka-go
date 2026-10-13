@@ -420,10 +420,11 @@ func Test身份缺失就拒答(t *testing.T) {
 	}
 }
 
-// Test只有图片时如实说不能答 文件/图片那条路随文档能力一起没了。
+// Test渠道取不回图时如实说 渠道没实现 `channels.MediaFetcher`（或取图失败）时，
+// 只有图、没文字的那条消息取不到任何附件——回一句实话，不跑模型空猜。
 //
-// 与其静默丢弃，回一句「我只处理文字问题」——用户至少知道该发什么。
-func Test只有图片时如实说不能答(t *testing.T) {
+// 图片本身现在**是能答的**（见 image_test.go）；这里守的是「取不到」时的诚实降级。
+func Test渠道取不回图时如实说(t *testing.T) {
 	f := newFixture(t, "不该被调用")
 
 	message := textMessage("")
@@ -437,11 +438,11 @@ func Test只有图片时如实说不能答(t *testing.T) {
 	if len(texts) != 1 {
 		t.Fatalf("该回一句说明，实际 %d 条", len(texts))
 	}
-	if !strings.Contains(texts[0].text, "只处理文字问题") {
-		t.Errorf("该说清只处理文字：%q", texts[0].text)
+	if !strings.Contains(texts[0].text, "看不了") {
+		t.Errorf("该说清图片取不回来：%q", texts[0].text)
 	}
 	if f.model.callCount() != 0 {
-		t.Errorf("没有可答内容不该调模型，实际调了 %d 次", f.model.callCount())
+		t.Errorf("取不到图不该调模型，实际调了 %d 次", f.model.callCount())
 	}
 }
 
