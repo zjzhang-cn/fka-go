@@ -7,7 +7,9 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,8 +79,11 @@ func TestProvider_启用产一个实例且能力自洽(t *testing.T) {
 	if !caps.Text.Send || !caps.Text.Receive {
 		t.Error("文字该收发都支持")
 	}
-	if !caps.File.Send || caps.File.Receive || !caps.Image.Send || caps.Image.Receive {
-		t.Error("文件/图片该只发不收（业务层没有入站媒体的消费者）")
+	if !caps.File.Send || caps.File.Receive {
+		t.Error("文件该只发不收（业务层没有入站文件的消费者）")
+	}
+	if !caps.Image.Send || !caps.Image.Receive {
+		t.Error("图片现在该收发都支持（入站图片经 FetchMedia 交给模型）")
 	}
 	if !caps.ProactivePush {
 		t.Error("SSE 能主动推，ProactivePush 该为真")
@@ -222,6 +227,143 @@ func Test入站产出InboundMessage(t *testing.T) {
 	if got.MessageID == "" || got.Timestamp == 0 {
 		t.Errorf("消息 id / 时间戳不能空：%+v", got)
 	}
+}
+
+// Test入站_上传图片产出句柄并可取回 multipart 收图：金属只落句柄，字节进 inbound
+// 暂存；消息层之后经 FetchMedia 原样取回。**与微信走同一条路**（图片只带句柄）。
+func Test入站_上传图片产出句柄并可取回(t *testing.T) {
+	c := testChannel(t)
+	var got channels.InboundMessage
+	c.onMessage = func(m channels.InboundMessage) { got = m }
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	png := []byte("\x89PNG\r\n\x1a\nhello-png")
+	body, contentType := multipartBody(t, "room-img", "这是什么", "photo.png", png)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/messages", body)
+	req.AddCookie(cookie("secret"))
+	req.Header.Set("Content-Type", contentType)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("该 202，实际 %d", resp.StatusCode)
+	}
+
+	if got.Text() != "这是什么" {
+		t.Errorf("文字没带上：%q", got.Text())
+	}
+	ref := imageRefOf(t, got)
+	data, err := c.FetchMedia(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("FetchMedia 该取回字节：%v", err)
+	}
+	if !bytes.Equal(data, png) {
+		t.Errorf("取回的字节被改过：%q", data)
+	}
+}
+
+// Test入站_纯图也接受 只发图不带文字（消息层会补默认提示语），渠道层不该拦。
+func Test入站_纯图也接受(t *testing.T) {
+	c := testChannel(t)
+	var got channels.InboundMessage
+	c.onMessage = func(m channels.InboundMessage) { got = m }
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	body, contentType := multipartBody(t, "room-img", "", "photo.png", []byte("\x89PNG\r\n\x1a\n"))
+	req, _ := http.NewRequest("POST", ts.URL+"/messages", body)
+	req.AddCookie(cookie("secret"))
+	req.Header.Set("Content-Type", contentType)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("纯图该 202，实际 %d", resp.StatusCode)
+	}
+	ref := imageRefOf(t, got)
+	if ref.FileName != "photo.png" {
+		t.Errorf("句柄该带上文件名：%+v", ref)
+	}
+}
+
+// Test入站_文字与图都空被拒。
+func Test入站_文字与图都空被拒(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	body, contentType := multipartBody(t, "room-img", "", "", nil)
+	req, _ := http.NewRequest("POST", ts.URL+"/messages", body)
+	req.AddCookie(cookie("secret"))
+	req.Header.Set("Content-Type", contentType)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("都没有该 400，实际 %d", resp.StatusCode)
+	}
+}
+
+// TestFetchMedia_未知句柄返错 句柄过期或不存在都返错，消息层据此如实回一句。
+func TestFetchMedia_未知句柄返错(t *testing.T) {
+	c := testChannel(t)
+	if _, err := c.FetchMedia(context.Background(), channels.MediaRef{ID: "nope"}); err == nil {
+		t.Fatal("未知句柄该返错")
+	}
+	if _, err := c.FetchMedia(context.Background(), channels.MediaRef{}); err == nil {
+		t.Fatal("空句柄该返错")
+	}
+}
+
+// multipartBody 造一条带（可选）图片的 multipart 请求体。fileName 为空表示不带图。
+func multipartBody(t *testing.T, conversation, text, fileName string, image []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("conversation", conversation); err != nil {
+		t.Fatal(err)
+	}
+	if text != "" {
+		if err := writer.WriteField("text", text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fileName != "" {
+		part, err := writer.CreateFormFile("image", fileName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(image); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &body, writer.FormDataContentType()
+}
+
+// imageRefOf 取消息里第一个图片 part 的句柄，顺带断言确实产出了图片 part。
+func imageRefOf(t *testing.T, message channels.InboundMessage) channels.MediaRef {
+	t.Helper()
+	for _, part := range message.Parts {
+		if part.Kind == channels.KindImage {
+			if part.Media.ID == "" {
+				t.Fatal("图片 part 的句柄是空的")
+			}
+			return part.Media
+		}
+	}
+	t.Fatalf("消息里没有图片 part：%+v", message.Parts)
+	return channels.MediaRef{}
 }
 
 // Test多用户_同名会话不串 两个用户各自取同一个 conversation id，内部会话键必须

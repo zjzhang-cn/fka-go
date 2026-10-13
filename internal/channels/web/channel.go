@@ -30,6 +30,10 @@ type Channel struct {
 
 	hub   *hub
 	blobs *blobStore
+	// inbound 入站图片的内存暂存：浏览器上传的字节先落这里，消息层取图时经
+	// FetchMedia 读回。**与 blobs（出站下载）分开**：入站那份不该从 `/files/{id}`
+	// 暴露出去，两条路用两个 store。
+	inbound *blobStore
 
 	mu        sync.Mutex
 	server    *http.Server
@@ -48,6 +52,7 @@ func newChannel(accountID, addr string, users map[string]string, staticDir strin
 		staticDir: staticDir,
 		hub:       newHub(),
 		blobs:     newBlobStore(),
+		inbound:   newBlobStore(),
 		status:    channels.StatusOffline,
 	}
 }
@@ -77,14 +82,15 @@ func (c *Channel) Status() channels.Status {
 
 // Capabilities 能力声明。
 //
-// **File/Image 只声明能发（receive=false）**：业务层没有入站媒体的消费者
-// （`internal/messages` 收到媒体会如实拒答），声明能收却没有那条路就是「声明一个
-// 跑不了的能力」。等哪天入站媒体有落点，再补 upload 并翻成 true。
+// **Image 收得到、发得出**：入站图片经 `POST /messages`（multipart）落到内存暂存，
+// 消息层再经 `FetchMedia` 取回变附件。**File 仍只发不收**：业务层没有入站文件的
+// 消费者（`internal/messages` 收到文件会如实拒答），声明能收却是空路就是「声明一个
+// 跑不了的」。等哪天入站文件有落点，再补 upload 并翻成 true。
 func (c *Channel) Capabilities() channels.Capabilities {
 	return channels.Capabilities{
 		Text:          channels.KindCapability{Send: true, Receive: true},
 		File:          channels.KindCapability{Send: true, Receive: false},
-		Image:         channels.KindCapability{Send: true, Receive: false},
+		Image:         channels.KindCapability{Send: true, Receive: true},
 		Voice:         channels.KindCapability{Send: false, Receive: false},
 		Video:         channels.KindCapability{Send: false, Receive: false},
 		ProactivePush: true,
@@ -281,6 +287,21 @@ func (c *Channel) Stop(ctx context.Context) error {
 	return nil
 }
 
+// ── MediaFetcher（可选能力：取回入站图片）───────────────
+
+// FetchMedia 取回一张入站图片的字节。`ref.ID` 是本渠道收图时放进 `inbound` 暂存
+// 时给的 id；过期或不存在都返错——消息层据此如实回一句「图片取不回来」，不空猜。
+func (c *Channel) FetchMedia(ctx context.Context, ref channels.MediaRef) ([]byte, error) {
+	if strings.TrimSpace(ref.ID) == "" {
+		return nil, errors.New("图片句柄为空")
+	}
+	item, ok := c.inbound.get(ref.ID)
+	if !ok {
+		return nil, errors.New("图片已过期或不存在")
+	}
+	return item.data, nil
+}
+
 // ── EmitterProvider（可选能力）──────────────────────────
 
 // Emitter 为一条消息提供 SSE 回显。会话 id 从 ctx 上取——消息层把它绑进了 ctx
@@ -323,3 +344,4 @@ func (c *Channel) cancelTurn(principal, raw string) bool {
 }
 
 var _ channels.TurnControllable = (*Channel)(nil)
+var _ channels.MediaFetcher = (*Channel)(nil)

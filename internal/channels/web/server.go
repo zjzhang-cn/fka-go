@@ -3,7 +3,11 @@ package web
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"html"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
@@ -18,6 +22,13 @@ import (
 
 // cookieName 认证 cookie 名。**HttpOnly**：JS 读不到它；SSE 与媒体请求会自动带上。
 const cookieName = "fka_web_token"
+
+// 一次上传请求体与单张入站图片的上限。比单张宽是容许一条消息带几张图；
+// 单张的上限与消息层一致，免得「网页收下了、消息层又拒了」。
+const (
+	maxUploadBodyBytes   int64 = 16 << 20
+	maxInboundImageBytes int64 = 8 << 20
+)
 
 // conversationPattern 会话 id 的合法形状。它进 SessionKey，最终进会话历史文件名，
 // 所以必须限制字符集与长度——否则 `../` 之类会写到别处。
@@ -122,23 +133,23 @@ func (c *Channel) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // ── 入站 ────────────────────────────────────────────────
 
-// handleMessages 浏览器发一条文字。**产出一条 InboundMessage 交给接缝**——
+// handleMessages 浏览器发一条消息。**产出一条 InboundMessage 交给接缝**——
 // 之后的一切（分发、问答、回话）与微信渠道走完全相同的路径。
+//
+// 支持两种线格式：**JSON**（纯文字，旧行为不变）与 **multipart**（带图：字段
+// conversation/text + 若干 `image` 文件）。图片字节落进 `inbound` 暂存，产出的
+// part 只带句柄——消息层稍后经 `FetchMedia` 取回，与微信走同一条路。
 func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, principal string) {
-	var body struct {
-		Conversation string `json:"conversation"`
-		Text         string `json:"text"`
+	conversation, text, images, ok := c.parseInbound(w, r)
+	if !ok {
+		return // parseInbound 已经写好应答
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体不是合法 JSON"})
-		return
-	}
-	if !validConversation(body.Conversation) {
+	if !validConversation(conversation) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "会话 id 不合法"})
 		return
 	}
-	if strings.TrimSpace(body.Text) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "text 不能为空"})
+	if strings.TrimSpace(text) == "" && len(images) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "text 与图片至少要有一个"})
 		return
 	}
 
@@ -150,6 +161,12 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, princip
 		return
 	}
 
+	parts := make([]channels.Part, 0, len(images)+1)
+	if text != "" {
+		parts = append(parts, channels.TextPart(text))
+	}
+	parts = append(parts, images...)
+
 	onMessage(channels.InboundMessage{
 		ChannelID:   ID,
 		AccountID:   c.accountID,
@@ -158,12 +175,83 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, princip
 		PrincipalID: principal,
 		RecipientID: c.accountID,
 		// 内部会话键纳入 principal：两个用户各取同名 conversation 也不会串（见 sessionConversation）
-		ConversationID: sessionConversation(principal, body.Conversation),
-		Parts:          []channels.Part{channels.TextPart(body.Text)},
+		ConversationID: sessionConversation(principal, conversation),
+		Parts:          parts,
 		Timestamp:      nowMillis(),
 	})
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
+// parseInbound 读一条入站请求：会话 id、文字、图片 part。按 Content-Type 分派。
+// 失败时**已经写好应答**，返回 ok=false。
+func (c *Channel) parseInbound(w http.ResponseWriter, r *http.Request) (conversation, text string, images []channels.Part, ok bool) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return c.parseMultipartInbound(w, r)
+	}
+
+	var body struct {
+		Conversation string `json:"conversation"`
+		Text         string `json:"text"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体不是合法 JSON"})
+		return "", "", nil, false
+	}
+	return body.Conversation, body.Text, nil, true
+}
+
+// parseMultipartInbound 读带图的那条路。每个 `image` 文件落进 `inbound` 暂存，
+// 产出一个只带句柄的图片 part。
+func (c *Channel) parseMultipartInbound(w http.ResponseWriter, r *http.Request) (string, string, []channels.Part, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBodyBytes)
+	if err := r.ParseMultipartForm(maxUploadBodyBytes); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "上传解析失败（或超过上限）"})
+		return "", "", nil, false
+	}
+
+	var images []channels.Part
+	for _, header := range r.MultipartForm.File["image"] {
+		data, err := readUploadedImage(header)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return "", "", nil, false
+		}
+		mime := http.DetectContentType(data)
+		id, stored := c.inbound.put(data, header.Filename, mime)
+		if !stored {
+			writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": "图片暂存超限，请少发几张"})
+			return "", "", nil, false
+		}
+		images = append(images, channels.Part{
+			Kind: channels.KindImage,
+			Media: channels.MediaRef{
+				ID: id, FileName: header.Filename, MimeType: mime, Size: int64(len(data)),
+			},
+		})
+	}
+	return r.FormValue("conversation"), r.FormValue("text"), images, true
+}
+
+// readUploadedImage 读一个上传的图片文件，**读取时就卡上限**（不先分配再拒）。
+func readUploadedImage(header *multipart.FileHeader) ([]byte, error) {
+	file, err := header.Open()
+	if err != nil {
+		return nil, errors.New("图片打不开")
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxInboundImageBytes+1))
+	if err != nil {
+		return nil, errors.New("图片读不了")
+	}
+	if int64(len(data)) > maxInboundImageBytes {
+		return nil, fmt.Errorf("单张图片超过 %d MiB", maxInboundImageBytes>>20)
+	}
+	if len(data) == 0 {
+		return nil, errors.New("图片是空的")
+	}
+	return data, nil
 }
 
 // handleStop 停掉当前会话进行中的一轮（网页「停止」按钮）。**没有在跑就如实说没有**，
