@@ -16,6 +16,20 @@
 | `export` | 把一个沙盒文件**发给用户**（不是发给模型）：返回 `audience=["user"]` 的嵌入资源，agent 经用户所在渠道送出 |
 | `import` | 反向入口：把**用户本轮发来的图片**存进本租户 `inbox/`，供 `read`/`run` 二次处理。字节由 agent 按 `FKA_MEDIA_SINK` 注入，**模型不传参数**（见 `docs/decisions.md` 第 25 条） |
 
+### MCP resources
+
+除了工具，本 server 还把本租户沙盒里的文件按 MCP **resources** 原语暴露出去（方便**别的
+MCP 客户端**，如 Claude Desktop 直连 fka-sandbox；agent 侧本来就有 `read` 工具）：
+
+| 资源 | 读出来是什么 |
+|---|---|
+| `sandbox:///`（固定） | 本租户沙盒根下的文件清单（一行一个「相对路径 \t 大小」） |
+| `sandbox:///{path}`（模板） | 按路径读文件，分类与 `read` 一致：文本 text 块、图片/音频 blob 块、其它二进制一行元信息 |
+
+⚠️ **列举只能是静态的**：mark3labs 的资源模板没有 `list` 回调（不像 JS SDK），没法按租户
+动态列出文件，所以用固定资源 `sandbox:///`（读取即清单）兜底。身份同样走 `_meta`，缺身份
+fail-closed。
+
 `read` 与 CLI 的 `@引用` 是**同一套语义**（文本 / 图片 / 二进制三类、同样的上限），
 区别是数据走 **MCP 通道**而不是 agent 读本地路径。图片必须作为独立的 `type:"image"`
 内容节点返回（带 base64），模型才看得见图。因此把内容块换到 HTTP MCP 传输后面
