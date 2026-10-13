@@ -14,6 +14,8 @@
     form: document.getElementById("composer"),
     text: document.getElementById("text"),
     send: document.getElementById("send"),
+    attach: document.getElementById("attach"),
+    image: document.getElementById("image"),
   };
 
   var state = { conversation: "", source: null, running: false };
@@ -131,6 +133,22 @@
     scroll();
   }
 
+  // 用户自己发的图片：本地立刻回显（object URL，不上行前先等服务器）。服务端收到
+  // 后不会再把这张图推回来（它只回文本/答复），所以这里必须自己画。
+  function addUserMedia(file) {
+    var row = document.createElement("div");
+    row.className = "row user";
+    var bubble = document.createElement("div");
+    bubble.className = "bubble";
+    var img = document.createElement("img");
+    img.src = URL.createObjectURL(file);
+    img.alt = file.name || "图片";
+    bubble.appendChild(img);
+    row.appendChild(bubble);
+    el.log.appendChild(row);
+    scroll();
+  }
+
   function setStatus(text, online) {
     el.status.textContent = text;
     el.status.className = "status " + (online ? "online" : "offline");
@@ -237,6 +255,37 @@
     }
   }
 
+  // 发图片：走 multipart（字段 conversation/text + 若干 `image` 文件）。文本若也填了
+  // 就一起带上。与服务端 `POST /messages` 的多段分支对应。
+  async function sendImages(files) {
+    if (!state.conversation) { addNote("error", "先连接再发图"); return; }
+    var images = Array.prototype.slice.call(files).filter(function (f) {
+      return f && f.type && f.type.indexOf("image/") === 0;
+    });
+    if (!images.length) { addNote("error", "只支持图片文件"); return; }
+
+    images.forEach(addUserMedia);
+    var text = el.text.value.trim();
+    el.text.value = "";
+
+    var form = new FormData();
+    form.append("conversation", state.conversation);
+    if (text) form.append("text", text);
+    images.forEach(function (f) { form.append("image", f); });
+
+    try {
+      // **不手动设 Content-Type**：浏览器要给 multipart 补 boundary
+      var res = await fetch("/messages", { method: "POST", body: form });
+      if (!res.ok) {
+        var detail = "";
+        try { detail = (await res.json()).error || ""; } catch (e) {}
+        addNote("error", "发送失败：" + detail);
+      }
+    } catch (err) {
+      addNote("error", "发送失败");
+    }
+  }
+
   // 喊停当前会话进行中的一轮。键的回切靠服务端的 turn 通知，不在这里改。
   async function stop() {
     try {
@@ -274,6 +323,31 @@
   });
 
   el.connect.addEventListener("click", connect);
+
+  // 选图 / 粘贴：立刻作为一条带图消息发出（文本若填了也一起带）。**选图靠原生
+  // `<label for>` 触发**（不靠脚本点隐藏 input——Safari 会忽略），这里只在执行中
+  // 拦一下（preventDefault 阻止弹选择框）。粘贴走 paste 事件。
+  el.attach.addEventListener("click", function (ev) {
+    if (state.running) {
+      ev.preventDefault();
+      addNote("error", "正在回答，等这一轮结束再发图");
+    }
+  });
+  el.image.addEventListener("change", function () {
+    sendImages(el.image.files).catch(function () { addNote("error", "发送失败"); });
+    el.image.value = "";
+  });
+  document.addEventListener("paste", function (ev) {
+    var items = (ev.clipboardData && ev.clipboardData.items) || [];
+    var files = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file" && items[i].type.indexOf("image/") === 0) {
+        var f = items[i].getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) sendImages(files).catch(function () { addNote("error", "发送失败"); });
+  });
 
   // 初始化
   el.conversation.value = loadConversation();

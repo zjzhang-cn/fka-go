@@ -79,6 +79,14 @@ main {
 .row.user .bubble { background: var(--user); border-color: #bcd2ff; }
 .row.bot  .bubble { background: var(--bot); }
 
+/* 用户自己发出的图片：直接画在气泡里，不溢出。 */
+.row.user .bubble img {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 8px;
+  display: block;
+}
+
 .note {
   font-size: 12px;
   color: var(--muted);
@@ -125,14 +133,23 @@ form#composer {
 }
 textarea { flex: 1; resize: none; }
 
-/* 发送 / 停止是同一个图标键：方形、居中；执行中变红。 */
-button.icon {
+/* 发送 / 停止是同一个图标键：方形、居中；执行中变红。
+   附件键是 <label>（原生意图触发文件选择），所以一起套这套样式。 */
+button.icon, label.icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 2.5rem;
   padding: 0;
 }
+label.icon {
+  background: #2b6cff;
+  border: 1px solid #2b6cff;
+  color: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+}
+label.icon svg { pointer-events: none; }
 button.icon.stop {
   background: #d0463b;
   border-color: #d0463b;
