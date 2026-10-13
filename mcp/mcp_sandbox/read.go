@@ -130,8 +130,12 @@ func (s *Sandbox) ReadFile(raw string) (fileRead, error) {
 		return out, nil
 	}
 
-	// 二进制塞进文本只会浪费预算并弄坏编码：只回元信息
-	if bytes.IndexByte(head, 0) >= 0 {
+	// 文本：明确的文本类型，或嗅探说不出具体类型且开头没有 NUL。**其余都是二进制**
+	// （pdf / zip / office / 含 NUL 的字节）——塞进文本只会浪费预算并弄坏编码。
+	//
+	// 只按 NUL 判是错的：很多 PDF、压缩包开头是 ASCII、前 512 字节没有 NUL，会被误当
+	// 文本，把原始字节交给模型（读不懂，还白烧上下文）。
+	if !isTextMIME(out.MIME) && !(genericMIME(out.MIME) && bytes.IndexByte(head, 0) < 0) {
 		out.Kind = kindBinary
 		return out, nil
 	}

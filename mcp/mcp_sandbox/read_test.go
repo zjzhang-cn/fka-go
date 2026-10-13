@@ -125,6 +125,28 @@ func TestRead_二进制只回元信息(t *testing.T) {
 	}
 }
 
+// TestRead_PDF当二进制不给原文 PDF 的开头是 ASCII、前 512 字节常常没有 NUL，但它是
+// 二进制类型——不能当文本把原始字节交给模型。判据要看 MIME（application/pdf），
+// 不是只看 NUL。
+func TestRead_PDF当二进制不给原文(t *testing.T) {
+	s := newTestSandbox(t)
+	pdf := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+	writeFile(t, s, "doc.pdf", pdf)
+	impl := newTestServer(s)
+
+	result, err := impl.handleRead(context.Background(), callRequest(map[string]any{"path": "doc.pdf"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := resultText(t, result)
+	if strings.Contains(body, "%PDF-1.4") {
+		t.Errorf("PDF 原文不该交给模型：%s", body)
+	}
+	if !strings.Contains(body, "二进制") {
+		t.Errorf("PDF 该当二进制只给元信息：%s", body)
+	}
+}
+
 // TestRead_文本超限截断 超过上限的文本要截断并标记。
 func TestRead_文本超限截断(t *testing.T) {
 	s := newTestSandbox(t)

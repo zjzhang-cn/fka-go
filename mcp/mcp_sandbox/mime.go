@@ -55,3 +55,23 @@ func detectMIME(name string, head []byte) string {
 func genericMIME(m string) bool {
 	return m == "application/octet-stream" || strings.HasPrefix(m, "text/")
 }
+
+// isTextMIME MIME 是不是明确的文本类型。`text/*` 之外，还认几个常见的文本型
+// application 类型——read 该把它们当文本读，而不是当二进制只回元信息。
+//
+// 与 internal/messages/media.go 的同名判定保持同一套取值：两边都要「PDF/zip 是二进制、
+// JSON/XML 是文本」这条一致，否则同一条消息在入站与沙盒里表现不同。
+func isTextMIME(m string) bool {
+	if strings.HasPrefix(m, "text/") {
+		return true
+	}
+	switch m {
+	case "application/json", "application/ld+json", "application/xml", "application/xhtml+xml",
+		"application/javascript", "application/x-javascript", "application/ecmascript",
+		"application/x-sh", "application/x-shellscript", "application/x-yaml", "application/yaml",
+		"application/toml", "application/sql", "application/csv", "application/rtf",
+		"application/x-httpd-php", "application/x-python", "application/x-ruby":
+		return true
+	}
+	return false
+}
