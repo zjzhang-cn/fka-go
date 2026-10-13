@@ -9,10 +9,9 @@
 //
 // ## 现在能答什么
 //
-// 文字与**图片**（图片经 `MediaFetcher` 取回成附件，见 `images.go`）。文件 / 语音 /
-// 视频这些**没有消费方**——这个 agent 不拥有存储，收到文件也没地方归档。与其留一个
-// 「收到文件什么都不做」的空壳，不如**把不能答的消息如实说出来**（`replyNotText`），
-// 比静默丢弃好。
+// 文字、图片、文本文件与二进制文件都接（见 `media.go` 的三类语义，与沙盒 `read`、
+// CLI `@引用` 同一套）：图片作附件、文本并进问题、二进制只给元信息。真正「什么都没有」
+// 的消息如实回一句（`replyNotText`），比静默丢弃好。
 //
 // 以后要加能力，加的是**能力**（MCP / skill），不是新的意图分支。
 package messages
@@ -33,11 +32,11 @@ import (
 const (
 	replyNoLLM     = "我还没接上模型（缺 LLM_API_KEY / LLM_MODEL，或 LLM_TOOLS=off），现在没法回答。"
 	replyAgentFail = "这一轮没能答出来：%s"
-	replyNotText   = "我只处理文字和图片。文件、语音这些我现在接不住——发文字或图片给我就行。"
+	replyNotText   = "这条消息里没有我能处理的内容。发文字、图片或文件给我就行。"
 	replyEmpty     = "我没想出该怎么回。要不换个说法？"
-	// replyImageUnavailable 消息里有图、但一张都没取回来（渠道不能取媒体，或取回失败）。
-	// 单独一句，别混进 replyNotText——用户发的是图，问题出在「取不到」而不是「不支持」。
-	replyImageUnavailable = "图片没能取回来，我暂时看不了这张图。要不重新发一次？"
+	// replyMediaUnavailable 消息里有媒体、但一件都没取回来（渠道不能取文件，或取回失败）。
+	// 单独一句，别混进 replyNotText——用户发的是文件，问题出在「取不到」而不是「没有」。
+	replyMediaUnavailable = "文件没能取回来，我暂时看不了。要不重新发一次？"
 	// replyStopped 用户中途喊停（网页「停止」按钮）造成的一轮结束。**不是错误**——
 	// 一句平静的话，别让用户以为出了故障。
 	replyStopped = "（已停止）"

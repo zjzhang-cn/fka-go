@@ -51,10 +51,12 @@ func (m *imageModel) client() llm.ChatClient {
 		defer m.mu.Unlock()
 		m.calls++
 		for _, msg := range msgs {
-			if msg.Role == llm.RoleUser && len(msg.ImageAttachments) > 0 {
+			if msg.Role == llm.RoleUser {
 				m.sawUser = true
 				m.content = msg.Content
-				m.images = append(m.images, msg.ImageAttachments...)
+				if len(msg.ImageAttachments) > 0 {
+					m.images = append(m.images, msg.ImageAttachments...)
+				}
 			}
 		}
 		return llm.ChatResult{Content: "看图了"}, nil
@@ -100,7 +102,7 @@ func Test入站图片作为附件发给模型(t *testing.T) {
 	if !strings.HasPrefix(model.images[0].DataURI, "data:image/png;base64,") {
 		t.Errorf("附件该是 png data URI：%q", model.images[0].DataURI)
 	}
-	if model.content != "请看看我发的图片。" {
+	if !strings.HasPrefix(model.content, "请看看我发来的内容。") {
 		t.Errorf("纯图该补默认提示语，实际正文 = %q", model.content)
 	}
 }
@@ -119,11 +121,122 @@ func Test入站图片带文字时保留文字(t *testing.T) {
 	if out.Explain != "" {
 		t.Fatalf("该答出来：%q", out.Explain)
 	}
-	if model.content != "这是什么" {
-		t.Errorf("有文字时不该被默认提示语覆盖：%q", model.content)
+	if !strings.HasPrefix(model.content, "这是什么") {
+		t.Errorf("有文字时该保留用户文字：%q", model.content)
 	}
 	if len(model.images) != 1 {
 		t.Errorf("该带 1 张图，实际 %d", len(model.images))
+	}
+}
+
+// Test文本文件内容并入问题 文本文件（无 NUL）该把正文拼进本轮问题，模型直接读得到。
+func Test文本文件内容并入问题(t *testing.T) {
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"f1": []byte("你好，世界\n第二行")},
+	}
+	model := &imageModel{}
+	message := channels.InboundMessage{
+		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
+		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
+		Parts: []channels.Part{{
+			Kind:  channels.KindFile,
+			Media: channels.MediaRef{ID: "f1", FileName: "note.txt"},
+		}},
+	}
+	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
+
+	if out.Explain != "" {
+		t.Fatalf("该答出来：%q", out.Explain)
+	}
+	if len(model.images) != 0 {
+		t.Errorf("文本文件不该产生图片附件，实际 %d", len(model.images))
+	}
+	if !strings.Contains(model.content, "你好，世界") {
+		t.Errorf("文本正文该并进问题：%q", model.content)
+	}
+}
+
+// Test二进制文件只给元信息 含 NUL 的字节当二进制：内容不进问题，只给名字/类型/大小的元信息。
+func Test二进制文件只给元信息(t *testing.T) {
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"f1": {'P', 'K', 0x03, 0x04, 0x00, 'x'}},
+	}
+	model := &imageModel{}
+	message := channels.InboundMessage{
+		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
+		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
+		Parts: []channels.Part{{
+			Kind:  channels.KindFile,
+			Media: channels.MediaRef{ID: "f1", FileName: "data.zip", MimeType: "application/zip"},
+		}},
+	}
+	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
+
+	if out.Explain != "" {
+		t.Fatalf("该答出来：%q", out.Explain)
+	}
+	if len(model.images) != 0 {
+		t.Errorf("二进制不该产生图片附件")
+	}
+	if !strings.Contains(model.content, "data.zip") || !strings.Contains(model.content, "二进制文件") {
+		t.Errorf("该给二进制文件的元信息：%q", model.content)
+	}
+}
+
+// TestPDF不当文本塞进提示词 PDF 开头是 ASCII、常常没有 NUL，但它是二进制类型：判据
+// 要看 MIME，只给元信息，绝不把原始字节当正文喂给模型（模型读不懂，还白烧预算）。
+func TestPDF不当文本塞进提示词(t *testing.T) {
+	pdf := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"f1": pdf},
+	}
+	model := &imageModel{}
+	message := channels.InboundMessage{
+		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
+		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
+		Parts: []channels.Part{{
+			Kind:  channels.KindFile,
+			Media: channels.MediaRef{ID: "f1", FileName: "doc.pdf"},
+		}},
+	}
+	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
+
+	if out.Explain != "" {
+		t.Fatalf("该答出来：%q", out.Explain)
+	}
+	if strings.Contains(model.content, "%PDF-1.4") {
+		t.Errorf("PDF 原文不该进提示词：%q", model.content)
+	}
+	if !strings.Contains(model.content, "doc.pdf") || !strings.Contains(model.content, "二进制文件") {
+		t.Errorf("该给 PDF 的元信息：%q", model.content)
+	}
+}
+
+// Test语音转写当文本 渠道提供了转写文本时，直接当一段文本用。
+func Test语音转写当文本(t *testing.T) {
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"v1": {'\x00', 0x01, 0x02}},
+	}
+	model := &imageModel{}
+	message := channels.InboundMessage{
+		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
+		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
+		Parts: []channels.Part{{
+			Kind: channels.KindVoice, Transcript: "提醒我买牛奶",
+			Media: channels.MediaRef{ID: "v1", FileName: "voice.amr"},
+		}},
+	}
+	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
+
+	if out.Explain != "" {
+		t.Fatalf("该答出来：%q", out.Explain)
+	}
+	if !strings.Contains(model.content, "提醒我买牛奶") {
+		t.Errorf("语音转写该并进问题：%q", model.content)
 	}
 }
 

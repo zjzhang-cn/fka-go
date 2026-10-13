@@ -79,11 +79,11 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 
 	// ── 没有可答的内容，先说清楚 ────────────────────────────
 	//
-	// 文字与图片都没有（文件/语音/视频这些也走这条）才拒答。**只有图**也是一条可答的
-	// 消息——图片部分在下面取回成附件。
+	// 文字与非文本 part 都没有才拒答。**只有文件/图片**也是可答的消息——媒体部分在
+	// 下面取回、分类、交给模型与工具。
 	question := strings.TrimSpace(message.Text())
-	imageParts := imagePartsOf(message)
-	if question == "" && len(imageParts) == 0 {
+	mediaParts := mediaPartsOf(message)
+	if question == "" && len(mediaParts) == 0 {
 		config.Log().Info(config.TypeMSG, "收到不能作答的消息", fields)
 		return AskOutcome{Explain: replyNotText}
 	}
@@ -103,27 +103,28 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		sessionID = channels.SessionKeyOf(&message)
 	}
 
-	// ── 入站图片：取回成附件 ────────────────────────────────
+	// ── 入站媒体：取回、分类（唯一转换点在 media.go）────────
 	//
-	// **唯一转换点在 images.go**：两条来源（CLI 的 `@图片` 在 `in.Images`，渠道产出的
-	// 图片 part 在这里取回）归到同一个 `RunnerInput.Images`，agent/llm 不必知道图从
-	// 哪来，也不必认识任何渠道。
+	// 两条来源归到一起：CLI 的 `@图片` 已在 `in.Images`，渠道产出的媒体 part 在这里
+	// 取回。分类语义与沙盒 `read` / CLI `@引用` 一致——图片作附件、文本并进问题、
+	// 二进制只给元信息。agent/llm 不必知道这些从哪来，也不必认识任何渠道。
 	images := append([]llm.ImageAttachment(nil), in.Images...)
 	var inbound []tools.Attachment
-	if len(imageParts) > 0 {
-		fetched, files, failures := fetchInboundImages(ctx, channel, imageParts)
-		images = append(images, fetched...)
-		inbound = append(inbound, files...)
-		// 只发图、一张都没取回来：如实说，别跑模型空猜
-		if question == "" && len(images) == 0 {
-			config.Log().Warn(config.TypeMSG, "入站图片没有一张取回来", mergeFields(fields,
-				config.Context{"failures": strings.Join(failures, "；")}))
-			return AskOutcome{Explain: replyImageUnavailable}
+	if len(mediaParts) > 0 {
+		media := collectInboundMedia(ctx, channel, mediaParts)
+		images = append(images, media.images...)
+		inbound = append(inbound, media.files...)
+		// 一件内容都没取回来：如实说，别跑模型空猜
+		if question == "" && len(media.sections) == 0 {
+			config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
+				config.Context{"failures": strings.Join(media.failures, "；")}))
+			return AskOutcome{Explain: replyMediaUnavailable}
 		}
-	}
-	// 纯图（文字为空）补一句默认提示语：空文本 + 图片块各家模型接受度不一
-	if question == "" {
-		question = defaultImageQuestion
+		// 纯媒体（文字为空）补一句默认提示语：空文本 + 内容块各家模型接受度不一
+		if question == "" {
+			question = defaultMediaQuestion
+		}
+		question += media.questionSuffix()
 	}
 
 	// ── 跑一轮 ─────────────────────────────────────────────
