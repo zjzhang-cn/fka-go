@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zjzhang-cn/fka-go/internal/agent"
+	"github.com/zjzhang-cn/fka-go/internal/channels/cli"
 )
 
 // Test参数不进问题 这条是**回归**：之前 `runAsk` 直接
@@ -183,8 +183,8 @@ func Test没给会话时每次都是新会话(t *testing.T) {
 		t.Fatalf("两次问该是两个会话，实际都是 %q —— 历史会串", first)
 	}
 	for _, got := range []string{first, second} {
-		if !strings.HasPrefix(got, cliSessionPrefix) {
-			t.Errorf("命令行会话该带 %s 前缀，实际 %q", cliSessionPrefix, got)
+		if !strings.HasPrefix(got, cli.SessionPrefix) {
+			t.Errorf("命令行会话该带 %s 前缀，实际 %q", cli.SessionPrefix, got)
 		}
 	}
 }
@@ -214,51 +214,11 @@ func Test会话id正好用满文件名预算(t *testing.T) {
 	got := sessionID(mustParse(t, "ask", "问"))
 	if len(got) != budget {
 		t.Errorf("会话 id 该正好 %d 字符（%s + UUID 36），实际 %d：%q",
-			budget, cliSessionPrefix, len(got), got)
+			budget, cli.SessionPrefix, len(got), got)
 	}
 	// 形状也得对：日志与文件名里要认得出这是个 UUID
 	if !uuidShape.MatchString(got) {
-		t.Errorf("该是 %s<uuid v4> 的形状，实际 %q", cliSessionPrefix, got)
-	}
-}
-
-// Test工具行带上标签与压行 一次工具调用拼成 `[工具] 名字（原样参数）→ 结果`，
-// 三者经 firstLine 压成一行（与 chat 的显示同口径）。
-func Test工具行带上标签与压行(t *testing.T) {
-	line := toolLine(agent.ToolEvent{
-		Name: "mcp__sandbox__run", Arguments: `{"command":"ls"}`, Result: "a\nb\nc",
-	})
-	for _, want := range []string{"[工具]", "mcp__sandbox__run", `{"command":"ls"}`, "a b c"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("工具行该含 %q：%s", want, line)
-		}
-	}
-}
-
-// Test应答器_过程只进stderr答案只进stdout 钉 ask 的回显分工：推理与工具进 ui
-// （stderr），答案进 out（stdout）——`fka ask "…" > 答案.txt` 因此是干净答案。
-func Test应答器_过程只进stderr答案只进stdout(t *testing.T) {
-	var out, ui strings.Builder
-	emitter := &askEmitter{out: &out, ui: &ui}
-
-	emitter.Reasoning("先想一下")
-	emitter.Tool(agent.ToolEvent{Name: "mcp__sandbox__run", Arguments: `{"command":"ls"}`, Result: "ok"})
-	emitter.Answer("这是答案")
-
-	if !strings.Contains(ui.String(), "[推理] 先想一下") {
-		t.Errorf("stderr 该有带前缀的推理：%q", ui.String())
-	}
-	if !strings.Contains(ui.String(), "[工具] mcp__sandbox__run") {
-		t.Errorf("stderr 该有工具行：%q", ui.String())
-	}
-	if !strings.Contains(ui.String(), "[助手]") {
-		t.Errorf("stderr 该有助手标签：%q", ui.String())
-	}
-	if strings.Contains(ui.String(), "这是答案") {
-		t.Errorf("答案不该进 stderr：%q", ui.String())
-	}
-	if out.String() != "这是答案\n" {
-		t.Errorf("stdout 该只有答案，实际 %q", out.String())
+		t.Errorf("该是 %s<uuid v4> 的形状，实际 %q", cli.SessionPrefix, got)
 	}
 }
 

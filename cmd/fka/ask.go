@@ -4,21 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
 
-	"github.com/zjzhang-cn/fka-go/internal/agent"
+	"github.com/zjzhang-cn/fka-go/internal/channels"
+	"github.com/zjzhang-cn/fka-go/internal/channels/cli"
+	"github.com/zjzhang-cn/fka-go/internal/llm"
+	"github.com/zjzhang-cn/fka-go/internal/messages"
 )
 
 // runAsk 无头跑一轮问答。
 //
-// ## 为什么现在就有这个命令
+// ## 它现在只是一层薄壳
 //
-// 渠道层已经接上了，但 `ask` 仍然不可替代：它**不经过任何渠道**，是唯一能把
-// 「一段问题 + 一个身份」直接喂进 agent 的入口——而工具循环恰恰是最需要反复调的
-// 一环（提示词、阈值、工具描述全靠试出来）。
+// 编排（判定 + 跑循环 + 归类）在 `messages.Ask`，呈现（标签 / 答案 / 回显）在
+// `cli.Channel`。这里只保留命令行**自己的知识**：把问题从参数里拼出来、展开
+// `@引用`、做启动期前置检查、把结果翻成退出码。
 func runAsk(ctx context.Context, parsed cliArgs) int {
 	question := strings.TrimSpace(strings.Join(parsed.positional, " "))
 	if question == "" {
@@ -82,97 +84,62 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 		return exitFail
 	}
 
-	result, err := application.Agent.Run(ctx, agent.RunnerInput{
-		SessionID:   session,
-		PrincipalID: principal,
-		Question:    question,
-		Images:      expanded.images,
-		Emitter:     &askEmitter{ui: os.Stderr, out: os.Stdout},
-		// 没显式给会话就是一次性问答：不读也不写历史
-		Ephemeral: !explicitSession,
+	channel := cli.New(cli.Options{
+		Mode: cli.ModeAsk, Session: session, Principal: principal, Question: question,
+		Out: os.Stdout, UI: os.Stderr,
+		Palette: cli.NewPalette(false), HistoryPath: llm.SessionPath,
+	})
+
+	// 回调是「跑一轮」：Ask 给出结论，这里翻成退出码与呈现。
+	failed := false
+	err = channel.Start(ctx, func(in channels.InboundMessage) {
+		outcome := application.Messages.Ask(ctx, messages.AskInput{
+			Channel: channel, Message: in,
+			SessionID: in.ConversationID, Ephemeral: !explicitSession,
+			Images: expanded.images,
+		})
+		if outcome.Cause != nil {
+			// 模型的错如实报，**不静默降级**——与原实现同一条理由：
+			// 「稍后再试」会把「接口没配好」伪装成「模型偶尔不回」
+			fmt.Fprintf(os.Stderr, "问答失败：%s\n", outcome.Cause.Error())
+			failed = true
+			return
+		}
+
+		application.Messages.Deliver(ctx, channel, in, outcome.Text())
+
+		if debugEnabled() {
+			// **会话 id 印出来**，但只在显式给了 `--session` 时才有「续会话」的意义：
+			// 没给的话这轮是 Ephemeral，什么都没落盘，拿这个 id 也续不上
+			hint := ""
+			if !explicitSession {
+				hint = "（未落盘；要续会话请显式给 --session）"
+			}
+			fmt.Fprintf(os.Stderr, "\n[debug] session=%s%s steps=%d stoppedBy=%s tools=%s\n",
+				in.ConversationID, hint, outcome.Result.Steps, outcome.Result.StoppedBy,
+				strings.Join(outcome.Result.UsedTools, ", "))
+		}
 	})
 	if err != nil {
-		// 模型的错如实报，**不静默降级**——与原实现同一条理由：
-		// 「稍后再试」会把「接口没配好」伪装成「模型偶尔不回」
-		fmt.Fprintf(os.Stderr, "问答失败：%s\n", err.Error())
+		fmt.Fprintf(os.Stderr, "起问答失败：%s\n", err.Error())
 		return exitFail
 	}
-
-	if debugEnabled() {
-		// **会话 id 印出来**，但只在显式给了 `--session` 时才有「续会话」的意义：
-		// 没给的话这轮是 Ephemeral，什么都没落盘，拿这个 id 也续不上
-		hint := ""
-		if !explicitSession {
-			hint = "（未落盘；要续会话请显式给 --session）"
-		}
-		fmt.Fprintf(os.Stderr, "\n[debug] session=%s%s steps=%d stoppedBy=%s tools=%s\n",
-			session, hint, result.Steps, result.StoppedBy, strings.Join(result.UsedTools, ", "))
+	if failed {
+		return exitFail
 	}
 	return exitOK
-}
-
-// toolLine 把一次工具调用拼成给人看的一行：`[工具] 名字（原样参数）→ 结果`。
-// 三者都经 firstLine 压成一行（与 chat 的显示同口径）。**原样参数不解析**——
-// 解析再序列化会改字节序（见 llm.ToolCall）。
-func toolLine(event agent.ToolEvent) string {
-	call := "[工具] " + event.Name
-	if args := firstLine(event.Arguments); args != "" {
-		call += "（" + args + "）"
-	}
-	return call + " → " + firstLine(event.Result)
-}
-
-// askEmitter 是 `ask` 的「回显」实现：过程信息（推理 / 工具 / 角色标签）只进 stderr，
-// **答案只进 stdout**——`fka ask "…" > 答案.txt` 拿到的仍是一份干净答案（本仓不变量）。
-//
-// 推理与工具由工具循环逐条推来（见 agent.Emitter）；`[推理] ` 前缀与 `[助手]` 标签
-// 由这里打，与 chat 的 `·` / `● 助手` 一样属于各自前端的排版决定。
-type askEmitter struct {
-	out io.Writer
-	ui  io.Writer
-
-	reasoningStarted bool
-}
-
-func (e *askEmitter) Reasoning(text string) {
-	if text == "" {
-		return
-	}
-	if !e.reasoningStarted {
-		fmt.Fprint(e.ui, "[推理] ")
-		e.reasoningStarted = true
-	}
-	fmt.Fprint(e.ui, text)
-}
-
-func (e *askEmitter) Tool(event agent.ToolEvent) {
-	fmt.Fprintln(e.ui, toolLine(event))
-}
-
-func (e *askEmitter) Answer(text string) {
-	fmt.Fprintln(e.ui, "[助手]")
-	fmt.Fprintln(e.out, text)
 }
 
 // sessionID 这一轮用哪个会话。**三层，从上往下**：`--session` > `FKA_SESSION` >
 // **每次新生成一个**。
 //
-// ## 兜底为什么是「新生成」而不是一个固定名字
-//
-// 兜底曾是常量 `"cli"`。历史按会话落文件（`data/history/<会话>.jsonl`），
-// 于是**每一次**不带 `--session` 的 `ask` 都在续上一个——「问音乐商店销量」之后
-// 再问「今天天气」，模型会拿前一个问题当上下文。命令行里什么都没变，
-// 而这个错只在**恰好问到相关话题**时显形，定位起来毫无线索。
-//
-// **兜底生成的 id 只用于日志与 `[debug]` 回显**：不带 `--session` 的 ask 走
-// `Ephemeral`，既不读也不写历史（见 runAsk），所以这个 id 不会被任何文件复用。
-//
-// 显式给了 `--session` 的用法一个字没变：那是**要**连续会话的场合。
+// 生成的实现（前缀 + UUID）在 `internal/channels/cli/session.go`——命令行现在是
+// 一个渠道，会话 id 的形状由渠道自己管。
 func sessionID(parsed cliArgs) string {
 	if given := flagOrEnv(parsed, sessionFlag, sessionEnv, ""); given != "" {
 		return given
 	}
-	return newCliSessionID()
+	return cli.NewSessionID()
 }
 
 // ask 自己的三个参数名与环境变量名。**成对放在一起**：它们只有在这一个文件里
@@ -219,7 +186,7 @@ type cliArgs struct {
 // ## 认不出的参数报用法错，不当问题
 //
 // `--sesion x`（拼错）如果被当问题，模型会拿到一句莫名其妙的话并**认真回答**。
-// 这类失败必须响：报出来是 2 秒的事，静默走过去是「模型今天答得好奇怪」+ 半天排查。
+// 这类失败必须响：报出来是 2 秒的事，静默走过去是「模型今天答得好奇怪」+半天排查。
 func parseFlags(args []string) (cliArgs, error) {
 	parsed := cliArgs{values: map[string]string{}}
 	afterDoubleDash := false
