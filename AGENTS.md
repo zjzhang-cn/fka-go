@@ -213,8 +213,18 @@ mcp/mcp_sandbox     独立 MCP server（沙盒 bash 执行；默认 bwrap 命名
 >
 > **多租户：每个 `PrincipalID` 一个沙盒子目录。** agent 把调用方身份经 MCP 标准
 > `_meta`（`fka/principal`）注入每次工具调用——**模型改不了**；server 按身份把根切成
-> `<基根>/<safe(principal)>`，run/read/export 全在这一层里。**缺身份 fail-closed**
+> `<基根>/<safe(principal)>`，run/read/export/import 全在这一层里。**缺身份 fail-closed**
 > （拒绝执行，不落共享目录）。见 `docs/decisions.md` 第 20 条。
+>
+> **反向入口（agent → 沙盒）**：用户发来的图片除喂模型外，可落到一个**被点名**的沙盒供
+> 工具二次处理——配 `FKA_MEDIA_SINK=<工具全名>`（如 `mcp__sandbox__import`），循环只在
+> 模型调用**恰好那个工具**时把本轮字节注进去，沙盒写进本租户 `inbox/`。**不按工具名猜**
+> （多沙盒会扇出、路由会静默漂移）；没点名就不落，只喂模型。见 `docs/decisions.md` 第 25 条。
+>
+> ⚠️ **改了 `mcp/mcp_sandbox/**` 后，容器里跑的还是旧二进制——镜像必须重建**：
+> `make docker-sandbox`（宿主交叉编译 `bin/fka-sandbox-linux-<arch>` + `docker build`），
+> 再 `docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d`。
+> **镜像里不编译**，所以只 `up` 不重建等于没改；症状是「代码改了但沙盒行为没变」。
 
 <!-- aoci:begin -->
 ## AOCI 仓库认知
