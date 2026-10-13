@@ -15,7 +15,7 @@
     text: document.getElementById("text"),
     send: document.getElementById("send"),
     attach: document.getElementById("attach"),
-    image: document.getElementById("image"),
+    file: document.getElementById("file"),
   };
 
   var state = { conversation: "", source: null, running: false };
@@ -133,17 +133,24 @@
     scroll();
   }
 
-  // 用户自己发的图片：本地立刻回显（object URL，不上行前先等服务器）。服务端收到
-  // 后不会再把这张图推回来（它只回文本/答复），所以这里必须自己画。
-  function addUserMedia(file) {
+  // 用户自己发的文件：本地立刻回显。图片画出来，其它显示成一枚文件名标签。
+  // 服务端收到后不会把这些再推回来（它只回文本/答复），所以这里必须自己画。
+  function addUserFile(file) {
     var row = document.createElement("div");
     row.className = "row user";
     var bubble = document.createElement("div");
     bubble.className = "bubble";
-    var img = document.createElement("img");
-    img.src = URL.createObjectURL(file);
-    img.alt = file.name || "图片";
-    bubble.appendChild(img);
+    if (file.type && file.type.indexOf("image/") === 0) {
+      var img = document.createElement("img");
+      img.src = URL.createObjectURL(file);
+      img.alt = file.name || "图片";
+      bubble.appendChild(img);
+    } else {
+      var chip = document.createElement("span");
+      chip.className = "filechip";
+      chip.textContent = "📎 " + (file.name || "文件");
+      bubble.appendChild(chip);
+    }
     row.appendChild(bubble);
     el.log.appendChild(row);
     scroll();
@@ -255,23 +262,22 @@
     }
   }
 
-  // 发图片：走 multipart（字段 conversation/text + 若干 `image` 文件）。文本若也填了
-  // 就一起带上。与服务端 `POST /messages` 的多段分支对应。
-  async function sendImages(files) {
-    if (!state.conversation) { addNote("error", "先连接再发图"); return; }
-    var images = Array.prototype.slice.call(files).filter(function (f) {
-      return f && f.type && f.type.indexOf("image/") === 0;
-    });
-    if (!images.length) { addNote("error", "只支持图片文件"); return; }
+  // 发文件：走 multipart（字段 conversation/text + 若干 `file` 文件）。文本若也填了
+  // 就一起带上。与服务端 `POST /messages` 的多段分支对应。**任意类型**都发——图片、
+  // 文本、二进制由服务端与消息层分类。
+  async function sendFiles(files) {
+    if (!state.conversation) { addNote("error", "先连接再发文件"); return; }
+    var picked = Array.prototype.slice.call(files).filter(function (f) { return !!f; });
+    if (!picked.length) return;
 
-    images.forEach(addUserMedia);
+    picked.forEach(addUserFile);
     var text = el.text.value.trim();
     el.text.value = "";
 
     var form = new FormData();
     form.append("conversation", state.conversation);
     if (text) form.append("text", text);
-    images.forEach(function (f) { form.append("image", f); });
+    picked.forEach(function (f) { form.append("file", f); });
 
     try {
       // **不手动设 Content-Type**：浏览器要给 multipart 补 boundary
@@ -324,29 +330,29 @@
 
   el.connect.addEventListener("click", connect);
 
-  // 选图 / 粘贴：立刻作为一条带图消息发出（文本若填了也一起带）。**选图靠原生
+  // 选文件 / 粘贴：立刻作为一条带文件的消息发出（文本若填了也一起带）。**选文件靠原生
   // `<label for>` 触发**（不靠脚本点隐藏 input——Safari 会忽略），这里只在执行中
-  // 拦一下（preventDefault 阻止弹选择框）。粘贴走 paste 事件。
+  // 拦一下（preventDefault 阻止弹选择框）。粘贴走 paste 事件（多为截图）。
   el.attach.addEventListener("click", function (ev) {
     if (state.running) {
       ev.preventDefault();
-      addNote("error", "正在回答，等这一轮结束再发图");
+      addNote("error", "正在回答，等这一轮结束再发");
     }
   });
-  el.image.addEventListener("change", function () {
-    sendImages(el.image.files).catch(function () { addNote("error", "发送失败"); });
-    el.image.value = "";
+  el.file.addEventListener("change", function () {
+    sendFiles(el.file.files).catch(function () { addNote("error", "发送失败"); });
+    el.file.value = "";
   });
   document.addEventListener("paste", function (ev) {
     var items = (ev.clipboardData && ev.clipboardData.items) || [];
     var files = [];
     for (var i = 0; i < items.length; i++) {
-      if (items[i].kind === "file" && items[i].type.indexOf("image/") === 0) {
+      if (items[i].kind === "file") {
         var f = items[i].getAsFile();
         if (f) files.push(f);
       }
     }
-    if (files.length) sendImages(files).catch(function () { addNote("error", "发送失败"); });
+    if (files.length) sendFiles(files).catch(function () { addNote("error", "发送失败"); });
   });
 
   // 初始化

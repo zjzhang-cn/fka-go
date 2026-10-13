@@ -86,6 +86,12 @@ main {
   border-radius: 8px;
   display: block;
 }
+/* 非图片文件：一枚文件名标签。 */
+.row.user .bubble .filechip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
 
 .note {
   font-size: 12px;
