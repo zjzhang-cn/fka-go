@@ -34,6 +34,7 @@ func (c *Channel) routes() http.Handler {
 	mux.HandleFunc("POST /login", c.handleLogin)
 	mux.HandleFunc("GET /events", c.requireAuth(c.handleEvents))
 	mux.HandleFunc("POST /messages", c.requireAuth(c.handleMessages))
+	mux.HandleFunc("POST /stop", c.requireAuth(c.handleStop))
 	mux.HandleFunc("GET /files/{id}", c.requireAuth(c.handleFiles))
 	return mux
 }
@@ -163,6 +164,24 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, princip
 	})
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
+// handleStop 停掉当前会话进行中的一轮（网页「停止」按钮）。**没有在跑就如实说没有**，
+// 不假装成功——前端据此决定要不要把键切回「发送」。
+func (c *Channel) handleStop(w http.ResponseWriter, r *http.Request, principal string) {
+	var body struct {
+		Conversation string `json:"conversation"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体不是合法 JSON"})
+		return
+	}
+	if !validConversation(body.Conversation) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "会话 id 不合法"})
+		return
+	}
+	stopped := c.cancelTurn(principal, body.Conversation)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stopped": stopped})
 }
 
 // ── SSE ─────────────────────────────────────────────────

@@ -124,3 +124,16 @@ form#composer {
   border-top: 1px solid var(--line);
 }
 textarea { flex: 1; resize: none; }
+
+/* 发送 / 停止是同一个图标键：方形、居中；执行中变红。 */
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  padding: 0;
+}
+button.icon.stop {
+  background: #d0463b;
+  border-color: #d0463b;
+}

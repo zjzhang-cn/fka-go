@@ -35,6 +35,9 @@ type Channel struct {
 	server    *http.Server
 	status    channels.Status
 	onMessage func(channels.InboundMessage)
+	// controller 取消某会话进行中一轮的入口，由装配根启动前注入（见 channels.TurnControllable）。
+	// nil = 没接上，`/stop` 只能回「没有进行中的一轮」。
+	controller channels.TurnController
 }
 
 func newChannel(accountID, addr string, users map[string]string, staticDir string) *Channel {
@@ -292,3 +295,31 @@ func (c *Channel) Emitter(ctx context.Context) channels.Emitter {
 	}
 	return &sseEmitter{hub: c.hub, conversation: conversation}
 }
+
+// ── TurnControllable（可选能力：中途停止）───────────────
+
+// SetTurnController 收下「取消某会话进行中一轮」的入口。装配根在启动前调。
+func (c *Channel) SetTurnController(controller channels.TurnController) {
+	c.mu.Lock()
+	c.controller = controller
+	c.mu.Unlock()
+}
+
+// cancelTurn 让控制器停掉某个会话正在跑的那一轮。**会话键按消息层的同一条规则算**
+// （`渠道:账号:发起人:客户端会话`，见 sessionConversation 与 SessionKeyOf），
+// 这样两边指的是同一场。
+func (c *Channel) cancelTurn(principal, raw string) bool {
+	c.mu.Lock()
+	controller := c.controller
+	c.mu.Unlock()
+	if controller == nil {
+		return false
+	}
+	return controller.CancelTurn(channels.SessionKeyOf(&channels.InboundMessage{
+		ChannelID:      ID,
+		AccountID:      c.accountID,
+		ConversationID: sessionConversation(principal, raw),
+	}))
+}
+
+var _ channels.TurnControllable = (*Channel)(nil)

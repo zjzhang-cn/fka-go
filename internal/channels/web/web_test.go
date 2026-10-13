@@ -592,6 +592,96 @@ func TestEmitter_用量通知推帧(t *testing.T) {
 	}
 }
 
+// TestEmitter_执行状态推帧 执行中状态经 `channels.Notifier` 到达回显对象，推成一帧
+// `turn`（`running` 布尔）。前端据此把发送键切成停止键。
+func TestEmitter_执行状态推帧(t *testing.T) {
+	c := testChannel(t)
+	ctx := config.Bind(context.Background(), config.Context{"conversation": "conv"})
+
+	client := c.hub.join("conv")
+	defer c.hub.leave("conv", client)
+
+	notifier, ok := c.Emitter(ctx).(channels.Notifier)
+	if !ok {
+		t.Fatal("sseEmitter 该实现 channels.Notifier")
+	}
+	notifier.Notify(channels.TurnStateNotice{Running: true})
+
+	select {
+	case frame := <-client.ch:
+		got := string(frame)
+		if !strings.Contains(got, "event: turn") || !strings.Contains(got, `"running":true`) {
+			t.Errorf("执行状态帧不对：%s", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("执行状态没推出来")
+	}
+}
+
+// fakeController 假的取消入口，记下被停的是哪一场。
+type fakeController struct {
+	got string
+	ok  bool
+}
+
+func (f *fakeController) CancelTurn(sessionKey string) bool { f.got = sessionKey; return f.ok }
+
+// TestStop_停掉进行中的一轮并能回切 /stop 调控制器、会话键按消息层同一条规则算；
+// 有在跑时回 stopped:true，没在跑时回 stopped:false（前端据此不假装成功）。
+func TestStop_停掉进行中的一轮(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	controller := &fakeController{ok: true}
+	c.SetTurnController(controller)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/stop", strings.NewReader(`{"conversation":"conv"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("该 200，实际 %d", resp.StatusCode)
+	}
+	body := make([]byte, 256)
+	n, _ := resp.Body.Read(body)
+	if !strings.Contains(string(body[:n]), `"stopped":true`) {
+		t.Errorf("该说已停：%s", body[:n])
+	}
+
+	want := channels.SessionKeyOf(&channels.InboundMessage{
+		ChannelID: ID, AccountID: testAccount, ConversationID: sessionConversation("web:alice", "conv"),
+	})
+	if controller.got != want {
+		t.Errorf("停的会话键 = %q，想要 %q", controller.got, want)
+	}
+}
+
+// TestStop_没有在跑如实说 没有进行中的一轮时 stopped:false，不假装成功。
+func TestStop_没有在跑如实说(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	c.SetTurnController(&fakeController{ok: false})
+
+	req, _ := http.NewRequest("POST", ts.URL+"/stop", strings.NewReader(`{"conversation":"conv"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 256)
+	n, _ := resp.Body.Read(body)
+	if !strings.Contains(string(body[:n]), `"stopped":false`) {
+		t.Errorf("没在跑该如实说 stopped:false：%s", body[:n])
+	}
+}
+
 // TestProvider_账号可配且默认不叫web 账号名进会话键、进而进历史文件名，所以要能改；
 // 默认刻意不与渠道种类同名。
 func TestProvider_账号可配且默认不叫web(t *testing.T) {

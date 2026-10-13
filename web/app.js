@@ -16,10 +16,14 @@
     send: document.getElementById("send"),
   };
 
-  var state = { conversation: "", source: null };
+  var state = { conversation: "", source: null, running: false };
   // 当前**推理段**的元素：推理增量往它上面追加；一次工具调用或一条答案 = 这一段
   // 结束，下段另起一块（避免整轮的推理全堆在一个地方）。见 tool/message 处理器。
   var reasoningLine = null;
+
+  // 键用图标，不用文字：发送是一支纸飞机，执行中换成停止方块。
+  var ICON_SEND = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></svg>';
+  var ICON_STOP = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 
   // ── 会话 id ────────────────────────────────────────────
   // 存 localStorage：它不是机密，只用来把同一个浏览器认成同一段对话。
@@ -129,6 +133,16 @@
     el.status.className = "status " + (online ? "online" : "offline");
   }
 
+  // 执行中状态：键在「发送」与「停止」之间切。**只认服务端的 turn 通知**——
+  // 本地乐观切换会在「这一轮其实没跑起来」（空问题/缺身份被拒）时卡住。
+  function setRunning(running) {
+    state.running = !!running;
+    el.send.innerHTML = state.running ? ICON_STOP : ICON_SEND;
+    el.send.title = state.running ? "停止" : "发送";
+    el.send.setAttribute("aria-label", state.running ? "停止" : "发送");
+    el.send.classList.toggle("stop", state.running);
+  }
+
   // ── 连接 ───────────────────────────────────────────────
   async function connect() {
     var token = el.token.value.trim();
@@ -167,6 +181,7 @@
       setStatus("已连接", true);
       el.connect.disabled = false;
       el.send.disabled = false;
+      setRunning(false); // 重连后按「空闲」起步；真在跑会马上收到 turn 通知
     });
     source.addEventListener("message", function (ev) {
       // 一段完整答复。**最终答案与主动推送都走这里**（Emitter.Answer 是空的）
@@ -195,13 +210,17 @@
       addNote("usage", usageText(JSON.parse(ev.data)));
       reasoningLine = null;
     });
+    source.addEventListener("turn", function (ev) {
+      // 执行中状态：发送键 ↔ 停止键
+      setRunning(JSON.parse(ev.data).running);
+    });
     source.addEventListener("error", function () {
       // EventSource 会自己重连；连不上时它也会触发这里
       setStatus("连接断开，重连中…", false);
     });
   }
 
-  // ── 发送 ───────────────────────────────────────────────
+  // ── 发送 / 停止 ─────────────────────────────────────────
   async function send(text) {
     var res = await fetch("/messages", {
       method: "POST",
@@ -215,6 +234,19 @@
     }
   }
 
+  // 喊停当前会话进行中的一轮。键的回切靠服务端的 turn 通知，不在这里改。
+  async function stop() {
+    try {
+      await fetch("/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation: state.conversation }),
+      });
+    } catch (e) {
+      // 停不下就算了：这一轮自己会结束，turn 通知把键切回来
+    }
+  }
+
   el.form.addEventListener("submit", function (ev) {
     ev.preventDefault();
     var text = el.text.value.trim();
@@ -224,9 +256,16 @@
     send(text).catch(function () { addNote("error", "发送失败"); });
   });
 
+  // 一个键两种角色：不在跑就是「发送」，在跑就是「停止」。
+  el.send.addEventListener("click", function () {
+    if (state.running) { stop(); return; }
+    el.form.requestSubmit();
+  });
+
   el.text.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && !ev.shiftKey) {
       ev.preventDefault();
+      if (state.running) return; // 执行中 Enter 不发也不停，只有点停止键才停
       el.form.requestSubmit();
     }
   });
@@ -236,5 +275,6 @@
   // 初始化
   el.conversation.value = loadConversation();
   el.send.disabled = true;
+  setRunning(false);
   el.token.focus();
 })();

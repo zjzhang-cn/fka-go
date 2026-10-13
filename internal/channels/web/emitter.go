@@ -34,18 +34,19 @@ func (e *sseEmitter) Tool(name, arguments, result string) {
 // Answer 刻意空实现——见类型注释。
 func (e *sseEmitter) Answer(string) {}
 
-// Notify 收轮末通知，把用量推一帧 `usage` 给该会话。键名用完整名（promptTokens…），
-// 前端据此渲染一行；服务端给的数原样转发，不做本地估算。
+// Notify 收通知并推一帧给该会话：用量推 `usage`（键名完整）、执行中状态推 `turn`
+// （`running` 布尔）。服务端给的数原样转发，不做本地估算。
 func (e *sseEmitter) Notify(notice channels.Notice) {
-	usage, ok := notice.(channels.UsageNotice)
-	if !ok {
-		return // 未知通知类型：静默忽略（密封接口，未知即未来加的）
+	switch n := notice.(type) {
+	case channels.UsageNotice:
+		e.hub.broadcast(e.conversation, "usage", map[string]any{
+			"promptTokens":     n.Usage.PromptTokens,
+			"completionTokens": n.Usage.CompletionTokens,
+			"totalTokens":      n.Usage.TotalTokens,
+		})
+	case channels.TurnStateNotice:
+		e.hub.broadcast(e.conversation, "turn", map[string]any{"running": n.Running})
 	}
-	e.hub.broadcast(e.conversation, "usage", map[string]any{
-		"promptTokens":     usage.Usage.PromptTokens,
-		"completionTokens": usage.Usage.CompletionTokens,
-		"totalTokens":      usage.Usage.TotalTokens,
-	})
 }
 
 var _ channels.Notifier = (*sseEmitter)(nil)

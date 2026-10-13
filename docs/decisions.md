@@ -536,6 +536,36 @@ sandbox；键在两边各写一份字面量（sandbox 自给自足，不能 impo
 
 ---
 
+## 23. 执行中状态与中途停止（网页「停止」按钮）
+
+**决定：** 两条独立的东西，缺一个「停止」都做不成。
+
+**① 执行中状态是通知（下行）**：`channels.TurnStateNotice{Running bool}`，
+由**消息层**在 `Handle` 进/出时各发一次，经 `channels.Notifier` 到达渠道
+（网页推 `event: turn`，前端据此把「发送」键切成「停止」键、结束时切回）。
+为什么不放工具循环：空问题/缺身份这类**不走循环的拒答**也是「在处理一条消息」，
+前端只认这一对通知就不必自己猜状态。前端**不做乐观切换**——只在收到通知时才切。
+
+**② 中途停止是控制（上行）**：`channels.TurnController.CancelTurn(sessionKey)`
+由**业务层实现**（消息层才对：它调度 worker、持有这一轮的 ctx），经
+`channels.TurnControllable` 在**装配根启动前**注入给实现了它的渠道
+（`app.Serve` 里 `SetTurnController`）。网页 `POST /stop` → 渠道算出会话键
+（`渠道:账号:发起人:客户端会话`，与消息层同一条规则）→ 取消那一轮的 ctx →
+流被掐断。
+
+- **取消不是错误**：`Ask` 见 `ctx.Err() != nil` 就回一句平静的 `（已停止）`，
+  并把 `Cause` 带上（CLI 靠它区分「已中断」与真失败）。
+- **没有在跑就如实说没有**：`CancelTurn` 返回 false，`/stop` 回 `stopped:false`，
+  不假装成功。
+- **两处都是可选能力**：渠道不实现 `TurnControllable` 就没有「停止」这个功能；
+  不实现 `Notifier` 就收不到状态。与 `AddressResolver`/`MediaFetcher` 同一条规矩。
+
+**已接受的代价：** 取消掐的是「这一轮的 ctx」——模型请求会中断、可能的半句答案
+丢掉；工具那一步如果是**不可逆的外部动作**（发出去的消息、写下的文件）已经发生
+就追不回，取消只保证**不再继续**。
+
+---
+
 ## 附：零 CGO 是怎么达成的
 
 盘问时逐个检查过每个模块对 CGO 的需求，最后只剩 SQLite 一个候选，选了纯 Go：
