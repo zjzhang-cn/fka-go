@@ -383,6 +383,32 @@ func (s *sandboxServer) handleExport(ctx context.Context, request mcp.CallToolRe
 // 免得「网页收下了、沙盒又拒了」。是 var 便于用例调小。
 var ImportMaxBytes int64 = 8 << 20
 
+// InboxTTL 入站文件在 `inbox/` 里保留多久，超出即清。**必须有**：FKA_MEDIA_MODE=both/
+// sandbox 下每收到一次用户文件就写一份，没有 TTL 会无限堆积。是 var 便于用例调小。
+var InboxTTL = 24 * time.Hour
+
+// sweepInbox 删掉 inbox/ 里超过 InboxTTL 的普通文件。**出错就算了**——清理是旁路，
+// 不该让它挡住这次导入。
+func sweepInbox(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-InboxTTL)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
 // handleImport 把 agent 注进来的入站附件写到本租户沙盒的 `inbox/` 下。
 //
 // ## 为什么字节走工具参数而不是 `_meta`
@@ -410,6 +436,7 @@ func (s *sandboxServer) handleImport(ctx context.Context, request mcp.CallToolRe
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		return fail("建 inbox 目录失败：" + err.Error()), nil
 	}
+	sweepInbox(inbox)
 
 	var written []string
 	for index, item := range raw {
