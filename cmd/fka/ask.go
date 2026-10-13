@@ -108,6 +108,13 @@ func runAsk(ctx context.Context, parsed cliArgs) int {
 
 		application.Messages.Deliver(ctx, channel, in, outcome.Text())
 
+		// 用量默认就显示，不设开关。**服务端给了才打**——不给就没有这一行，
+		// 绝不用本地估算冒充真实用量（见 llm.TokenUsage）。
+		usage := outcome.Result.Usage
+		if line := usageLine(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens); line != "" {
+			fmt.Fprintf(os.Stderr, "[用量] %s\n", line)
+		}
+
 		if debugEnabled() {
 			// **会话 id 印出来**，但只在显式给了 `--session` 时才有「续会话」的意义：
 			// 没给的话这轮是 Ephemeral，什么都没落盘，拿这个 id 也续不上
@@ -311,6 +318,25 @@ func hasFlag(parsed cliArgs, flag string) bool {
 func debugEnabled() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("FKA_DEBUG")))
 	return value == "1" || value == "true" || value == "on"
+}
+
+// usageLine 把一轮的真实用量渲染成一句话。**纯函数**，ask 与 chat 共用：
+//
+//	全零      → ""（服务端没给，不打）
+//	给了总数  → 「入 X / 出 Y（共 Z）」
+//	没给总数  → 「入 X / 出 Y」
+//
+// 它只拼**核心那段**；前缀（`[用量] ` / `· 用量：`）与颜色由各自的前端加——
+// ask 不上色、chat 用暗色。
+func usageLine(in, out, total int) string {
+	if in == 0 && out == 0 && total == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("入 %d / 出 %d", in, out)
+	if total > 0 {
+		line += fmt.Sprintf("（共 %d）", total)
+	}
+	return line
 }
 
 func firstLine(text string) string {

@@ -134,6 +134,33 @@ type ImageAttachment struct {
 type ChatResult struct {
 	Content   string
 	ToolCalls []ToolCall
+	// Usage 服务端报的这一轮 token 用量。**零值 = 服务端没给**——
+	// 不猜、不估算（估算只服务历史预算，见 EstimateTokens）。
+	//
+	// 只有请求带了 `stream_options.include_usage` 且服务端支持时才有值。
+	Usage TokenUsage
+}
+
+// TokenUsage 一次模型调用服务端报回来的用量。三个数都是**服务端的事实**，
+// 不是本地估算：没有就是零值。
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+// IsZero 服务端一个数都没给。用它决定「要不要展示」——不展示零值。
+func (u TokenUsage) IsZero() bool {
+	return u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0
+}
+
+// Add 累加两轮的用量。工具循环一轮里可能调多次模型，用量是**整轮之和**。
+func (u TokenUsage) Add(other TokenUsage) TokenUsage {
+	return TokenUsage{
+		PromptTokens:     u.PromptTokens + other.PromptTokens,
+		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
+		TotalTokens:      u.TotalTokens + other.TotalTokens,
+	}
 }
 
 // ToolDef 给模型看的工具声明。Parameters 是 JSON Schema 对象。

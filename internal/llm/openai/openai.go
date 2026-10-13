@@ -360,6 +360,9 @@ func baseRequest(cfg llm.Config, messages []llm.ChatMessage) goopenai.ChatComple
 		Temperature: Temperature,
 		MaxTokens:   0,    // 留 0，SDK 的 `omitempty` 会把它整个省掉，由服务端按模型自己的上限来
 		Stream:      true, // 只要工具就发流式：没有它拿不到增量，也就没有「每收一块重置断流预算」
+		// 流式收尾时让服务端把这一轮的用量帧也发来——不然一个字节都采不到。
+		// 换端点若建流 400 且错误文本含该字段，删这一行即回退。
+		StreamOptions: &goopenai.StreamOptions{IncludeUsage: true},
 	}
 }
 
@@ -474,6 +477,9 @@ func streamOnce(
 		toolCalls    = map[int]*llm.ToolCall{}
 		order        []int
 		sawReason    bool
+		// usage 服务端在**收尾帧**（`choices` 为空、只带 usage）里报的用量。
+		// **nil = 服务端没给**（没开 include_usage 或端点不支持）。
+		usage *goopenai.Usage
 		// finishReason 服务端给的结束原因。**`length` 表示被 max_tokens 截断**——
 		// 推理模型长思考时会撞上它，而那时正文/工具调用可能一个都没有。
 		finishReason goopenai.FinishReason
@@ -493,6 +499,11 @@ func streamOnce(
 			// 读数途中被掐断，正是断流重试要覆盖的
 			return llm.ChatResult{}, wrapRequestError(streamCtx, err, cfg, host, overallErr, idleErr),
 				retryableBreak(parentCtx, cause, overallErr)
+		}
+		// **用量帧要在 `continue` 之前接住**：它的 `choices` 为空，正是要被下面
+		// 跳过的形状；跳掉它就一个字节都采不到。
+		if chunk.Usage != nil {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -567,11 +578,17 @@ func streamOnce(
 	}))
 
 	answer := strings.TrimSpace(content.String())
-	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(parentCtx, config.Context{
+	// 用量字段**有值才带**：服务端不给就少这两列，而不是报一对 0 让人以为真的用了 0。
+	returnFields := config.Context{
 		"chars": len([]rune(answer)), "toolCalls": len(calls),
 		"reasoningChars": len([]rune(reasoningBuf.String())),
 		"ms":             time.Since(startedAt).Milliseconds(),
-	}))
+	}
+	if usage != nil {
+		returnFields["tokensIn"] = usage.PromptTokens
+		returnFields["tokensOut"] = usage.CompletionTokens
+	}
+	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(parentCtx, returnFields))
 
 	// 被 max_tokens 截断：推理模型长思考时会撞上它。**必须单独认出来**，否则正文为
 	// 空会被上层报成含糊的「既没回答也没调用工具」，看起来像「模型偶尔不回」。
@@ -587,7 +604,15 @@ func streamOnce(
 		}
 	}
 
-	return llm.ChatResult{Content: answer, ToolCalls: calls}, nil, false
+	result := llm.ChatResult{Content: answer, ToolCalls: calls}
+	if usage != nil {
+		result.Usage = llm.TokenUsage{
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+		}
+	}
+	return result, nil, false
 }
 
 // idleFired cause 是不是断流超时。

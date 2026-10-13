@@ -110,6 +110,9 @@ type RunResult struct {
 	Steps int
 	// StoppedBy 为什么停：answered = 模型自己给出答案；max-steps = 到上限收尾
 	StoppedBy string
+	// Usage 这一轮的 token 用量（服务端报的）**整轮之和**：多步工具轮把每次模型
+	// 调用的用量累加，含收尾那次。零值 = 服务端没给，不估、不猜。
+	Usage llm.TokenUsage
 }
 
 // ToolEvent 一次工具调用的可见记录。**只给显示/日志看**，不参与喂回模型的通道
@@ -229,6 +232,8 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	usedTools := make([]string, 0, 8)
 	toolEvents := make([]ToolEvent, 0, 8)
 	steps := 0
+	// usage 整轮之和：每一轮模型调用的用量都累进来（含最后那次给出答案的）。
+	var usage llm.TokenUsage
 
 	for index := 1; index <= maxSteps; index++ {
 		steps = index
@@ -238,6 +243,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 			// 模型/接口的错**往上抛**：降级的措辞是调用方的知识
 			return RunResult{}, err
 		}
+		usage = usage.Add(result.Usage)
 
 		// 没有工具调用 = 它觉得可以答了。这就是最终答案
 		if len(result.ToolCalls) == 0 {
@@ -258,6 +264,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 				Text: result.Content, UsedTools: usedTools,
 				ToolEvents: toolEvents,
 				Steps:      index, StoppedBy: StoppedByAnswered,
+				Usage: usage,
 			}, nil
 		}
 
@@ -309,7 +316,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	}
 
 	// 步数用尽：**不再给工具**，只让它基于已有结果写答案
-	return r.forcedAnswer(ctx, messages, input, usedTools, toolEvents, steps, persistTurn), nil
+	return r.forcedAnswer(ctx, messages, input, usedTools, toolEvents, steps, usage, persistTurn), nil
 }
 
 // forcedAnswer 步数用尽后的收尾。
@@ -324,6 +331,7 @@ func (r *Runner) forcedAnswer(
 	usedTools []string,
 	toolEvents []ToolEvent,
 	steps int,
+	usage llm.TokenUsage,
 	persistTurn func(),
 ) RunResult {
 	result, err := r.chat(ctx, messages, nil)
@@ -333,9 +341,11 @@ func (r *Runner) forcedAnswer(
 		}))
 		return RunResult{
 			Text: MaxStepsAnswer, UsedTools: usedTools, ToolEvents: toolEvents,
-			Steps: steps, StoppedBy: StoppedByMaxSteps,
+			Steps: steps, StoppedBy: StoppedByMaxSteps, Usage: usage,
 		}
 	}
+	// 收尾这次也是真实调用，用量照累——**整轮之和**包含它。
+	usage = usage.Add(result.Usage)
 
 	config.Log().Warn(config.TypeLLM, "工具循环到达步数上限，已用无工具收尾", config.Fields(ctx, config.Context{
 		"model": r.Model, "steps": steps, "tools": len(usedTools),
@@ -351,7 +361,7 @@ func (r *Runner) forcedAnswer(
 	if input.Emitter != nil {
 		input.Emitter.Answer(text)
 	}
-	return RunResult{Text: text, UsedTools: usedTools, ToolEvents: toolEvents, Steps: steps, StoppedBy: StoppedByMaxSteps}
+	return RunResult{Text: text, UsedTools: usedTools, ToolEvents: toolEvents, Steps: steps, StoppedBy: StoppedByMaxSteps, Usage: usage}
 }
 
 // runToolCall 执行一次工具调用，返回工具结果（文字 + 可能有的图片）。
