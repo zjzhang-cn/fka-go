@@ -504,6 +504,10 @@ sandbox；键在两边各写一份字面量（sandbox 自给自足，不能 impo
 
 - **采集**：openai 请求带 `stream_options.include_usage`；收尾帧（`choices` 为空、
   只带 usage）在 `len(chunk.Choices)==0` 的 `continue` **之前**接住。
+- **缓存命中**：`prompt_tokens_details.cached_tokens` 收进 `TokenUsage.CachedTokens`。
+  它是 **OpenAI 兼容的约定**（DeepSeek、Qwen/DashScope 的兼容模式都报它），**不是跨协议
+  通用**——Anthropic 那种叫 `cache_read_input_tokens`，要在它的 provider 包里翻译。
+  它是**输入的子集**，展示时贴在「入」后面；端点不报就是 0、不显示，不会错。
 - **聚合是整轮之和**：工具循环两处 `r.chat` 调用点都累加（含收尾那次 maxSteps 兜底）；
   断流重试**不重复计**（只有成功那次有 usage 帧）。
 - **服务端不给就没有**：零值表示没给，**不用 `llm.EstimateTokens` 冒充**——估算只

@@ -576,13 +576,13 @@ func TestEmitter_用量通知推帧(t *testing.T) {
 		t.Fatal("sseEmitter 该实现 channels.Notifier")
 	}
 	notifier.Notify(channels.UsageNotice{Usage: channels.TokenUsage{
-		PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
+		PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CachedTokens: 8,
 	}})
 
 	select {
 	case frame := <-client.ch:
 		got := string(frame)
-		for _, want := range []string{"event: usage", `"promptTokens":10`, `"completionTokens":5`, `"totalTokens":15`} {
+		for _, want := range []string{"event: usage", `"promptTokens":10`, `"completionTokens":5`, `"totalTokens":15`, `"cachedTokens":8`} {
 			if !strings.Contains(got, want) {
 				t.Errorf("用量帧该含 %q：%s", want, got)
 			}

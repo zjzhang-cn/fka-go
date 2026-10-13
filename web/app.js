@@ -60,9 +60,12 @@
   }
 
   // 一轮的真实 token 用量（服务端报的，经 usage 事件推来）。**没给总数就省略
-  // 「（共 …）」**；全零时服务端根本不推这一帧。
+  // 「（共 …）」**；缓存命中是输入的一部分、贴在「入」后面；全零时服务端根本
+  // 不推这一帧。
   function usageText(data) {
-    var line = "入 " + (data.promptTokens || 0) + " / 出 " + (data.completionTokens || 0);
+    var line = "入 " + (data.promptTokens || 0);
+    if (data.cachedTokens) line += "（缓存命中 " + data.cachedTokens + "）";
+    line += " / 出 " + (data.completionTokens || 0);
     if (data.totalTokens) line += "（共 " + data.totalTokens + "）";
     return "用量：" + line;
   }

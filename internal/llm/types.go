@@ -141,17 +141,21 @@ type ChatResult struct {
 	Usage TokenUsage
 }
 
-// TokenUsage 一次模型调用服务端报回来的用量。三个数都是**服务端的事实**，
+// TokenUsage 一次模型调用服务端报回来的用量。四个数都是**服务端的事实**，
 // 不是本地估算：没有就是零值。
 type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// CachedTokens 命中了上下文缓存的**输入** token（`prompt_tokens_details.cached_tokens`，
+	// DeepSeek 的 `prompt_cache_hit_tokens` 同一个数）。**它是 PromptTokens 的子集**，
+	// 不是额外的数——命中缓存只影响计费，不改变请求规模。零 = 没命中或服务端没报。
+	CachedTokens int
 }
 
 // IsZero 服务端一个数都没给。用它决定「要不要展示」——不展示零值。
 func (u TokenUsage) IsZero() bool {
-	return u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0
+	return u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0 && u.CachedTokens == 0
 }
 
 // Add 累加两轮的用量。工具循环一轮里可能调多次模型，用量是**整轮之和**。
@@ -160,6 +164,7 @@ func (u TokenUsage) Add(other TokenUsage) TokenUsage {
 		PromptTokens:     u.PromptTokens + other.PromptTokens,
 		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
 		TotalTokens:      u.TotalTokens + other.TotalTokens,
+		CachedTokens:     u.CachedTokens + other.CachedTokens,
 	}
 }
 

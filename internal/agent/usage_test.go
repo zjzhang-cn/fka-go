@@ -20,12 +20,12 @@ func TestRun_用量是各步之和(t *testing.T) {
 		if calls == 1 {
 			return llm.ChatResult{
 				ToolCalls: []llm.ToolCall{{ID: "c1", Name: "search", Arguments: `{"q":"x"}`}},
-				Usage:     llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+				Usage:     llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CachedTokens: 4},
 			}, nil
 		}
 		return llm.ChatResult{
 			Content: "答案",
-			Usage:   llm.TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27},
+			Usage:   llm.TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27, CachedTokens: 3},
 		}, nil
 	}
 
@@ -37,7 +37,7 @@ func TestRun_用量是各步之和(t *testing.T) {
 		t.Fatalf("不该报错：%v", err)
 	}
 
-	want := llm.TokenUsage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42}
+	want := llm.TokenUsage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42, CachedTokens: 7}
 	if result.Usage != want {
 		t.Errorf("用量 = %+v，想要各步之和 %+v", result.Usage, want)
 	}
@@ -55,12 +55,12 @@ func TestRun_轮末把用量通知给前端(t *testing.T) {
 		if calls == 1 {
 			return llm.ChatResult{
 				ToolCalls: []llm.ToolCall{{ID: "c1", Name: "search", Arguments: `{"q":"x"}`}},
-				Usage:     llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+				Usage:     llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CachedTokens: 4},
 			}, nil
 		}
 		return llm.ChatResult{
 			Content: "答案",
-			Usage:   llm.TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27},
+			Usage:   llm.TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27, CachedTokens: 3},
 		}, nil
 	}
 
@@ -79,7 +79,7 @@ func TestRun_轮末把用量通知给前端(t *testing.T) {
 	if !ok {
 		t.Fatalf("通知类型不对：%T", emitter.notices[0])
 	}
-	want := llm.TokenUsage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42}
+	want := llm.TokenUsage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42, CachedTokens: 7}
 	if notice.Usage != want {
 		t.Errorf("通知的用量 = %+v，想要各步之和 %+v", notice.Usage, want)
 	}

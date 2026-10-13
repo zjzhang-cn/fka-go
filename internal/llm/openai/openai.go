@@ -587,6 +587,9 @@ func streamOnce(
 	if usage != nil {
 		returnFields["tokensIn"] = usage.PromptTokens
 		returnFields["tokensOut"] = usage.CompletionTokens
+		if usage.PromptTokensDetails != nil {
+			returnFields["tokensCached"] = usage.PromptTokensDetails.CachedTokens
+		}
 	}
 	config.Log().Info(config.TypeLLM, "模型返回", config.Fields(parentCtx, returnFields))
 
@@ -610,6 +613,11 @@ func streamOnce(
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
 			TotalTokens:      usage.TotalTokens,
+		}
+		// 上下文缓存命中：OpenAI 兼容的嵌套字段（DeepSeek / Qwen 兼容模式等都报它）。
+		// **nil 安全**——不支持缓存的端点整块不给，命中数就是 0。
+		if usage.PromptTokensDetails != nil {
+			result.Usage.CachedTokens = usage.PromptTokensDetails.CachedTokens
 		}
 	}
 	return result, nil, false

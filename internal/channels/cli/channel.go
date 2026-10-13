@@ -206,7 +206,7 @@ func (c *Channel) flushUsage() {
 	if !ok {
 		return
 	}
-	line := usageLine(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	line := usageLine(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.CachedTokens)
 	if line == "" {
 		return
 	}

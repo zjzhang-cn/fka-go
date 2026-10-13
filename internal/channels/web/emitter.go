@@ -43,6 +43,7 @@ func (e *sseEmitter) Notify(notice channels.Notice) {
 			"promptTokens":     n.Usage.PromptTokens,
 			"completionTokens": n.Usage.CompletionTokens,
 			"totalTokens":      n.Usage.TotalTokens,
+			"cachedTokens":     n.Usage.CachedTokens,
 		})
 	case channels.TurnStateNotice:
 		e.hub.broadcast(e.conversation, "turn", map[string]any{"running": n.Running})

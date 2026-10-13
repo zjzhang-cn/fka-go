@@ -66,19 +66,20 @@ func Test用量_全零不打(t *testing.T) {
 	}
 }
 
-// Test用量行_渲染与缺项 usageLine 是纯函数：都给了、没给总数、全零。
+// Test用量行_渲染与缺项 usageLine 是纯函数：都给了、带缓存命中、没给总数、全零。
 func Test用量行_渲染与缺项(t *testing.T) {
 	for name, tc := range map[string]struct {
-		in, out, total int
-		want           string
+		in, out, total, cached int
+		want                   string
 	}{
-		"都给了":  {10, 5, 15, "入 10 / 出 5（共 15）"},
-		"没给总数": {10, 5, 0, "入 10 / 出 5"},
-		"全零不打": {0, 0, 0, ""},
+		"都给了":   {10, 5, 15, 0, "入 10 / 出 5（共 15）"},
+		"带缓存命中": {10, 5, 15, 8, "入 10（缓存命中 8） / 出 5（共 15）"},
+		"没给总数":  {10, 5, 0, 0, "入 10 / 出 5"},
+		"全零不打":  {0, 0, 0, 0, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := usageLine(tc.in, tc.out, tc.total); got != tc.want {
-				t.Errorf("usageLine(%d, %d, %d) = %q，想要 %q", tc.in, tc.out, tc.total, got, tc.want)
+			if got := usageLine(tc.in, tc.out, tc.total, tc.cached); got != tc.want {
+				t.Errorf("usageLine(%d, %d, %d, %d) = %q，想要 %q", tc.in, tc.out, tc.total, tc.cached, got, tc.want)
 			}
 		})
 	}

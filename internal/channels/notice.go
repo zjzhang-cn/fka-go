@@ -27,11 +27,14 @@ type Notice interface {
 // TokenUsage 一轮的真实 token 用量。**用基本类型**——接缝不 import `llm`，
 // 与 `Emitter` 同一条规矩；搬运由消息层那次适配完成。
 //
-// 三个都是**服务端报的事实**：全零表示服务端没给，不用估算冒充。
+// 四个都是**服务端报的事实**：全零表示服务端没给，不用估算冒充。
 type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// CachedTokens 命中上下文缓存的输入 token（`prompt_tokens_details.cached_tokens`），
+	// **是 PromptTokens 的子集**。不是所有端都报；没有就是 0。
+	CachedTokens int
 }
 
 // UsageNotice 一轮结束的用量通知。

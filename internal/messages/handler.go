@@ -248,6 +248,7 @@ func (e channelEcho) Notify(notice agent.Notice) {
 		PromptTokens:     usage.Usage.PromptTokens,
 		CompletionTokens: usage.Usage.CompletionTokens,
 		TotalTokens:      usage.Usage.TotalTokens,
+		CachedTokens:     usage.Usage.CachedTokens,
 	}}
 	if notifier, ok := e.channel.(channels.Notifier); ok {
 		notifier.Notify(converted)
@@ -281,7 +282,7 @@ func (e loggingEmitter) Notify(notice channels.Notice) {
 	}
 	config.Log().Info(config.TypeMSG, "用量", config.Fields(e.ctx, config.Context{
 		"tokensIn": usage.Usage.PromptTokens, "tokensOut": usage.Usage.CompletionTokens,
-		"tokensTotal": usage.Usage.TotalTokens,
+		"tokensTotal": usage.Usage.TotalTokens, "tokensCached": usage.Usage.CachedTokens,
 	}))
 }
 

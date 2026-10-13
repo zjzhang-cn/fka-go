@@ -61,12 +61,13 @@ func usageChat(t *testing.T, server *httptest.Server) llm.ChatClient {
 	})
 }
 
-// Test用量_带usage帧时收进结果 服务端发收尾用量帧时，三个数要如实落到
-// `ChatResult.Usage`；请求体也必须带 `stream_options.include_usage`——不带它
-// 服务端根本不会发这一帧。
+// Test用量_带usage帧时收进结果 服务端发收尾用量帧时，四个数要如实落到
+// `ChatResult.Usage`（含嵌套的缓存命中）；请求体也必须带
+// `stream_options.include_usage`——不带它服务端根本不会发这一帧。
 func Test用量_带usage帧时收进结果(t *testing.T) {
 	server, requestBody := usageSSEServer(t, "答案", map[string]any{
 		"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+		"prompt_tokens_details": map[string]any{"cached_tokens": 8},
 	})
 
 	result, err := usageChat(t, server)(context.Background(), []llm.ChatMessage{
@@ -76,7 +77,7 @@ func Test用量_带usage帧时收进结果(t *testing.T) {
 		t.Fatalf("不该报错：%v", err)
 	}
 
-	want := llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	want := llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, CachedTokens: 8}
 	if result.Usage != want {
 		t.Errorf("用量 = %+v，想要 %+v", result.Usage, want)
 	}

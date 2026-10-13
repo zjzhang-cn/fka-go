@@ -108,16 +108,21 @@ func firstLine(text string) string {
 
 // usageLine 把一轮的真实用量渲染成一句话。**纯函数**，ask 与 chat 共用：
 //
-//	全零      → ""（服务端没给，不打）
-//	给了总数  → 「入 X / 出 Y（共 Z）」
-//	没给总数  → 「入 X / 出 Y」
+//	全零            → ""（服务端没给，不打）
+//	有缓存命中      → 「入 X（缓存命中 C）/ 出 Y（共 Z）」
+//	没给总数        → 省略「（共 Z）」
 //
-// 前缀（`[用量] ` / `· 用量：`）与颜色由 `flushUsage` 按模式加。
-func usageLine(in, out, total int) string {
-	if in == 0 && out == 0 && total == 0 {
+// 缓存命中是**输入的一部分**，所以贴在「入」后面而不是单列。前缀（`[用量] ` /
+// `· 用量：`）与颜色由 `flushUsage` 按模式加。
+func usageLine(in, out, total, cached int) string {
+	if in == 0 && out == 0 && total == 0 && cached == 0 {
 		return ""
 	}
-	line := fmt.Sprintf("入 %d / 出 %d", in, out)
+	line := fmt.Sprintf("入 %d", in)
+	if cached > 0 {
+		line += fmt.Sprintf("（缓存命中 %d）", cached)
+	}
+	line += fmt.Sprintf(" / 出 %d", out)
 	if total > 0 {
 		line += fmt.Sprintf("（共 %d）", total)
 	}
