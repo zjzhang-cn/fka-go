@@ -243,7 +243,8 @@ fka ask --session aabbcc 你的名字加小航
 ---
 
 ## 15. `ask` 不给 `--session` 时每次生成一个新会话
-**决定：** 兜底从常量 `"cli"` 改成 `cli-<uuid v4>`（`cmd/fka/sessionid.go`）。
+**决定：** 兜底从常量 `"cli"` 改成 `cli-<uuid v4>`（先落在 `cmd/fka/sessionid.go`，
+第 21 条之后搬到 `internal/channels/cli/session.go`）。
 `--session` 与 `FKA_SESSION` 显式给了就照用，那仍然是连续会话。
 
 **为什么：** 会话历史按会话落文件（`<安装根>/data/history/<会话>.jsonl`），而兜底是
@@ -450,6 +451,67 @@ sandbox；键在两边各写一份字面量（sandbox 自给自足，不能 impo
   只增不减，需要运维侧清理。
 - 身份本身由渠道决定：web 现在能按用户区分，iLink 用裸 wxid（未加命名空间），
   CLI 默认 `cli`。**要按用户隔离，身份必须先能区分用户**。
+
+---
+
+## 21. CLI 是第三个渠道（`internal/channels/cli`）
+
+**问题：** 四条前端、两套走法。ilink / web 走完整接缝（`channels.Channel` →
+`messages.Handler` → `agent.Runner`），而 `ask` / `chat` 绕开接缝、各自把判定
+（空问题 / 缺身份 / 没接模型 / 模型出错 / 空答复）、回显、会话策略又写了一遍，
+措辞还各不相同（空答复一边说「我没想出该怎么回」，一边输出一个空行）。
+「加一个渠道 = 一个 provider + 装配一行、业务层零改」对 CLI 并不成立。
+
+**决定：** `ask` / `chat` 做成完整的渠道实现，和微信、网页同一模子。
+
+- **编排抽成 `messages.Ask`**：绑定归属 → 逐条判定 → `Runner.Run` → 归类成
+  `AskOutcome{Result, Explain, Cause}`。**它不发送、不呈现**；`Handler.Handle =
+  Ask + Deliver`，`reply` 更名导出为 `Deliver`，CLI 与渠道用的是同一个 `Ask`。
+  于是「同一套规则只写一遍」这条底线成立。
+- **`internal/channels/cli` 只实现 `channels.Channel`，不实现 `channels.Provider`**：
+  命令行没有账号维度、也没有可注册的实例工厂。它不进 `Service.StartAll`——由
+  `cmd/fka` 持有生命周期（`Start` 阻塞到会话结束）。`serve.go`、`app.go`、
+  channels 协议**零改动**。
+- **答案通道唯一**：答复一律经 `Senders().Text`（`say`）发出——标签进 stderr、
+  正文进 stdout；回显的 `Answer` 置空，防双份（web 已是这个口径）。
+- **冻结面**：web / ilink 两个包一行不改；`InboundMessage` 里没有「图片字节」的
+  位置，所以 `@引用` 仍留在 cmd 展开、经 `AskInput.Images` 递给循环——渠道协议
+  不为 CLI 改。
+
+**后果：**
+
+- 已立案的对外可见变化：**空答复**从「输出一个空行」变成统一的 `replyEmpty` 句
+  ——交互式前端与渠道从此一致。
+- 行为不变量照旧：stdout 只有答案、退出码 0/1/2、`cli-<uuid>` 与 40 字符预算、
+  `[推理]/[工具]/[助手]` 与 `● 助手` 的格式与去向、命令族、转圈时序——由
+  `internal/channels/cli` 的用例钉死。
+
+---
+
+## 22. 用量挂结果，不进 `agent.Emitter`
+
+**决定：** 每轮问答的真实 token 用量（服务端报的）挂在 `agent.RunResult.Usage`
+（`llm.TokenUsage`）上；`cmd` 的 `ask`/`chat` 每轮在 stderr 多打一行，`serve` 侧的
+「已作答」日志带上 `tokensIn/tokensOut/tokensTotal`（有值才带）。
+
+- **采集**：openai 请求带 `stream_options.include_usage`；收尾帧（`choices` 为空、
+  只带 usage）在 `len(chunk.Choices)==0` 的 `continue` **之前**接住。
+- **聚合是整轮之和**：工具循环两处 `r.chat` 调用点都累加（含收尾那次 maxSteps 兜底）；
+  断流重试**不重复计**（只有成功那次有 usage 帧）。
+- **服务端不给就没有**：零值表示没给，**不用 `llm.EstimateTokens` 冒充**——估算只
+  服务历史预算。
+
+**为什么不进 `agent.Emitter`：** 前者是**一轮内的过程事件流**（推理按块、每个工具
+一次、答案一次，可能来很多次、是增量），后者是**一轮的账目**（一次性、轮末才有定论，
+属于「结果」而不是「过程事件」）。做进接口 = 四个已有实现全部被迫实现一个多数前端
+用不上的方法——**接口的宽度就是替换的成本**（`llm/types.go` 那条先例：没人调的
+方法不留，「那不是可替换，是可妨碍」）。挂在 `RunResult` 上零破坏。
+
+**回退：** 换端点若建流 400 且错误文本含 `stream_options`，删 `baseRequest` 里那
+一行即回退（用量随之回到零值，展示层自动不打那一行）。
+
+**不做（留作后续）：** SSE 事件与微信回执——数据已在 `RunResult` 上就位，谁想展示
+谁读；不引 tokenizer；不加开关。
 
 ---
 
