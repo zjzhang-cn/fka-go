@@ -33,6 +33,7 @@ const (
 	ToolRun    = "run"
 	ToolRead   = "read"
 	ToolExport = "export"
+	ToolImport = "import"
 )
 
 // runDescription 生成 run 工具的说明。**按部署能力动态拼**：能不能 pip/npm 联网装包
@@ -112,6 +113,16 @@ func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
 			mcp.Required(),
 		),
 	), s.handleExport)
+
+	// import **不接受模型填的参数**：字节由 agent 自动注入（见 internal/agent 的
+	// injectInbound）。所以这里不声明 `files` 字段——让模型看见一个它填不了的参数只会
+	// 诱导它瞎编。工具描述说明「把用户本轮发来的图片存进沙盒」即可。
+	mcpServer.AddTool(mcp.NewTool(ToolImport,
+		mcp.WithDescription(
+			"把**用户本轮发来的图片**存进你的沙盒，返回沙盒内的相对路径。之后用 read 查看、"+
+				"用 run 处理（转换、识别、裁剪等）。字节由 agent 自动填入，**你不需要也不应该传任何参数**；"+
+				"只有在需要把用户刚发的图落到文件上时才调用。"),
+	), s.handleImport)
 }
 
 // ── 多租户：身份 → 沙盒 ─────────────────────────────────
@@ -366,6 +377,93 @@ func (s *sandboxServer) handleExport(ctx context.Context, request mcp.CallToolRe
 		mcp.NewTextContent(header),
 		resource,
 	}}, nil
+}
+
+// ImportMaxBytes import 单文件上限。与 read 无关、与 agent 侧消息层的入站上限一致，
+// 免得「网页收下了、沙盒又拒了」。是 var 便于用例调小。
+var ImportMaxBytes int64 = 8 << 20
+
+// handleImport 把 agent 注进来的入站附件写到本租户沙盒的 `inbox/` 下。
+//
+// ## 为什么字节走工具参数而不是 `_meta`
+//
+// `_meta` 给的是**调用方身份**这种小元数据；图片是可能几 MB 的载荷，塞进每次调用的
+// `_meta` 不合适。工具参数是载体，且**只有被 agent 点名的落点工具**才拿到字节（见
+// internal/agent）。模型手里没有 base64，所以 `files` 是 agent 填的、覆盖任何同名值。
+//
+// ## 为什么落 `inbox/`
+//
+// 用户内容与模型自己造的文件分开，便于用户知道「哪些是发进来的」。路径仍受沙盒根
+// 约束（词法 + 符号链接），文件名只取 basename、重名自动让位。
+func (s *sandboxServer) handleImport(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sb, problem := s.sandboxOf(request)
+	if problem != nil {
+		return problem, nil
+	}
+
+	raw, _ := request.GetArguments()["files"].([]any)
+	if len(raw) == 0 {
+		return fail("没有可导入的文件：这个工具由 agent 自动填入本轮图片，模型不必传参数。"), nil
+	}
+
+	inbox := filepath.Join(sb.Root, "inbox")
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		return fail("建 inbox 目录失败：" + err.Error()), nil
+	}
+
+	var written []string
+	for index, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		encoded, _ := entry["data"].(string)
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return fail(fmt.Sprintf("第 %d 个文件不是合法的 base64。", index+1)), nil
+		}
+		if int64(len(data)) > ImportMaxBytes {
+			return fail(fmt.Sprintf("第 %d 个文件超过上限 %s。", index+1, humanBytes(ImportMaxBytes))), nil
+		}
+
+		name, _ := entry["name"].(string)
+		relative := filepath.ToSlash(filepath.Join("inbox", uniqueName(inbox, safeBaseName(name, index))))
+		target := filepath.Join(sb.Root, filepath.FromSlash(relative))
+		if !within(sb.Root, target) {
+			return fail("文件名越界，已拒绝。"), nil
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return fail("写入失败：" + err.Error()), nil
+		}
+		written = append(written, relative)
+	}
+
+	return text("已把这些文件存入沙盒：\n- " + strings.Join(written, "\n- ") +
+		"\n用 read 查看内容、run 处理（转换/识别/裁剪等）。"), nil
+}
+
+// safeBaseName 取上传文件的安全 basename：去掉路径分隔符，空则给个默认名。
+func safeBaseName(name string, index int) string {
+	base := filepath.Base(filepath.FromSlash(strings.TrimSpace(name)))
+	if base == "" || base == "." || base == string(filepath.Separator) || base == ".." {
+		return fmt.Sprintf("upload-%d", index+1)
+	}
+	return base
+}
+
+// uniqueName 在 dir 里没被占用，就在扩展名前加 `-1`、`-2`……避免覆盖同名文件。
+func uniqueName(dir, name string) string {
+	if _, err := os.Stat(filepath.Join(dir, name)); os.IsNotExist(err) {
+		return name
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s-%d%s", stem, i, ext)
+		if _, err := os.Stat(filepath.Join(dir, candidate)); os.IsNotExist(err) {
+			return candidate
+		}
+	}
 }
 
 // formatResult 把一条命令的结果拼成给模型看的一段话。

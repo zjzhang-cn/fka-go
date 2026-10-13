@@ -7,12 +7,14 @@
 `--transport` 可以让它在**同一份工具实现**上换成 **HTTP+SSE** 或 **streamable HTTP**。
 崩了不影响主程序。
 
-它提供两个工具：
+它提供四个工具：
 
 | 工具 | 作用 |
 |---|---|
 | `run` | 在沙盒里执行一条 shell 命令，返回退出码与 stdout/stderr |
 | `read` | 读沙盒里的一个文件，**经 MCP 内容块**把内容交给模型：文本给 `type:"text"` 块（32 KiB 上限、超出截断）、图片给带 base64 的 `type:"image"` 块、音频给带 base64 的 `type:"audio"` 块、其它二进制只给类型与大小 |
+| `export` | 把一个沙盒文件**发给用户**（不是发给模型）：返回 `audience=["user"]` 的嵌入资源，agent 经用户所在渠道送出 |
+| `import` | 反向入口：把**用户本轮发来的图片**存进本租户 `inbox/`，供 `read`/`run` 二次处理。字节由 agent 按 `FKA_MEDIA_SINK` 注入，**模型不传参数**（见 `docs/decisions.md` 第 25 条） |
 
 `read` 与 CLI 的 `@引用` 是**同一套语义**（文本 / 图片 / 二进制三类、同样的上限），
 区别是数据走 **MCP 通道**而不是 agent 读本地路径。图片必须作为独立的 `type:"image"`
@@ -110,6 +112,11 @@ docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d    # 起容器
 # 宿主侧 mcp.json 指向容器发布的端口：
 # { "mcpServers": { "sandbox": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" } } }
 ```
+
+⚠️ **改了 `mcp/mcp_sandbox/**` 的代码后，容器里跑的还是旧二进制——必须重建镜像**：
+`make docker-sandbox`（宿主交叉编译 + `docker build`）后**再** `docker compose ... up -d`。
+镜像里不编译（见下），所以只 `up` 不重建等于没改；症状是「代码改了但沙盒行为没变」。
+`package main` 里加/改工具、改沙盒边界都算——一切都只在**镜像里的那个二进制**生效。
 
 **镜像里不编译**（省掉容器内的 Go 工具链）：`docker-sandbox` 先在宿主把 fka-sandbox
 交叉编译成 `bin/fka-sandbox-linux-<arch>`，Dockerfile 只 `COPY` 它进去。手动等价于：
@@ -235,7 +242,7 @@ mcp/mcp_sandbox/
 ├── boundary_test.go       边界测试：不许依赖树外的包；server 必须是 main 包
 ├── main.go                启动（沙盒路径/模式/策略解析、--transport 选传输）
 ├── main_test.go           --transport / --addr 解析与 SSE 真链路用例
-├── server.go              run / read 工具的声明与实现
+├── server.go              run / read / export / import 工具的声明与实现
 ├── sandbox.go             沙盒核心：cwd/path 限制、超时、输出上限、命令策略
 ├── execlog.go             执行日志：每次 run 一条 JSON Lines，按 UTC 日期轮转
 ├── read.go                read 工具：把沙盒文件按类别经 MCP 内容块交给模型

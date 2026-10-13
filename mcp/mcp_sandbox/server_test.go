@@ -6,6 +6,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -219,5 +222,77 @@ func TestRun说明_按是否允许pip动态生成(t *testing.T) {
 				t.Errorf("run 工具说明里少了 %q：%s", want, s)
 			}
 		}
+	}
+}
+
+// TestImport工具_把字节写进inbox import 是 agent→沙盒 的字节入口：agent 把本轮
+// 入站图片的 base64 填进 `files`，工具写到本租户沙盒的 inbox/ 下并回报路径。
+func TestImport工具_把字节写进inbox(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	data := []byte("PNGDATA")
+	result, err := impl.handleImport(context.Background(), callRequest(map[string]any{
+		"files": []any{map[string]any{
+			"name": "photo.png", "mime": "image/png",
+			"data": base64.StdEncoding.EncodeToString(data),
+		}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("导入该成功：%s", resultText(t, result))
+	}
+
+	got, err := os.ReadFile(filepath.Join(s.Root, "inbox", "photo.png"))
+	if err != nil {
+		t.Fatalf("文件没落进 inbox：%v", err)
+	}
+	if string(got) != "PNGDATA" {
+		t.Errorf("内容不对：%q", got)
+	}
+	if body := resultText(t, result); !strings.Contains(body, "inbox/photo.png") {
+		t.Errorf("结果该告诉模型路径：%s", body)
+	}
+}
+
+// TestImport工具_空files要拒 没有 files（模型自己调、agent 没注入）时如实说一句，
+// 不写空文件。
+func TestImport工具_空files要拒(t *testing.T) {
+	impl := newTestServer(newTestSandbox(t))
+	result, err := impl.handleImport(context.Background(), callRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("没有 files 该拒绝")
+	}
+}
+
+// TestImport工具_重名自动让位 用户连发两张同名图不该互相覆盖。
+func TestImport工具_重名自动让位(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	call := func() {
+		if _, err := impl.handleImport(context.Background(), callRequest(map[string]any{
+			"files": []any{map[string]any{
+				"name": "photo.png", "mime": "image/png",
+				"data": base64.StdEncoding.EncodeToString([]byte("x")),
+			}},
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call()
+	call()
+
+	entries, err := os.ReadDir(filepath.Join(s.Root, "inbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("两张同名图该各存一份，实际 %d 个文件", len(entries))
 	}
 }
