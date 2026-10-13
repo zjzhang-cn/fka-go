@@ -33,6 +33,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -146,7 +147,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	// 工具看到的那份外界。**由输入里的身份与回话能力拼出来**，而不是让消息层
 	// 自己拼一个 tools.Context 递进来——那样同一个「外界」就有两个入口，
 	// 而漏掉一处身份的后果是权限过滤失效（见 tools.Context.PrincipalID）。
-	tc := tools.Context{PrincipalID: input.PrincipalID, SessionID: input.SessionID, Reply: input.Reply}
+	tc := tools.Context{PrincipalID: input.PrincipalID, SessionID: input.SessionID, Reply: input.Reply, Inbound: input.Inbound}
 
 	// 回显：前端传了 Emitter 就把推理流也接到它上面；没传就让 provider 走自己的落点。
 	// 推理由模型层按块写出，这里经 ctx 换一条通道，逐块变成 Emitter 事件。
@@ -158,6 +159,18 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 	toolDefs, err := r.tools.ToToolDefs(ctx, tc)
 	if err != nil {
 		return RunResult{}, err
+	}
+	// 入站附件有字节、但没有可用的落点：**如实记一条**。图片照常喂模型（vision 不受
+	// 影响），只是工具取不到——不静默，也不改路由去猜一个沙盒。
+	if len(input.Inbound) > 0 {
+		switch {
+		case r.InboundSink == "":
+			config.Log().Warn(config.TypeTOOL, "入站附件没有落点，只喂模型（未配置 FKA_MEDIA_SINK）",
+				config.Fields(ctx, config.Context{"files": len(input.Inbound)}))
+		case !hasToolName(toolDefs, r.InboundSink):
+			config.Log().Warn(config.TypeTOOL, "入站落点工具不可用，只喂模型",
+				config.Fields(ctx, config.Context{"sink": r.InboundSink, "files": len(input.Inbound)}))
+		}
 	}
 	// 段落只算一次：技能目录每次都要扫磁盘，拼 system 与记日志用的必须是同一份。
 	// 日期段放在最后——它是这一轮唯一随时间变化的内容。
@@ -429,7 +442,40 @@ func (r *Runner) runToolCall(ctx context.Context, call llm.ToolCall, tc tools.Co
 		return tools.FailResult("参数不是合法的 JSON 对象：%s", llm.Clamp(call.Arguments, 200))
 	}
 
+	args = injectInbound(r.InboundSink, call.Name, args, tc.Inbound)
 	return r.tools.Call(ctx, call.Name, args, tc)
+}
+
+// injectInbound 给**被指定的**入站落点工具补上本轮附件的原始字节。
+//
+// ## 为什么必须点名，不能按名字猜
+//
+// MCP server 是通用的，agent 不认识「沙盒」。按工具名后缀（`__import`）注入的话，
+// 有几个同名工具就往几个 server 塞用户图片——**扇出**，模型与用户都看不出来，且
+// 「有几个」还取决于运行时谁连上了，路由会静默漂移。所以只认**配置里点名的那个
+// 工具全名**（`Runner.InboundSink`，来自 `FKA_MEDIA_SINK`）。
+//
+// ## 为什么字节只能由 agent 注
+//
+// 模型手里只有图片，没有 base64 文本，造不出 `files`。同名参数一律**覆盖**。
+func injectInbound(sink, toolName string, args map[string]any, inbound []tools.Attachment) map[string]any {
+	if sink == "" || toolName != sink || len(inbound) == 0 {
+		return args
+	}
+
+	files := make([]map[string]any, 0, len(inbound))
+	for _, item := range inbound {
+		files = append(files, map[string]any{
+			"name": item.Name,
+			"mime": item.MimeType,
+			"data": base64.StdEncoding.EncodeToString(item.Data),
+		})
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	args["files"] = files
+	return args
 }
 
 // persistable 过滤掉**只为当前请求存在**的消息（工具图片那条 transient user 消息）
@@ -480,4 +526,14 @@ func pickSystemPrompt(injected string) string {
 		return injected
 	}
 	return prompts.Agent
+}
+
+// hasToolName 这份工具声明里有没有叫 name 的。给「落点工具可不可用」那条日志用。
+func hasToolName(defs []llm.ToolDef, name string) bool {
+	for _, def := range defs {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }

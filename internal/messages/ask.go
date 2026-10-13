@@ -24,6 +24,7 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
+	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
 
 // AskInput 一次同步问答要绑给编排入口的东西。
@@ -108,9 +109,11 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 	// 图片 part 在这里取回）归到同一个 `RunnerInput.Images`，agent/llm 不必知道图从
 	// 哪来，也不必认识任何渠道。
 	images := append([]llm.ImageAttachment(nil), in.Images...)
+	var inbound []tools.Attachment
 	if len(imageParts) > 0 {
-		fetched, failures := fetchInboundImages(ctx, channel, imageParts)
+		fetched, files, failures := fetchInboundImages(ctx, channel, imageParts)
 		images = append(images, fetched...)
+		inbound = append(inbound, files...)
 		// 只发图、一张都没取回来：如实说，别跑模型空猜
 		if question == "" && len(images) == 0 {
 			config.Log().Warn(config.TypeMSG, "入站图片没有一张取回来", mergeFields(fields,
@@ -134,6 +137,7 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		Emitter:     emitterFor(ctx, channel),
 		Ephemeral:   in.Ephemeral,
 		Images:      images,
+		Inbound:     inbound,
 	})
 	if err != nil {
 		// **被喊停不是错误**：网页「停止」按钮或终端 Ctrl-C 取消的是这一轮的 ctx，

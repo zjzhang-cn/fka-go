@@ -25,6 +25,7 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/channels"
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
+	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
 
 const (
@@ -52,23 +53,28 @@ func imagePartsOf(message channels.InboundMessage) []channels.Part {
 	return out
 }
 
-// fetchInboundImages 把图片 part 取回成附件。第二个返回值是本轮取不回来的那些的
-// 说明（给日志与「一张都没取到」时的答复用），**不是错误**——取图失败不该把有文字
-// 的那一轮也带走。
+// fetchInboundImages 把图片 part 取回成附件。返回**两种形态**：
+//
+//   - images：base64 data URI，给模型看（vision）；
+//   - files：原始字节，交给工具层（落点导入，见 agent 的 injectInbound）。
+//
+// 第三个返回值是本轮取不回来的那些的说明（给日志与「一张都没取到」时的答复用），
+// **不是错误**——取图失败不该把有文字的那一轮也带走。
 //
 // 渠道没实现 `MediaFetcher`（无状态、或压根不产图片）时返回一条说明、零附件，由
 // 调用方决定怎么说。
-func fetchInboundImages(ctx context.Context, channel channels.Channel, parts []channels.Part) ([]llm.ImageAttachment, []string) {
+func fetchInboundImages(ctx context.Context, channel channels.Channel, parts []channels.Part) ([]llm.ImageAttachment, []tools.Attachment, []string) {
 	if len(parts) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	fetcher, ok := channel.(channels.MediaFetcher)
 	if !ok {
-		return nil, []string{fmt.Sprintf("渠道 %s 不能取回图片", channel.Label())}
+		return nil, nil, []string{fmt.Sprintf("渠道 %s 不能取回图片", channel.Label())}
 	}
 
 	images := make([]llm.ImageAttachment, 0, len(parts))
+	files := make([]tools.Attachment, 0, len(parts))
 	var failures []string
 	for index, part := range parts {
 		if len(images) >= maxInboundImages {
@@ -97,12 +103,14 @@ func fetchInboundImages(ctx context.Context, channel channels.Channel, parts []c
 		if name == "" {
 			name = fmt.Sprintf("图片%d", index+1)
 		}
+		mime := imageMime(part.Media.MimeType, data)
 		images = append(images, llm.ImageAttachment{
 			Name:    name,
-			DataURI: "data:" + imageMime(part.Media.MimeType, data) + ";base64," + base64.StdEncoding.EncodeToString(data),
+			DataURI: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data),
 		})
+		files = append(files, tools.Attachment{Name: name, MimeType: mime, Data: data})
 	}
-	return images, failures
+	return images, files, failures
 }
 
 // imageMime 定这张图在 data URI 里的 MIME。优先用渠道声明的（它可能比嗅探更准，

@@ -169,6 +169,9 @@ func Build(ctx context.Context, opts Options) *App {
 			// 工具结果里标注给用户的附件是否投递，与 reply 工具同一道闸：
 			// 没放行 send 就不送——MCP 工具都是 external，不加这道闸任何 server 都能发
 			AllowSend: app.Policy.Allows(tools.EffectSend),
+			// 入站图片落到哪个工具（如 mcp__sandbox__import）。**显式点名**，不按名字猜：
+			// 没配就没有落点，图片只喂模型（见 agent 的 injectInbound 与那条 Warn）。
+			InboundSink: strings.TrimSpace(os.Getenv(envMediaSink)),
 		})
 		if !app.Agent.Enabled() {
 			config.Log().Info(config.TypeSYS, "LLM_TOOLS 已关闭，问答不走工具循环", config.Context{})
@@ -307,6 +310,13 @@ func (a *App) registerChannels(ctx context.Context, providers []channels.Provide
 		a.ChannelKinds = append(a.ChannelKinds, provider.ID())
 	}
 }
+
+// envMediaSink 入站图片的落点：一个**工具全名**（如 mcp__sandbox__import）。设了它，
+// 且模型调用的是这个工具时，循环才把本轮图片字节注进去。空 = 没有落点，只喂模型。
+//
+// **刻意不用「哪个 server 有 import 工具」去猜**：多沙盒时会扇出、且路由随连接状态
+// 静默漂移。点名的失效是可诊断的。
+const envMediaSink = "FKA_MEDIA_SINK"
 
 // drainTimeout 停机时等消息层排空的上限。
 //

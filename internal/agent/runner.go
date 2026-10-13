@@ -61,6 +61,12 @@ type RunnerInput struct {
 	// Images 本轮问题附带的图片（CLI 的 `@图片` 引用）。**只在这一轮发给模型**，
 	// 不落进会话历史——见 llm.ChatMessage.ImageAttachments。
 	Images []llm.ImageAttachment
+	// Inbound 本轮入站附件的**原始字节**（用户发来的图片），交给工具层。
+	//
+	// 与 Images 的区别是**受众/形态**：Images 是 base64 data URI、只给模型看；
+	// Inbound 是原始字节，让工具（如沙盒 import）能把用户内容存到自己能处理的地方。
+	// 同一条入站图片两个字段都填，各走各路。
+	Inbound []tools.Attachment
 	// Emitter 过程事件（推理 / 工具调用 / 答案）的接收者，供各前端「回显」。
 	// **nil = 不回显**。chat/ask 画给人看，渠道记日志并只把答复发回去。
 	Emitter Emitter
@@ -84,6 +90,12 @@ type Runner struct {
 	ContextTokens int
 	// SystemPrompt 覆盖系统提示。空 = 取工具循环那条
 	SystemPrompt string
+	// InboundSink 入站附件（用户图片）的落点：**工具全名**（如 mcp__sandbox__import）。
+	//
+	// 与 SystemPrompt 一样是**部署事实**（来自 FKA_MEDIA_SINK），不是每条消息的事。
+	// 空 = 没有落点，入站图片只喂给模型。只有模型调用**这一个**工具时，循环才把本轮
+	// 字节注进去（见 loop.go 的 injectInbound）。
+	InboundSink string
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
 	Model           string
@@ -122,6 +134,7 @@ func NewRunner(
 		MaxSteps:        maxSteps,
 		ContextTokens:   opts.ContextTokens,
 		SystemPrompt:    opts.SystemPrompt,
+		InboundSink:     opts.InboundSink,
 		Model:           opts.Model,
 		Host:            opts.Host,
 		TimeoutMs:       opts.TimeoutMs,
@@ -139,6 +152,8 @@ type RunnerOptions struct {
 	MaxSteps      int
 	ContextTokens int
 	SystemPrompt  string
+	// InboundSink 入站附件的落点工具全名（见 Runner.InboundSink）。空 = 无落点
+	InboundSink string
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
 	Model           string

@@ -146,6 +146,13 @@ type Context struct {
 	// 工具要的是「动哪一段」，不是「里面写了什么」。
 	SessionID string
 
+	// Inbound 本轮入站附件的**原始字节**（用户发来的图片等）。**逐轮**注入，与 `Reply`
+	// 对偶——`Reply` 是逐轮输出口，这是逐轮输入资源。
+	//
+	// 用途：让工具能把用户刚发来的内容存到「自己能处理的地方」（如沙盒 import）。
+	// 与 `Reply` 一样**不含会话内容**，只带这一轮的实际字节。绝大多数工具忽略它。
+	Inbound []Attachment
+
 	// Extra 由组装根注入的窄端口。**刻意不给 ORM、不给文件路径、不给存储根**——
 	// 这个 agent 不拥有任何数据，「数据存在哪」是 MCP server 的事，不是它的事。
 	Extra map[string]any
