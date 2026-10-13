@@ -570,30 +570,32 @@ sandbox；键在两边各写一份字面量（sandbox 自给自足，不能 impo
 
 ---
 
-## 24. 入站图片：接缝统一，转换点唯一
+## 24. 入站媒体：接缝统一，转换点唯一（图片 / 文本 / 二进制）
 
-**决定：** 网页与微信的「读图」走**同一条**业务链路，差异只留在渠道的
-`channels.MediaFetcher` 实现里。
+**决定：** 网页与微信的「读文件」走**同一条**业务链路，差异只留在渠道的
+`channels.MediaFetcher` 实现里。分类语义**与沙盒 `read`、CLI `@引用` 完全一致**（三类）：
 
-- **入站**：渠道产出 `channels.Part{Kind: KindImage, Media: MediaRef}`——只带句柄、
-  不带字节（微信是 CDN 参数，网页是内存暂存的 id）。
-- **唯一转换点**在 `internal/messages/images.go`：消息层对每个图片 part 调
-  `MediaFetcher.FetchMedia` 取回字节，转成 `llm.ImageAttachment`（base64 data URI），
-  随本轮 user 消息发给模型。**agent 与 llm 里不出现任何渠道分支**——加第三个渠道，
-  这个文件一行不改。这正是「接缝是唯一统一处」那条判据在图片上的落点。
-- **图片不进会话历史**：`llm.ChatMessage.ImageAttachments` 是 `json:"-"`，只活在
-  当前这一轮。代价是下一轮追问「那张图」时图已不在上下文——与 CLI 的 `@图片` 同规。
-- **纯图补一句默认提示语**（`defaultImageQuestion`）：各家模型对「空文本 + 图片块」
-  接受度不一，补一句最稳。有文字时用用户的文字。
-- **取不到就如实说**：渠道没实现 `MediaFetcher`、或取图失败且没有文字时，回
-  `replyImageUnavailable`，**不调模型空猜**。
-- 网页侧 `POST /messages` 支持 multipart（字段 `conversation`/`text` + 若干 `image`
-  文件）；字节进独立的 `inbound` 暂存（与出站 `/files/{id}` 的 `blobs` 分开），
-  `Capabilities.Image.Receive` 随之翻成 `true`。微信侧无需改动——它早已解析图片
-  part 并实现了 `FetchMedia`。`contract_test.go` 里 `FetchMedia` 的待办债同时销掉。
+- **图片** → `llm.ImageAttachment`（base64 data URI，模型当图看）；
+- **文本**（无 NUL 字节）→ 正文并进本轮问题（32 KiB 上限、超出截断），**进会话历史**；
+- **二进制**（音频/视频/压缩包…）→ 只给「名字 + 类型 + 大小」的元信息；
+- **语音**带转写文本时，转写当文本用（音频字节仍收进 `files`）。
 
-**已接受的代价：** 入站图片有上限（单张 8 MiB、一条最多 4 张，`images.go`），超限
-跳过并记日志；图片 base64 后约膨胀 1/3，计入本轮请求大小但不进历史预算。
+- **入站**：渠道产出 `channels.Part{Kind, Media: MediaRef}`——只带句柄、不带字节
+  （微信是 CDN 参数，网页是内存暂存的 id）。
+- **唯一转换点**在 `internal/messages/media.go`：对每个媒体 part 调 `MediaFetcher.FetchMedia`
+  取回字节、按嗅探分类，转成附件 / 问题正文 / 元信息。**agent 与 llm 里不出现任何渠道
+  分支**——加第三个渠道，这个文件一行不改。这正是「接缝是唯一统一处」那条判据的落点。
+- **`FKA_MEDIA_SINK`**（第 25 条）：所有取回的原始字节另走 `tools.Context.Inbound`，只有
+  模型调用**被点名的那个工具**（如 `mcp__sandbox__import`）时才交付给沙盒。
+- **纯媒体补一句默认提示语**（`defaultMediaQuestion`）：各家模型对「空文本 + 内容块」
+  接受度不一。取不回来且没有文字时回 `replyMediaUnavailable`，**不调模型空猜**。
+- 网页侧 `POST /messages` 支持 multipart，**接受任意文件**；字节进独立的 `inbound` 暂存
+  （与出站 `/files/{id}` 的 `blobs` 分开），`Capabilities.{File,Image}.Receive` 均为 true。
+  微信侧无需改动——它早已解析各类 part 并实现了 `FetchMedia`。`contract_test.go` 里
+  `FetchMedia` 的待办债同时销掉。
+
+**已接受的代价：** 单件上限 8 MiB、一条最多 8 件（`media.go`），超限跳过并记日志；图片
+base64 后约膨胀 1/3，计入本轮请求大小但不进历史预算。
 
 ---
 

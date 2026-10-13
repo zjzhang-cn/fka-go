@@ -216,10 +216,11 @@ mcp/mcp_sandbox     独立 MCP server（沙盒 bash 执行；默认 bwrap 命名
 > `<基根>/<safe(principal)>`，run/read/export/import 全在这一层里。**缺身份 fail-closed**
 > （拒绝执行，不落共享目录）。见 `docs/decisions.md` 第 20 条。
 >
-> **反向入口（agent → 沙盒）**：用户发来的图片除喂模型外，可落到一个**被点名**的沙盒供
-> 工具二次处理——配 `FKA_MEDIA_SINK=<工具全名>`（如 `mcp__sandbox__import`），循环只在
-> 模型调用**恰好那个工具**时把本轮字节注进去，沙盒写进本租户 `inbox/`。**不按工具名猜**
-> （多沙盒会扇出、路由会静默漂移）；没点名就不落，只喂模型。见 `docs/decisions.md` 第 25 条。
+> **反向入口（agent → 沙盒）**：用户发来的文件（图片/文本/二进制都算）除喂模型外，可落到
+> 一个**被点名**的沙盒供工具二次处理——配 `FKA_MEDIA_SINK=<工具全名>`
+> （如 `mcp__sandbox__import`），循环只在模型调用**恰好那个工具**时把本轮字节注进去，
+> 沙盒写进本租户 `inbox/`。**不按工具名猜**（多沙盒会扇出、路由会静默漂移）；没点名就不落，
+> 只喂模型。见 `docs/decisions.md` 第 25 条。
 >
 > ⚠️ **改了 `mcp/mcp_sandbox/**` 后，容器里跑的还是旧二进制——镜像必须重建**：
 > `make docker-sandbox`（宿主交叉编译 `bin/fka-sandbox-linux-<arch>` + `docker build`），

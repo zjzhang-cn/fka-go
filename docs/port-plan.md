@@ -84,7 +84,7 @@ make smoke 的 smoke-sandbox     # 沙盒 bash 的端到端，**真起 bwrap**
 | **消息层** | `internal/messages` | 17 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号+身份分片**（同「账号+身份」串行、不同之间并行，身份为空时退回账号）；身份缺失就拒答；**回话带上工具那一步的 ctx**；发不出去只记日志、不发第二条 |
 | **技能源** | `internal/tools/skills` | 21 | **无条件注册**（目录空不藏工具）；极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录时 list 返 `[]` 而 load 说清放哪 |
 | **渠道接缝** | `internal/channels` | 16 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；可选能力靠**类型断言**而不是 `ok=false`；**契约上每个方法都有活着的调用方**（`contract_test.go`） |
-| **网页渠道（SSE）** | `internal/channels/web` | 15 | SSE 收 + POST 发；**token→HttpOnly cookie 认证**（EventSource/`<img>` 带不了头）；会话 id 校验（进 SessionKey/历史文件名）；**实现 EmitterProvider**（流式推 reasoning/tool，**最终答案走 Senders.Text、Answer 置空避免重复**）；出站媒体内存暂存 + `/files/{id}`；**入站图片**：`POST /messages` 支持 multipart，字节进独立 `inbound` 暂存、实现 `MediaFetcher`（`Image.Receive=true`）；静态目录缺失给说明不 500；未配置不产实例、有地址没令牌拒绝启用 |
+| **网页渠道（SSE）** | `internal/channels/web` | 15 | SSE 收 + POST 发；**token→HttpOnly cookie 认证**（EventSource/`<img>` 带不了头）；会话 id 校验（进 SessionKey/历史文件名）；**实现 EmitterProvider**（流式推 reasoning/tool，**最终答案走 Senders.Text、Answer 置空避免重复**）；出站媒体内存暂存 + `/files/{id}`；**入站文件**：`POST /messages` 支持 multipart、接受任意文件，字节进独立 `inbound` 暂存、实现 `MediaFetcher`（File/Image 收发都开；消息层按三类语义分派）；静态目录缺失给说明不 500；未配置不产实例、有地址没令牌拒绝启用 |
 | **记忆 server（边界 + 工具层）** | `mcp/memory` | 7 | `mcp/memory/**` 不许 import 树外任何包（编译器管不到，由测试守）；是 `main` 包；只认自己那张表；**参数按声明读**（`limit` 是 number 就得用 `GetInt`）；**别人的 private 不进结果** |
 | **记忆存储 + 迁移** | `mcp/memory/internal/store` | 17 | **认领老库 v0→v1，一行不动**；认领失败**绝不重建**；共用库时只认自己那张表；**库比代码新要拒绝启动**；权限过滤在 WHERE、关键词之间是「且」、`%`/`_` 要转义 |
 | **沙盒 sandbox server** | `mcp/mcp_sandbox` | 52 | **多租户**：身份经 MCP `_meta`（`fka/principal`）从 agent 注入、模型改不了，每个 `PrincipalID` 一个沙盒子目录 `<基根>/<safe(principal)>`，**缺身份 fail-closed**；**bwrap 真隔离**：只读绑定宿主最小必要部分（`/usr /bin /lib /etc`），宿主其余与兄弟租户在沙盒里**不存在**、只有本租户根可写、独立网络/PID/IPC/UTS/user；**找不到 bwrap 拒绝启动**（不静默降到不隔离）；cwd 词法+符号链接双检；超时杀整进程组；命令首词策略**是护栏不是墙**（`direct` 档只固定 cwd）；**read 工具**与 `@引用` 同语义、经 MCP 内容块把沙盒文件交给模型（文本 text、图片 `type:"image"`、音频 `type:"audio"`、其余二进制元信息，同一套越界检查）；**export 工具**把文件作为 `audience=["user"]` 的嵌入资源返回，agent 只认该字段、经渠道发给用户（字节端到端，远端 SSE 沙盒也成立）；**import 工具**是反向入口：agent 按 `FKA_MEDIA_SINK` 点名的工具全名，把用户本轮发来的图片字节经工具参数注进来，写进本租户 `inbox/`，供 read/run 二次处理（`inbox/` 单文件 8 MiB、重名让位）；MCP 客户端识别全部内容类型（text/image/audio/resource/resource_link）与 `annotations.audience`，图片随消息发送、其余作文字元信息 |
@@ -147,7 +147,7 @@ make smoke 的 smoke-sandbox     # 沙盒 bash 的端到端，**真起 bwrap**
 |---|---|---|
 | **真机收发没验过**（扫码验过） | **高** | 需要真微信账号。`make real-check` 会提示步骤，**但那份步骤文档还没写** |
 | 语义阈值 0.994 换模型后失效 | **高且静默** | 文档侧上线前。**5 份文档标出来的阈值是过拟合**，先按保守值（压低召回，宁可答不出也不引用错文件） |
-| iLink 的**入站语音/视频/文件**没有消费方 | 中 | **入站图片已接**（`messages/images.go` + `MediaFetcher`）；文件/语音/视频仍如实拒答，要有落点时按同一条转换点接 |
+| 入站音频/视频只给元信息（不喂内容） | 低 | 图片/文本/二进制三类已接（`media.go`）；音频/视频当二进制只给名字+类型+大小，要真喂内容得等 provider 支持音频输入 |
 | iLink 的 `image` 发送路径未真机验证 | 中 | 渠道层做的时候，需要真机 |
 | RRF 融合（`hybrid` 只并排输出两路） | P1 | 文档侧。真实查询攒够再定权重 |
 | 记忆只有关键词检索（无向量索引） | P1 | 文档侧。记忆也建向量索引之后 |
