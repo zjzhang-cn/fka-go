@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,10 @@ const (
 	ToolExport = "export"
 	ToolImport = "import"
 )
+
+// ResourceRootURI 资源根。固定资源 `sandbox:///` 读出本租户文件清单；资源模板
+// `sandbox:///{+path}` 按路径读文件。**按租户**：身份仍走 `_meta`，缺身份 fail-closed。
+const ResourceRootURI = "sandbox:///"
 
 // runDescription 生成 run 工具的说明。**按部署能力动态拼**：能不能 pip/npm 联网装包
 // 取决于这次部署（网络与代理），所以那句不能写死。提成函数也让用例能钉住它必须提到的
@@ -123,6 +128,24 @@ func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
 				"用 run 处理（转换、识别、裁剪等）。字节由 agent 自动填入，**你不需要也不应该传任何参数**；"+
 				"只有在需要把用户刚发的图落到文件上时才调用。"),
 	), s.handleImport)
+
+	// resources：把本租户沙盒里的文件也按 MCP 标准原语暴露出去，方便**别的 MCP 客户端**
+	// （如 Claude Desktop 直连 fka-sandbox）列举与读取。读取的合取与 read 工具同一套分类；
+	// 身份同样走 `_meta`，缺身份 fail-closed。
+	//
+	// ⚠️ 列举只能**静态**：SDK 的资源模板没有 list 回调（不像 JS SDK），所以按租户动态列
+	// 文件做不到——用一个固定资源 `sandbox:///` 读出来是「本租户文件清单」兜底。
+	mcpServer.AddResource(mcp.NewResource(
+		ResourceRootURI, "沙盒文件清单",
+		mcp.WithResourceDescription("列出本租户沙盒根下的普通文件（相对路径与大小）。"),
+		mcp.WithMIMEType("text/plain"),
+	), s.handleResourceRoot)
+
+	mcpServer.AddResourceTemplate(mcp.NewResourceTemplate(
+		ResourceRootURI+"{+path}", "沙盒文件",
+		mcp.WithTemplateDescription("按路径读取本租户沙盒里的一个文件（与 read 工具同一套分类）。"),
+		mcp.WithTemplateMIMEType("application/octet-stream"),
+	), s.handleResourceFile)
 }
 
 // ── 多租户：身份 → 沙盒 ─────────────────────────────────
@@ -173,15 +196,112 @@ func (s *sandboxServer) sandboxFor(principal string) (*Sandbox, error) {
 
 // principalOf 从 MCP `_meta` 取调用方身份。没有就返回空串。
 func principalOf(request mcp.CallToolRequest) string {
-	if request.Params.Meta == nil {
+	return principalOfMeta(request.Params.Meta)
+}
+
+// principalOfMeta 从 MCP `_meta` 取调用方身份。工具调用与资源读取都走这里。
+func principalOfMeta(meta *mcp.Meta) string {
+	if meta == nil {
 		return ""
 	}
-	raw, ok := request.Params.Meta.AdditionalFields[metaPrincipalKey]
+	raw, ok := meta.AdditionalFields[metaPrincipalKey]
 	if !ok {
 		return ""
 	}
 	value, _ := raw.(string)
 	return strings.TrimSpace(value)
+}
+
+// sandboxForMeta 按 `_meta` 身份取沙盒（资源读取用）。缺身份 fail-closed。
+func (s *sandboxServer) sandboxForMeta(meta *mcp.Meta) (*Sandbox, error) {
+	principal := principalOfMeta(meta)
+	if principal == "" {
+		principal = strings.TrimSpace(s.opts.DefaultPrincipal)
+	}
+	if principal == "" {
+		return nil, errors.New("这次调用没带调用方身份（_meta." + metaPrincipalKey + "），已拒绝。")
+	}
+	sb, err := s.sandboxFor(principal)
+	if err != nil {
+		log.Log().Warn("建租户沙盒失败", log.Context{"principal": principal, "error": err.Error()})
+		return nil, err
+	}
+	return sb, nil
+}
+
+// ── resources ───────────────────────────────────────────
+
+// resourcePathArg 从 SDK 塞进来的模板变量里取路径。**它可能是 `[]string`**：
+// uritemplate 的 `Values` 把每个变量存成字符串列表（`+path` 展开后是 `["inbox/a.png"]`），
+// 直接断言成 string 会恒为空——症状是「资源路径为空」。
+func resourcePathArg(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []string:
+		if len(typed) > 0 {
+			return typed[0]
+		}
+	case []any:
+		if len(typed) > 0 {
+			first, _ := typed[0].(string)
+			return first
+		}
+	}
+	return ""
+}
+
+// handleResourceRoot 资源 `sandbox:///`：读出本租户的文件清单（一行一个「相对路径 \t 大小」）。
+func (s *sandboxServer) handleResourceRoot(_ context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	sb, err := s.sandboxForMeta(request.Params.Meta)
+	if err != nil {
+		return nil, err
+	}
+	listing, err := sb.List()
+	if err != nil {
+		return nil, err
+	}
+	return []mcp.ResourceContents{mcp.TextResourceContents{
+		URI: ResourceRootURI, MIMEType: "text/plain", Text: listing,
+	}}, nil
+}
+
+// handleResourceFile 资源模板 `sandbox:///{+path}`：按路径读本租户沙盒里的文件。
+// 分类与 read 工具一致：文本 text 块、图片/音频 blob 块、其它二进制一行元信息。
+func (s *sandboxServer) handleResourceFile(_ context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	sb, err := s.sandboxForMeta(request.Params.Meta)
+	if err != nil {
+		return nil, err
+	}
+	raw := resourcePathArg(request.Params.Arguments["path"])
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("资源路径为空")
+	}
+
+	file, err := sb.ReadFile(raw)
+	if err != nil {
+		return nil, err
+	}
+	uri := ResourceRootURI + strings.TrimPrefix(filepath.ToSlash(raw), "/")
+
+	switch file.Kind {
+	case kindImage:
+		return []mcp.ResourceContents{mcp.BlobResourceContents{URI: uri, MIMEType: file.MIME, Blob: file.ImageBase64}}, nil
+	case kindAudio:
+		return []mcp.ResourceContents{mcp.BlobResourceContents{URI: uri, MIMEType: file.MIME, Blob: file.AudioBase64}}, nil
+	case kindBinary:
+		return []mcp.ResourceContents{mcp.TextResourceContents{
+			URI: uri, MIMEType: "text/plain",
+			Text: fmt.Sprintf("（二进制文件 %s，%s；内容未附）", file.MIME, humanBytes(file.Size)),
+		}}, nil
+	default:
+		text := file.Text
+		if file.Truncated {
+			text += fmt.Sprintf("\n…（超过 %d 字节，已截断）", ReadTextLimit)
+		}
+		return []mcp.ResourceContents{mcp.TextResourceContents{URI: uri, MIMEType: "text/plain", Text: text}}, nil
+	}
 }
 
 // safeSegment 把 principal 压成能安全当目录名的形式：非法字符换 `_`，长度设限。

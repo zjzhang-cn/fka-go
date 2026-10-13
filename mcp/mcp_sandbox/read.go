@@ -34,8 +34,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -152,6 +154,45 @@ func (s *Sandbox) ReadFile(raw string) (fileRead, error) {
 	out.Kind = kindText
 	out.Text = string(data)
 	return out, nil
+}
+
+// List 列出沙盒根下的普通文件（一行一个「相对路径\t大小」），给资源清单 `sandbox:///` 用。
+// **有上限**（500 条）——目录很大时不至于把响应撑爆；隐藏目录跳过。
+func (s *Sandbox) List() (string, error) {
+	var b strings.Builder
+	count := 0
+	err := filepath.WalkDir(s.Root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // 读不动的子树跳过，不因一个坏目录让整份清单失败
+		}
+		if entry.IsDir() {
+			if path != s.Root && strings.HasPrefix(entry.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(s.Root, path)
+		if err != nil {
+			return nil
+		}
+		fmt.Fprintf(&b, "%s\t%s\n", filepath.ToSlash(rel), humanBytes(info.Size()))
+		count++
+		if count >= 500 {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if b.Len() == 0 {
+		return "（沙盒里没有文件）", nil
+	}
+	return b.String(), nil
 }
 
 // humanBytes 把字节数写成人看的大小。
