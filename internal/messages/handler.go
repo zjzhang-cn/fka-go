@@ -20,7 +20,6 @@ package messages
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -47,7 +46,7 @@ const (
 // 接口的宽度就是替换的成本。
 //
 // 有了它，「工具循环缺席」不再需要消息层判指针：缺席的 runner 本身实现了 Run，
-// 返 `agent.ErrNoRunner`，由下面 `errors.Is` 认出并回一句实话。
+// 返 `agent.ErrNoRunner`，由 `Ask` 里的 `errors.Is` 认出并回一句实话。
 type Runner interface {
 	// Run 跑一轮问答
 	Run(ctx context.Context, input agent.RunnerInput) (agent.RunResult, error)
@@ -73,6 +72,9 @@ func NewHandler(runner Runner) *Handler {
 //
 // 调用点在长驻的消息循环里，抛出去会中断**后续所有消息**的处理。所以这里的失败
 // 一律变成回给用户的一句话，而真相进日志。
+//
+// 编排（判定 + 跑循环 + 归类）在 `Ask` 里；这里只做「绑定归属 → 收到 → 发送」。
+// CLI 那条路走的是同一个 `Ask`，于是「加一个渠道零改业务层」对命令行也成立。
 func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	message := event.Message
 	channel := event.Channel
@@ -85,12 +87,7 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	// 不会记得抄，而**漏抄的那条日志正是排查时最会误导人的那种**。
 	// 也不能用全局变量——消息处理是按账号并行的（见 `dispatch.go`），
 	// 详见 `internal/config/scope.go`。
-	ctx = config.Bind(ctx, config.Context{
-		"channel": message.ChannelID, "account": message.AccountID,
-		"messageId": message.MessageID, "principal": message.PrincipalID,
-		"conversation": message.ConversationID,
-	})
-	fields := config.FieldsOf(ctx)
+	ctx = config.Bind(ctx, messageFields(message))
 
 	// ── 收到 ────────────────────────────────────────────────
 	//
@@ -100,70 +97,18 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 		"parts": describeParts(message.Parts), "chars": len(message.Text()),
 	}))
 
-	// ── 没有可答的内容，先说清楚 ────────────────────────────
-	question := strings.TrimSpace(message.Text())
-	if question == "" {
-		config.Log().Info(config.TypeMSG, "收到不能作答的消息", fields)
-		h.reply(ctx, channel, message, replyNotText, fields)
-		return
-	}
-
-	// ── 身份缺失就别跑 ──────────────────────────────────────
-	//
-	// 工具靠 PrincipalID 做权限过滤，而那个值是**模型填的参数**（见
-	// tools.Context.PrincipalID）。缺了它，模型就得自己编一个——那等于没有过滤。
-	// 所以这里宁可回一句，也不让它猜。
-	if strings.TrimSpace(message.PrincipalID) == "" {
-		config.Log().Warn(config.TypeMSG, "入站消息没有全局身份，已拒答", fields)
-		h.reply(ctx, channel, message, "这条消息里认不出你是谁，我不敢替你回答。", fields)
-		return
-	}
-
-	// ── 跑一轮 ─────────────────────────────────────────────
-	result, err := h.Runner.Run(ctx, agent.RunnerInput{
-		SessionID:   channels.SessionKeyOf(&message),
-		PrincipalID: message.PrincipalID,
-		TurnID:      message.MessageID,
-		Question:    question,
-		QuotedText:  quotedTextOf(message),
-		Reply:       newChannelReply(channel, message),
-		Emitter:     emitterFor(ctx, channel),
-	})
-	if err != nil {
-		// **工具循环缺席要说清是缺席**，不能混进「这一轮没答出来」——用户看到
-		// 「稍后再试」只会再问一次，而真因是没配模型或 LLM_TOOLS=off。
-		if errors.Is(err, agent.ErrNoRunner) {
-			config.Log().Warn(config.TypeMSG, "工具循环缺席，已回一句说明", fields)
-			h.reply(ctx, channel, message, replyNoLLM, fields)
-			return
-		}
-		// 模型的错如实报，**不静默降级**：「稍后再试」会把「接口没配好」
-		// 伪装成「模型偶尔不回」
-		config.Log().Error(config.TypeMSG, "问答失败", mergeFields(fields, config.Context{"error": err.Error()}))
-		h.reply(ctx, channel, message, fmt.Sprintf(replyAgentFail, err.Error()), fields)
-		return
-	}
-
-	text := strings.TrimSpace(result.Text)
-	if text == "" {
-		config.Log().Warn(config.TypeMSG, "模型没有给出正文", mergeFields(fields, config.Context{
-			"steps": result.Steps, "stoppedBy": result.StoppedBy,
-		}))
-		h.reply(ctx, channel, message, replyEmpty, fields)
-		return
-	}
-
-	config.Log().Info(config.TypeMSG, "已作答", mergeFields(fields, config.Context{
-		"steps": result.Steps, "stoppedBy": result.StoppedBy,
-		"tools": strings.Join(result.UsedTools, "、"),
-	}))
-	h.reply(ctx, channel, message, text, fields)
+	outcome := h.Ask(ctx, AskInput{Channel: channel, Message: message})
+	h.Deliver(ctx, channel, message, outcome.Text())
 }
 
-// reply 把一句话发回原会话。**发不出去只记日志**——
+// Deliver 把一句话发回原会话。**发不出去只记日志**——
 // 已经答完了，回话失败不该再给用户发第二条消息解释「刚才那条没发出去」。
-func (h *Handler) reply(ctx context.Context, channel channels.Channel,
-	message channels.InboundMessage, text string, fields config.Context) {
+//
+// 它从 ctx 上取归属字段（`Handle` / `Ask` 都绑过），所以非渠道调用方（CLI）
+// 也能直接用；`fields` 为空时只是少几列日志，不影响投递。
+func (h *Handler) Deliver(ctx context.Context, channel channels.Channel,
+	message channels.InboundMessage, text string) {
+	fields := config.FieldsOf(ctx)
 	senders := channel.Senders()
 	if !senders.HasText() {
 		config.Log().Warn(config.TypeMSG, "渠道没有文本发送器，答复没发出去", mergeFields(fields,
