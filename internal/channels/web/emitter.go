@@ -47,6 +47,9 @@ func (e *sseEmitter) Notify(notice channels.Notice) {
 		})
 	case channels.TurnStateNotice:
 		e.hub.broadcast(e.conversation, "turn", map[string]any{"running": n.Running})
+	case channels.MediaStoredNotice:
+		// 文件已落沙盒：推一帧 `stored`，前端渲染成**一行系统提示**（像用量），不是聊天气泡。
+		e.hub.broadcast(e.conversation, "stored", map[string]any{"text": n.Line})
 	}
 }
 

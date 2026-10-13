@@ -215,9 +215,9 @@ func TestPDF不当文本塞进提示词(t *testing.T) {
 	}
 }
 
-// Test媒体去向_sandbox纯文件只存不跑模型 FKA_MEDIA_MODE=sandbox 时，纯文件（无指令）
-// 只落沙盒、回一句回执，**不触发 LLM**；沙盒说明挂起，等下一轮指令消费。
-func Test媒体去向_sandbox纯文件只存不跑模型(t *testing.T) {
+// Test媒体去向_sandbox纯文件只发通知不跑模型 FKA_MEDIA_MODE=sandbox 纯文件：落沙盒、
+// 发一条**通知**（MediaStoredNotice，一行、带路径），**不跑 LLM、不发聊天气泡**。
+func Test媒体去向_sandbox纯文件只发通知不跑模型(t *testing.T) {
 	channel := &fetchingChannel{
 		fakeChannel: &fakeChannel{accountID: "acct-1"},
 		blobs:       map[string][]byte{"img-1": pngHead},
@@ -236,15 +236,76 @@ func Test媒体去向_sandbox纯文件只存不跑模型(t *testing.T) {
 	if !imported {
 		t.Error("sandbox 模式该把文件落沙盒")
 	}
-	if out.Explain == "" || !strings.Contains(out.Explain, "沙盒") {
-		t.Errorf("该回一句「已存沙盒」的回执，实际 %q", out.Explain)
-	}
-	if !strings.Contains(out.Explain, "inbox/a.png") {
-		t.Errorf("回执该带上沙盒路径与文件名，实际 %q", out.Explain)
+	if out.Explain != "" {
+		t.Errorf("该只发通知、不发文本，实际 Explain=%q", out.Explain)
 	}
 	if model.calls != 0 {
 		t.Errorf("sandbox 纯文件不该触发 LLM，实际调了 %d 次", model.calls)
 	}
+	var line string
+	for _, notice := range channel.noticesOf() {
+		if stored, ok := notice.(channels.MediaStoredNotice); ok {
+			line = stored.Line
+		}
+	}
+	if !strings.Contains(line, "inbox/a.png") {
+		t.Errorf("通知该带沙盒路径与文件名，实际 %q", line)
+	}
+	if strings.ContainsAny(line, "\n") {
+		t.Errorf("通知该只显示一行，实际 %q", line)
+	}
+}
+
+// Test媒体去向_sandbox收不到通知的渠道退回文本 iLink 这类没有 Notifier：
+// 沙盒落盘后没通知可发，退回一条文本，至少让人看见。
+func Test媒体去向_sandbox收不到通知的渠道退回文本(t *testing.T) {
+	channel := &noNoticeChannel{blobs: map[string][]byte{"img-1": pngHead}}
+	model := &imageModel{}
+	handler := newImageHandler(model)
+	handler.SetMediaMode(messages.MediaModeSandbox)
+	handler.SetInboundImporter(func(ctx context.Context, principal, sessionKey string, files []tools.Attachment) (string, error) {
+		return "已把这些文件存入沙盒：\n- inbox/a.png", nil
+	})
+
+	out := handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
+
+	if !strings.Contains(out.Explain, "inbox/a.png") {
+		t.Errorf("收不到通知的渠道该退回文本（含路径），实际 %q", out.Explain)
+	}
+	if model.calls != 0 {
+		t.Errorf("仍不该触发 LLM，实际 %d", model.calls)
+	}
+}
+
+// noNoticeChannel 一个有媒体能力的渠道，但**不实现 Notifier/EmitterProvider**——用它验
+// 「收不到通知就退回文本」。**手写整份**而不是嵌入 fakeChannel：嵌入会把 Notify 一起提上来，
+// 那就又变成 Notifier 了。
+type noNoticeChannel struct{ blobs map[string][]byte }
+
+func (c *noNoticeChannel) ID() string                                                 { return "plain" }
+func (c *noNoticeChannel) Label() string                                              { return "无通知渠道" }
+func (c *noNoticeChannel) AccountID() string                                          { return "acct-1" }
+func (c *noNoticeChannel) Status() channels.Status                                    { return channels.StatusOnline }
+func (c *noNoticeChannel) Start(context.Context, func(channels.InboundMessage)) error { return nil }
+func (c *noNoticeChannel) Stop(context.Context) error                                 { return nil }
+func (c *noNoticeChannel) Capabilities() channels.Capabilities {
+	return channels.Capabilities{
+		Text:  channels.KindCapability{Send: true, Receive: true},
+		File:  channels.KindCapability{Send: false, Receive: true},
+		Image: channels.KindCapability{Send: false, Receive: true},
+	}
+}
+func (c *noNoticeChannel) Senders() channels.Senders {
+	return channels.Senders{Text: func(context.Context, channels.SendTextParams) (channels.SendResult, error) {
+		return channels.SendResult{}, nil
+	}}
+}
+func (c *noNoticeChannel) FetchMedia(_ context.Context, ref channels.MediaRef) ([]byte, error) {
+	data, ok := c.blobs[ref.ID]
+	if !ok {
+		return nil, errors.New("没有这个句柄")
+	}
+	return data, nil
 }
 
 // Test媒体去向_sandbox下一轮带指令时并进沙盒路径 sandbox 模式挂起的沙盒说明，会在

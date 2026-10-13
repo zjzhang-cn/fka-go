@@ -183,9 +183,21 @@ func (c *Channel) say(text string) {
 	c.flushUsage()
 }
 
-// Notify 收到工具循环的通知。目前只有用量：**缓冲**下来，等 `say` 打答复时补一行
-// （服务端没给就是零值，不打）。
+// Notify 收到工具循环的通知。用量**缓冲**下来等 `say` 打答复时补一行；沙盒落盘通知
+// （`MediaStoredNotice`）没有后续答复，**立即**打一行系统提示。
 func (c *Channel) Notify(notice channels.Notice) {
+	if stored, ok := notice.(channels.MediaStoredNotice); ok {
+		if strings.TrimSpace(stored.Line) == "" {
+			return
+		}
+		if c.mode == ModeChat {
+			fmt.Fprintf(c.ui, "%s\n", c.palette.Dim("· "+stored.Line))
+			return
+		}
+		fmt.Fprintf(c.ui, "[文件] %s\n", stored.Line)
+		return
+	}
+
 	usage, ok := notice.(channels.UsageNotice)
 	if !ok {
 		return

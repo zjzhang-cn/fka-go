@@ -37,10 +37,7 @@ const (
 	// replyMediaUnavailable 消息里有媒体、但一件都没取回来（渠道不能取文件，或取回失败）。
 	// 单独一句，别混进 replyNotText——用户发的是文件，问题出在「取不到」而不是「没有」。
 	replyMediaUnavailable = "文件没能取回来，我暂时看不了。要不重新发一次？"
-	// replySandboxStored sandbox 模式收到纯文件（没有指令文字）时的回执前缀：**只存不答**，
-	// 不跑模型——等用户下一条说要做什么。后面会带上沙盒里的路径与文件名。
-	replySandboxStored = "文件已存进沙盒。"
-	// sandboxAskPrompt 回执末尾请用户下指令的那句。
+	// sandboxAskPrompt sandbox 模式落沙盒后请用户下指令的那句（拼进单行通知的末尾）。
 	sandboxAskPrompt = "请说要我拿它做什么。"
 	// replyStopped 用户中途喊停（网页「停止」按钮）造成的一轮结束。**不是错误**——
 	// 一句平静的话，别让用户以为出了故障。
@@ -233,7 +230,10 @@ func (h *Handler) Handle(ctx context.Context, event channels.Event) {
 	}))
 
 	outcome := h.Ask(ctx, AskInput{Channel: channel, Message: message})
-	h.Deliver(ctx, channel, message, outcome.Text())
+	// 空正文不发：sandbox 纯文件那条路**只发通知**（已落沙盒的一行），不该再补一条空气泡。
+	if text := outcome.Text(); text != "" {
+		h.Deliver(ctx, channel, message, text)
+	}
 }
 
 // Deliver 把一句话发回原会话。**发不出去只记日志**——
@@ -290,17 +290,25 @@ func emitterFor(ctx context.Context, channel channels.Channel) agent.Emitter {
 // Notice；这条是**消息层**发的（执行中状态），直接用渠道的 Notice——执行中状态只有
 // 消息层知道（含不走工具循环的拒答）。
 func notifyChannel(ctx context.Context, channel channels.Channel, notice channels.Notice) {
+	notifyChannelReporting(ctx, channel, notice)
+}
+
+// notifyChannelReporting 同 notifyChannel，但**返回有没有 Notifier 收下**——收沙盒通知那条路
+// 据此决定要不要退回文本（iLink 没有 Notifier，收不到通知）。
+func notifyChannelReporting(ctx context.Context, channel channels.Channel, notice channels.Notice) bool {
 	if notifier, ok := channel.(channels.Notifier); ok {
 		notifier.Notify(notice)
-		return
+		return true
 	}
 	if provider, ok := channel.(channels.EmitterProvider); ok {
 		if emitter := provider.Emitter(ctx); emitter != nil {
 			if notifier, ok := emitter.(channels.Notifier); ok {
 				notifier.Notify(notice)
+				return true
 			}
 		}
 	}
+	return false
 }
 
 // channelEcho 把渠道的 `channels.Emitter` 适配成工具循环要的 `agent.Emitter`，

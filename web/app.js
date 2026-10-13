@@ -238,6 +238,10 @@
       addNote("usage", usageText(JSON.parse(ev.data)));
       reasoningLine = null;
     });
+    source.addEventListener("stored", function (ev) {
+      // 文件已落沙盒：一行系统提示（不是聊天气泡）。
+      addNote("stored", JSON.parse(ev.data).text || "");
+    });
     source.addEventListener("turn", function (ev) {
       // 执行中状态：发送键 ↔ 停止键
       setRunning(JSON.parse(ev.data).running);
