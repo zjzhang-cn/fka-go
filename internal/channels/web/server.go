@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,11 +24,11 @@ import (
 // cookieName 认证 cookie 名。**HttpOnly**：JS 读不到它；SSE 与媒体请求会自动带上。
 const cookieName = "fka_web_token"
 
-// 一次上传请求体与单张入站图片的上限。比单张宽是容许一条消息带几张图；
-// 单张的上限与消息层一致，免得「网页收下了、消息层又拒了」。
+// 一次上传请求体与单件入站文件的上限。比单件宽是容许一条消息带几个文件；
+// 单件的上限与消息层一致，免得「网页收下了、消息层又拒了」。
 const (
-	maxUploadBodyBytes   int64 = 16 << 20
-	maxInboundImageBytes int64 = 8 << 20
+	maxUploadBodyBytes  int64 = 16 << 20
+	maxInboundFileBytes int64 = 8 << 20
 )
 
 // conversationPattern 会话 id 的合法形状。它进 SessionKey，最终进会话历史文件名，
@@ -149,7 +150,7 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, princip
 		return
 	}
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "text 与图片至少要有一个"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "text 与文件至少要有一个"})
 		return
 	}
 
@@ -201,8 +202,9 @@ func (c *Channel) parseInbound(w http.ResponseWriter, r *http.Request) (conversa
 	return body.Conversation, body.Text, nil, true
 }
 
-// parseMultipartInbound 读带图的那条路。每个 `image` 文件落进 `inbound` 暂存，
-// 产出一个只带句柄的图片 part。
+// parseMultipartInbound 读带文件的那条路。**接受任意文件**（不限图片）：每个文件落进
+// `inbound` 暂存，按嗅探出的 MIME 定 part 的 Kind（图片是 KindImage、其余是 KindFile），
+// 由消息层再按三类语义分派（图片作附件、文本并进问题、二进制给元信息）。
 func (c *Channel) parseMultipartInbound(w http.ResponseWriter, r *http.Request) (string, string, []channels.Part, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBodyBytes)
 	if err := r.ParseMultipartForm(maxUploadBodyBytes); err != nil {
@@ -210,46 +212,59 @@ func (c *Channel) parseMultipartInbound(w http.ResponseWriter, r *http.Request) 
 		return "", "", nil, false
 	}
 
-	var images []channels.Part
-	for _, header := range r.MultipartForm.File["image"] {
-		data, err := readUploadedImage(header)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return "", "", nil, false
-		}
-		mime := http.DetectContentType(data)
-		id, stored := c.inbound.put(data, header.Filename, mime)
-		if !stored {
-			writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": "图片暂存超限，请少发几张"})
-			return "", "", nil, false
-		}
-		images = append(images, channels.Part{
-			Kind: channels.KindImage,
-			Media: channels.MediaRef{
-				ID: id, FileName: header.Filename, MimeType: mime, Size: int64(len(data)),
-			},
-		})
+	// 字段名排序，让同一批文件的 part 顺序稳定（map 遍历随机）
+	fieldNames := make([]string, 0, len(r.MultipartForm.File))
+	for name := range r.MultipartForm.File {
+		fieldNames = append(fieldNames, name)
 	}
-	return r.FormValue("conversation"), r.FormValue("text"), images, true
+	sort.Strings(fieldNames)
+
+	var files []channels.Part
+	for _, field := range fieldNames {
+		for _, header := range r.MultipartForm.File[field] {
+			data, err := readUploadedFile(header)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return "", "", nil, false
+			}
+			mime := http.DetectContentType(data)
+			id, stored := c.inbound.put(data, header.Filename, mime)
+			if !stored {
+				writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": "文件暂存超限，请少发几个"})
+				return "", "", nil, false
+			}
+			kind := channels.KindFile
+			if strings.HasPrefix(mime, "image/") {
+				kind = channels.KindImage
+			}
+			files = append(files, channels.Part{
+				Kind: kind,
+				Media: channels.MediaRef{
+					ID: id, FileName: header.Filename, MimeType: mime, Size: int64(len(data)),
+				},
+			})
+		}
+	}
+	return r.FormValue("conversation"), r.FormValue("text"), files, true
 }
 
-// readUploadedImage 读一个上传的图片文件，**读取时就卡上限**（不先分配再拒）。
-func readUploadedImage(header *multipart.FileHeader) ([]byte, error) {
+// readUploadedFile 读一个上传的文件，**读取时就卡上限**（不先分配再拒）。
+func readUploadedFile(header *multipart.FileHeader) ([]byte, error) {
 	file, err := header.Open()
 	if err != nil {
-		return nil, errors.New("图片打不开")
+		return nil, errors.New("文件打不开")
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(io.LimitReader(file, maxInboundImageBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, maxInboundFileBytes+1))
 	if err != nil {
-		return nil, errors.New("图片读不了")
+		return nil, errors.New("文件读不了")
 	}
-	if int64(len(data)) > maxInboundImageBytes {
-		return nil, fmt.Errorf("单张图片超过 %d MiB", maxInboundImageBytes>>20)
+	if int64(len(data)) > maxInboundFileBytes {
+		return nil, fmt.Errorf("单个文件超过 %d MiB", maxInboundFileBytes>>20)
 	}
 	if len(data) == 0 {
-		return nil, errors.New("图片是空的")
+		return nil, errors.New("文件是空的")
 	}
 	return data, nil
 }

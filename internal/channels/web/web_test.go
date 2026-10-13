@@ -79,8 +79,8 @@ func TestProvider_启用产一个实例且能力自洽(t *testing.T) {
 	if !caps.Text.Send || !caps.Text.Receive {
 		t.Error("文字该收发都支持")
 	}
-	if !caps.File.Send || caps.File.Receive {
-		t.Error("文件该只发不收（业务层没有入站文件的消费者）")
+	if !caps.File.Send || !caps.File.Receive {
+		t.Error("文件该收发都支持（入站文件经 FetchMedia 交给消息层分类）")
 	}
 	if !caps.Image.Send || !caps.Image.Receive {
 		t.Error("图片现在该收发都支持（入站图片经 FetchMedia 交给模型）")
@@ -309,6 +309,43 @@ func Test入站_文字与图都空被拒(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("都没有该 400，实际 %d", resp.StatusCode)
+	}
+}
+
+// Test入站_非图片文件产出KindFile 任意文件都收：非图片的 part 是 KindFile，
+// 由消息层再按三类语义分派（文本并进问题、二进制给元信息）。
+func Test入站_非图片文件产出KindFile(t *testing.T) {
+	c := testChannel(t)
+	var got channels.InboundMessage
+	c.onMessage = func(m channels.InboundMessage) { got = m }
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	body, contentType := multipartBody(t, "room-file", "", "note.txt", []byte("纯文本内容，没有 NUL"))
+	req, _ := http.NewRequest("POST", ts.URL+"/messages", body)
+	req.AddCookie(cookie("secret"))
+	req.Header.Set("Content-Type", contentType)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("该 202，实际 %d", resp.StatusCode)
+	}
+
+	var filePart *channels.Part
+	for i := range got.Parts {
+		if got.Parts[i].Kind == channels.KindFile {
+			filePart = &got.Parts[i]
+		}
+	}
+	if filePart == nil {
+		t.Fatalf("非图片文件该产出 KindFile part：%+v", got.Parts)
+	}
+	data, err := c.FetchMedia(context.Background(), filePart.Media)
+	if err != nil || string(data) != "纯文本内容，没有 NUL" {
+		t.Errorf("FetchMedia 该原样取回（err=%v，data=%q）", err, data)
 	}
 }
 

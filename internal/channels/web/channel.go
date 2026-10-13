@@ -82,14 +82,14 @@ func (c *Channel) Status() channels.Status {
 
 // Capabilities 能力声明。
 //
-// **Image 收得到、发得出**：入站图片经 `POST /messages`（multipart）落到内存暂存，
-// 消息层再经 `FetchMedia` 取回变附件。**File 仍只发不收**：业务层没有入站文件的
-// 消费者（`internal/messages` 收到文件会如实拒答），声明能收却是空路就是「声明一个
-// 跑不了的」。等哪天入站文件有落点，再补 upload 并翻成 true。
+// **Text / File / Image 都收得到**：`POST /messages`（multipart）接受任意文件，字节落
+// 内存暂存，消息层再经 `FetchMedia` 取回、按三类语义分派（图片作附件、文本并进问题、
+// 二进制给元信息）。Voice/Video 不开：它们以普通文件（KindFile）进来即可，单独声明成
+// 反而要额外维护一条解析路径。
 func (c *Channel) Capabilities() channels.Capabilities {
 	return channels.Capabilities{
 		Text:          channels.KindCapability{Send: true, Receive: true},
-		File:          channels.KindCapability{Send: true, Receive: false},
+		File:          channels.KindCapability{Send: true, Receive: true},
 		Image:         channels.KindCapability{Send: true, Receive: true},
 		Voice:         channels.KindCapability{Send: false, Receive: false},
 		Video:         channels.KindCapability{Send: false, Receive: false},
