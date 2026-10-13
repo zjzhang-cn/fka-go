@@ -10,16 +10,18 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
 
-// recordingEmitter 记录收到的回显事件。
+// recordingEmitter 记录收到的回显事件与轮末通知。
 type recordingEmitter struct {
 	reasoning strings.Builder
 	tools     []ToolEvent
 	answers   []string
+	notices   []Notice
 }
 
 func (e *recordingEmitter) Reasoning(text string) { e.reasoning.WriteString(text) }
 func (e *recordingEmitter) Tool(event ToolEvent)  { e.tools = append(e.tools, event) }
 func (e *recordingEmitter) Answer(text string)    { e.answers = append(e.answers, text) }
+func (e *recordingEmitter) Notify(notice Notice)  { e.notices = append(e.notices, notice) }
 
 // TestRun_Emitter收到推理工具与答案 钉住统一回显这条路：工具循环把三类事件推给
 // Emitter——推理经 ctx 绑定的 writer、工具调用逐次、最终答案一次。前端据此各自排版。

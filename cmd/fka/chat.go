@@ -153,12 +153,6 @@ func chatTurn(ctx context.Context, handler *messages.Handler, channel channels.C
 
 	handler.Deliver(ctx, channel, in, outcome.Text())
 
-	// 用量默认就显示，不设开关；服务端给了才打。放在答复之后、debug 之前。
-	usage := outcome.Result.Usage
-	if line := usageLine(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens); line != "" {
-		fmt.Fprintf(ui, "%s\n", pal.Dim("· 用量："+line))
-	}
-
 	if debugEnabled() {
 		fmt.Fprintf(ui, "%s\n", pal.Dim(fmt.Sprintf(
 			"[debug] session=%s steps=%d stoppedBy=%s", in.ConversationID,

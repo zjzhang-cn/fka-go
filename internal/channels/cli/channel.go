@@ -109,6 +109,11 @@ type Channel struct {
 
 	mu     sync.Mutex
 	status channels.Status
+	// pendingUsage / hasPendingUsage 工具循环在轮末经 Notify 交来的用量。
+	// **缓冲到 say 再打**：答复先写、用量后写（`say` 在 Deliver 里被调），
+	// 与「答复 → 用量 → debug」的呈现顺序一致。
+	pendingUsage    channels.TokenUsage
+	hasPendingUsage bool
 }
 
 // New 造一个命令行渠道。
@@ -166,7 +171,8 @@ func (c *Channel) sendText(ctx context.Context, p channels.SendTextParams) (chan
 	return channels.SendResult{MessageID: "cli-" + newUUIDv4()}, nil
 }
 
-// say 打一行「角色标签 + 正文」：标签按模式分风格，正文只进 Out。
+// say 打一行「角色标签 + 正文」：标签按模式分风格，正文只进 Out。之后再补一行
+// 用量（工具循环轮末经 `Notify` 交来、缓存在这里）。
 func (c *Channel) say(text string) {
 	label := "[助手]"
 	if c.mode == ModeChat {
@@ -174,6 +180,41 @@ func (c *Channel) say(text string) {
 	}
 	fmt.Fprintln(c.ui, label)
 	fmt.Fprintln(c.out, text)
+	c.flushUsage()
+}
+
+// Notify 收到工具循环的通知。目前只有用量：**缓冲**下来，等 `say` 打答复时补一行
+// （服务端没给就是零值，不打）。
+func (c *Channel) Notify(notice channels.Notice) {
+	usage, ok := notice.(channels.UsageNotice)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	c.pendingUsage = usage.Usage
+	c.hasPendingUsage = true
+	c.mu.Unlock()
+}
+
+// flushUsage 打一行用量并清掉缓冲。全零不打、只打一次。
+func (c *Channel) flushUsage() {
+	c.mu.Lock()
+	usage, ok := c.pendingUsage, c.hasPendingUsage
+	c.hasPendingUsage = false
+	c.pendingUsage = channels.TokenUsage{}
+	c.mu.Unlock()
+	if !ok {
+		return
+	}
+	line := usageLine(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	if line == "" {
+		return
+	}
+	if c.mode == ModeChat {
+		fmt.Fprintf(c.ui, "%s\n", c.palette.Dim("· 用量："+line))
+		return
+	}
+	fmt.Fprintf(c.ui, "[用量] %s\n", line)
 }
 
 // ── Lifecycle ───────────────────────────────────────────
@@ -238,3 +279,4 @@ func trimQuestion(line string) string { return strings.TrimSpace(line) }
 // 确保满足渠道契约。
 var _ channels.Channel = (*Channel)(nil)
 var _ channels.EmitterProvider = (*Channel)(nil)
+var _ channels.Notifier = (*Channel)(nil)

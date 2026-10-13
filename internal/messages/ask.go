@@ -131,18 +131,10 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		return AskOutcome{Result: result, Explain: replyEmpty}
 	}
 
-	// 用量字段**有值才带**（服务端不给就没有这几个数）。serve 侧的「已作答」
-	// 因此能直接看到这一轮真实花了多少。
-	answered := config.Context{
+	config.Log().Info(config.TypeMSG, "已作答", mergeFields(fields, config.Context{
 		"steps": result.Steps, "stoppedBy": result.StoppedBy,
 		"tools": strings.Join(result.UsedTools, "、"),
-	}
-	if !result.Usage.IsZero() {
-		answered["tokensIn"] = result.Usage.PromptTokens
-		answered["tokensOut"] = result.Usage.CompletionTokens
-		answered["tokensTotal"] = result.Usage.TotalTokens
-	}
-	config.Log().Info(config.TypeMSG, "已作答", mergeFields(fields, answered))
+	}))
 	return AskOutcome{Result: result}
 }
 

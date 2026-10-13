@@ -10,6 +10,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -103,4 +104,22 @@ func firstLine(text string) string {
 		return string(runes[:60]) + "…"
 	}
 	return text
+}
+
+// usageLine 把一轮的真实用量渲染成一句话。**纯函数**，ask 与 chat 共用：
+//
+//	全零      → ""（服务端没给，不打）
+//	给了总数  → 「入 X / 出 Y（共 Z）」
+//	没给总数  → 「入 X / 出 Y」
+//
+// 前缀（`[用量] ` / `· 用量：`）与颜色由 `flushUsage` 按模式加。
+func usageLine(in, out, total int) string {
+	if in == 0 && out == 0 && total == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("入 %d / 出 %d", in, out)
+	if total > 0 {
+		line += fmt.Sprintf("（共 %d）", total)
+	}
+	return line
 }

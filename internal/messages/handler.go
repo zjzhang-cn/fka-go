@@ -144,13 +144,17 @@ func emitterFor(ctx context.Context, channel channels.Channel) agent.Emitter {
 			echo = custom
 		}
 	}
-	return channelEcho{inner: echo}
+	return channelEcho{channel: channel, inner: echo}
 }
 
-// channelEcho 把渠道的 `channels.Emitter` 适配成工具循环要的 `agent.Emitter`。
-// 两边的差异只有「工具事件是结构体还是三个基本值」——适配放在这里，接缝与 agent
-// 因此互不认识。
-type channelEcho struct{ inner channels.Emitter }
+// channelEcho 把渠道的 `channels.Emitter` 适配成工具循环要的 `agent.Emitter`，
+// 并把工具循环的**通知**（用量等）转给渠道的 `channels.Notifier`。
+// 三处差异（工具事件是结构体/三个基本值、通知是两份密封接口）都收在这一处适配，
+// 接缝与 agent 因此互不认识。
+type channelEcho struct {
+	channel channels.Channel
+	inner   channels.Emitter
+}
 
 func (e channelEcho) Reasoning(text string) { e.inner.Reasoning(text) }
 func (e channelEcho) Tool(event agent.ToolEvent) {
@@ -158,9 +162,31 @@ func (e channelEcho) Tool(event agent.ToolEvent) {
 }
 func (e channelEcho) Answer(text string) { e.inner.Answer(text) }
 
+// Notify 把工具循环的通知转给渠道。**谁能收就发给谁**：渠道本身实现了
+// `channels.Notifier` 就给它（CLI 走这条）；否则退回默认回显（loggingEmitter，
+// 常驻渠道走这条）。两边都没有就静默丢弃——通知是尽力而为。
+func (e channelEcho) Notify(notice agent.Notice) {
+	usage, ok := notice.(agent.UsageNotice)
+	if !ok {
+		return
+	}
+	converted := channels.UsageNotice{Usage: channels.TokenUsage{
+		PromptTokens:     usage.Usage.PromptTokens,
+		CompletionTokens: usage.Usage.CompletionTokens,
+		TotalTokens:      usage.Usage.TotalTokens,
+	}}
+	if notifier, ok := e.channel.(channels.Notifier); ok {
+		notifier.Notify(converted)
+		return
+	}
+	if notifier, ok := e.inner.(channels.Notifier); ok {
+		notifier.Notify(converted)
+	}
+}
+
 // loggingEmitter 默认回显：**不往控制台画东西**——`serve` 是常驻进程，往 stderr 画
-// 推理只会是噪音。推理不看、答案由 handler 经渠道发回去，只有工具调用值得记一条
-// Info 日志（排查「它到底查了什么」时最有用的一步）。
+// 推理只会是噪音。推理不看、答案由 handler 经渠道发回去，只有工具调用与轮末用量
+// 值得记一条 Info 日志（排查「它查了什么、花了多少」时最有用的一步）。
 type loggingEmitter struct{ ctx context.Context }
 
 func (loggingEmitter) Reasoning(string) {}
@@ -169,6 +195,19 @@ func (loggingEmitter) Answer(string)    {}
 func (e loggingEmitter) Tool(name, arguments, result string) {
 	config.Log().Info(config.TypeTOOL, "工具调用", config.Fields(e.ctx, config.Context{
 		"tool": name, "args": arguments, "result": clipLine(result),
+	}))
+}
+
+// Notify 收到轮末通知。默认渠道（没自己的回显）用它把用量记一条日志——聊天窗口
+// 那一侧不显示，但服务端要能查到。
+func (e loggingEmitter) Notify(notice channels.Notice) {
+	usage, ok := notice.(channels.UsageNotice)
+	if !ok {
+		return
+	}
+	config.Log().Info(config.TypeMSG, "用量", config.Fields(e.ctx, config.Context{
+		"tokensIn": usage.Usage.PromptTokens, "tokensOut": usage.Usage.CompletionTokens,
+		"tokensTotal": usage.Usage.TotalTokens,
 	}))
 }
 

@@ -259,6 +259,9 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 			if emitter != nil {
 				emitter.Answer(result.Content)
 			}
+			// 轮末把账目通知给前端（用量等）。**在 Answer 之后**：过程事件流先收尾，
+			// 账目最后到——CLI 据此把它排在答复之后。
+			emitUsage(emitter, usage)
 
 			return RunResult{
 				Text: result.Content, UsedTools: usedTools,
@@ -361,6 +364,7 @@ func (r *Runner) forcedAnswer(
 	if input.Emitter != nil {
 		input.Emitter.Answer(text)
 	}
+	emitUsage(input.Emitter, usage)
 	return RunResult{Text: text, UsedTools: usedTools, ToolEvents: toolEvents, Steps: steps, StoppedBy: StoppedByMaxSteps, Usage: usage}
 }
 

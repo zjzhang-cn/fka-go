@@ -42,3 +42,45 @@ func TestRun_用量是各步之和(t *testing.T) {
 		t.Errorf("用量 = %+v，想要各步之和 %+v", result.Usage, want)
 	}
 }
+
+// TestRun_轮末把用量通知给前端 前端实现了 Notifier 时，工具循环在轮末发一条
+// UsageNotice（整轮之和）。没实现就收不到——通知走可选接口，不逼每个 Emitter 实现。
+func TestRun_轮末把用量通知给前端(t *testing.T) {
+	source := &fakeSource{specs: []tools.Spec{searchSpec()}, replies: map[string]string{"search": "查到"}}
+	registry := tools.NewRegistry([]tools.Source{source}, tools.DefaultPolicy())
+
+	calls := 0
+	chat := func(ctx context.Context, messages []llm.ChatMessage, defs []llm.ToolDef) (llm.ChatResult, error) {
+		calls++
+		if calls == 1 {
+			return llm.ChatResult{
+				ToolCalls: []llm.ToolCall{{ID: "c1", Name: "search", Arguments: `{"q":"x"}`}},
+				Usage:     llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			}, nil
+		}
+		return llm.ChatResult{
+			Content: "答案",
+			Usage:   llm.TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27},
+		}, nil
+	}
+
+	emitter := &recordingEmitter{}
+	runner := newTestRunner(chat, registry)
+	if _, err := runner.Run(context.Background(), RunnerInput{
+		SessionID: "s", PrincipalID: "p", Question: "问", Emitter: emitter,
+	}); err != nil {
+		t.Fatalf("不该报错：%v", err)
+	}
+
+	if len(emitter.notices) != 1 {
+		t.Fatalf("该收到一条用量通知，实际 %d 条", len(emitter.notices))
+	}
+	notice, ok := emitter.notices[0].(UsageNotice)
+	if !ok {
+		t.Fatalf("通知类型不对：%T", emitter.notices[0])
+	}
+	want := llm.TokenUsage{PromptTokens: 30, CompletionTokens: 12, TotalTokens: 42}
+	if notice.Usage != want {
+		t.Errorf("通知的用量 = %+v，想要各步之和 %+v", notice.Usage, want)
+	}
+}
