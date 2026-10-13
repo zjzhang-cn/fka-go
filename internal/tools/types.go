@@ -16,6 +16,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/zjzhang-cn/fka-go/internal/llm"
@@ -80,6 +81,23 @@ type Attachment struct {
 	Name     string
 	MimeType string
 	Data     []byte
+}
+
+// FilesArg 把附件编成落点工具（如沙盒 `import`）的参数 `{files:[{name,mime,data}]}`，
+// data 是 base64。**由 agent 或装配根填**——模型手里没有字节，这个参数它编不出来。
+//
+// 放在 tools 而非 agent：agent 的「模型调落点工具时注入」与装配根的「开轮自动落沙盒」
+// 两条路都要用它，且都不该各写一份。
+func FilesArg(files []Attachment) map[string]any {
+	out := make([]map[string]any, 0, len(files))
+	for _, item := range files {
+		out = append(out, map[string]any{
+			"name": item.Name,
+			"mime": item.MimeType,
+			"data": base64.StdEncoding.EncodeToString(item.Data),
+		})
+	}
+	return map[string]any{"files": out}
 }
 
 // Result 一次工具调用的结果。

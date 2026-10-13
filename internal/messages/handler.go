@@ -37,6 +37,11 @@ const (
 	// replyMediaUnavailable 消息里有媒体、但一件都没取回来（渠道不能取文件，或取回失败）。
 	// 单独一句，别混进 replyNotText——用户发的是文件，问题出在「取不到」而不是「没有」。
 	replyMediaUnavailable = "文件没能取回来，我暂时看不了。要不重新发一次？"
+	// replySandboxStored sandbox 模式收到纯文件（没有指令文字）时的回执前缀：**只存不答**，
+	// 不跑模型——等用户下一条说要做什么。后面会带上沙盒里的路径与文件名。
+	replySandboxStored = "文件已存进沙盒。"
+	// sandboxAskPrompt 回执末尾请用户下指令的那句。
+	sandboxAskPrompt = "请说要我拿它做什么。"
 	// replyStopped 用户中途喊停（网页「停止」按钮）造成的一轮结束。**不是错误**——
 	// 一句平静的话，别让用户以为出了故障。
 	replyStopped = "（已停止）"
@@ -71,11 +76,87 @@ type Handler struct {
 	// `CancelTurn` 取出来 cancel，工具循环的 ctx 随之取消、流被掐断。
 	mu    sync.Mutex
 	turns map[string]context.CancelFunc
+	// mediaMode 入站媒体的去向（部署事实，装配根用 SetMediaMode 设）。零值等于 llm。
+	mediaMode MediaMode
+	// importInbound 把本轮入站字节落进沙盒（落点工具），返回给模型看的说明。nil = 没有落点。
+	// **由装配根注入**（它才有工具注册表）：both/sandbox 模式靠它落沙盒。
+	importInbound InboundImporter
+	// pendingInbox 逐会话挂着「已落沙盒但还没被指令消费」的说明：sandbox 模式收到纯文件时
+	// 不跑模型，把沙盒说明记在这里，等用户下一条（带指令的）消息再并进问题。
+	pendingInbox map[string]string
 }
+
+// InboundImporter 把入站附件落进沙盒，返回一段给模型看的说明（含沙盒路径）。
+// 由装配根注入——它持有工具注册表，而落沙盒就是调用被点名的落点工具。
+type InboundImporter func(ctx context.Context, principal, sessionKey string, files []tools.Attachment) (string, error)
 
 // NewHandler 造消息处理器。
 func NewHandler(runner Runner) *Handler {
-	return &Handler{Runner: runner, turns: map[string]context.CancelFunc{}}
+	return &Handler{
+		Runner:       runner,
+		turns:        map[string]context.CancelFunc{},
+		mediaMode:    MediaModeLLM,
+		pendingInbox: map[string]string{},
+	}
+}
+
+// SetMediaMode 设置入站媒体去向（来自 FKA_MEDIA_MODE）。装配根在启动前调用。
+func (h *Handler) SetMediaMode(mode MediaMode) {
+	h.mu.Lock()
+	h.mediaMode = mode
+	h.mu.Unlock()
+}
+
+// SetInboundImporter 注入落沙盒能力（装配根在配了 FKA_MEDIA_SINK 时调）。
+func (h *Handler) SetInboundImporter(importer InboundImporter) {
+	h.mu.Lock()
+	h.importInbound = importer
+	h.mu.Unlock()
+}
+
+// currentMediaMode 取当前媒体去向。**配了 auto 模式却没有落点注入器时退回 llm**——没落点
+// 就没法落沙盒，退成「只进模型」而不是把用户的文件弄丢。
+func (h *Handler) currentMediaMode() MediaMode {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	mode := h.mediaMode
+	if mode == "" {
+		mode = MediaModeLLM
+	}
+	if mode.AutoImports() && h.importInbound == nil {
+		return MediaModeLLM
+	}
+	return mode
+}
+
+// importer 取落点注入器（可能 nil）。
+func (h *Handler) importer() InboundImporter {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.importInbound
+}
+
+// rememberInbox 把一段沙盒说明挂到会话上（已有则追加）。sandbox 模式纯文件时用。
+func (h *Handler) rememberInbox(sessionKey, note string) {
+	if strings.TrimSpace(note) == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if prev := h.pendingInbox[sessionKey]; prev != "" {
+		h.pendingInbox[sessionKey] = prev + "\n" + note
+	} else {
+		h.pendingInbox[sessionKey] = note
+	}
+}
+
+// takeInbox 取出并清掉会话上挂着的沙盒说明。下一条消息跑模型时并进问题。
+func (h *Handler) takeInbox(sessionKey string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	note := h.pendingInbox[sessionKey]
+	delete(h.pendingInbox, sessionKey)
+	return note
 }
 
 // CancelTurn 取消某个会话进行中的一轮（实现 `channels.TurnController`）。

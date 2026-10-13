@@ -33,7 +33,6 @@ package agent
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -463,18 +462,10 @@ func injectInbound(sink, toolName string, args map[string]any, inbound []tools.A
 		return args
 	}
 
-	files := make([]map[string]any, 0, len(inbound))
-	for _, item := range inbound {
-		files = append(files, map[string]any{
-			"name": item.Name,
-			"mime": item.MimeType,
-			"data": base64.StdEncoding.EncodeToString(item.Data),
-		})
-	}
 	if args == nil {
 		args = map[string]any{}
 	}
-	args["files"] = files
+	args["files"] = tools.FilesArg(inbound)["files"]
 	return args
 }
 

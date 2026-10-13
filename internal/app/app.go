@@ -184,6 +184,19 @@ func Build(ctx context.Context, opts Options) *App {
 	// 或没配模型而缺席。先建后赋值会让它永远拿到 nil——症状是「每条消息都回
 	// 没接上模型」，而配置看上去完全正常。
 	app.Messages = messages.NewHandler(app.Agent)
+	// 入站媒体去向（FKA_MEDIA_MODE）：llm（默认）/ both / sandbox。装配期定一次。
+	app.Messages.SetMediaMode(messages.NormalizeMediaMode(os.Getenv(messages.MediaModeEnv)))
+	// 配了落点（FKA_MEDIA_SINK）就注入落沙盒能力：both/sandbox 模式靠它把入站字节写进沙盒。
+	// 走 app.Tools.Call，与模型调用同一条注册表路径，**因此仍受 external 闸约束**。
+	if sink := strings.TrimSpace(os.Getenv(envMediaSink)); sink != "" {
+		app.Messages.SetInboundImporter(func(ctx context.Context, principal, sessionKey string, files []tools.Attachment) (string, error) {
+			result := app.Tools.Call(ctx, sink, tools.FilesArg(files), tools.Context{PrincipalID: principal, SessionID: sessionKey})
+			if !result.OK {
+				return "", fmt.Errorf("%s", strings.TrimSpace(result.Content))
+			}
+			return result.Content, nil
+		})
+	}
 
 	return app
 }

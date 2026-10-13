@@ -107,24 +107,63 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 	//
 	// 两条来源归到一起：CLI 的 `@图片` 已在 `in.Images`，渠道产出的媒体 part 在这里
 	// 取回。分类语义与沙盒 `read` / CLI `@引用` 一致——图片作附件、文本并进问题、
-	// 二进制只给元信息。agent/llm 不必知道这些从哪来，也不必认识任何渠道。
+	// 二进制只给元信息。**去向由 FKA_MEDIA_MODE 定**（llm / both / sandbox）：
+	// 前者喂模型、sandbox 只落沙盒、both 两处都有（见 media.go 的 MediaMode）。
+	mode := h.currentMediaMode()
 	images := append([]llm.ImageAttachment(nil), in.Images...)
 	var inbound []tools.Attachment
+	imported := "" // 本轮落沙盒的说明（both/sandbox）
 	if len(mediaParts) > 0 {
 		media := collectInboundMedia(ctx, channel, mediaParts)
-		images = append(images, media.images...)
 		inbound = append(inbound, media.files...)
-		// 一件内容都没取回来：如实说，别跑模型空猜
-		if question == "" && len(media.sections) == 0 {
-			config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
-				config.Context{"failures": strings.Join(media.failures, "；")}))
-			return AskOutcome{Explain: replyMediaUnavailable}
+
+		// both/sandbox：**先把本轮字节落沙盒**（走注入器；落点工具仍受 external 闸约束）
+		if mode.AutoImports() {
+			if importer := h.importer(); importer != nil && len(inbound) > 0 {
+				note, err := importer(ctx, message.PrincipalID, sessionID, inbound)
+				if err != nil {
+					config.Log().Warn(config.TypeMSG, "落沙盒失败",
+						mergeFields(fields, config.Context{"error": err.Error()}))
+				} else {
+					imported = strings.TrimSpace(note)
+				}
+			}
 		}
-		// 纯媒体（文字为空）补一句默认提示语：空文本 + 内容块各家模型接受度不一
-		if question == "" {
-			question = defaultMediaQuestion
+
+		if mode.FeedsModel() {
+			images = append(images, media.images...)
+			// 一件内容都没取回来（也没落成沙盒）：如实说，别跑模型空猜
+			if question == "" && len(media.sections) == 0 && imported == "" {
+				config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
+					config.Context{"failures": strings.Join(media.failures, "；")}))
+				return AskOutcome{Explain: replyMediaUnavailable}
+			}
+			// 纯媒体（文字为空）补一句默认提示语：空文本 + 内容块各家模型接受度不一
+			if question == "" {
+				question = defaultMediaQuestion
+			}
+			question += media.questionSuffix()
+		} else {
+			// sandbox：媒体不进模型。一件都没落成时如实说。
+			if len(inbound) == 0 {
+				config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
+					config.Context{"failures": strings.Join(media.failures, "；")}))
+				return AskOutcome{Explain: replyMediaUnavailable}
+			}
+			if question == "" {
+				// **纯文件、无指令：只存不答、不跑模型**——把沙盒说明挂起，等下一轮指令；
+				// 回执里带上沙盒路径与文件名（从落点工具返回的那几行 `- inbox/x.png` 抽出来）。
+				h.rememberInbox(sessionID, imported)
+				config.Log().Info(config.TypeMSG, "文件已落沙盒，等待指令", fields)
+				return AskOutcome{Explain: sandboxStoredReply(imported)}
+			}
 		}
-		question += media.questionSuffix()
+	}
+
+	// 挂起的沙盒说明（上一个「只存」的文件）+ 本轮落沙盒的说明，并进本轮问题——
+	// 于是模型这一轮与后续轮都知道文件在沙盒的哪些路径。
+	if note := joinInboxNotes(h.takeInbox(sessionID), imported); note != "" {
+		question += "\n\n（用户发来的文件已存入沙盒）\n" + note
 	}
 
 	// ── 跑一轮 ─────────────────────────────────────────────
@@ -173,6 +212,45 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 		"tools": strings.Join(result.UsedTools, "、"),
 	}))
 	return AskOutcome{Result: result}
+}
+
+// sandboxStoredReply 拼「只存不答」的回执：带上沙盒里的路径与文件名（落点工具返回的
+// `- inbox/x.png` 行）。没有可解析的路径就退回一句不带列表的回执。
+func sandboxStoredReply(note string) string {
+	paths := sandboxPathList(note)
+	if len(paths) == 0 {
+		return replySandboxStored + sandboxAskPrompt
+	}
+	return replySandboxStored + "\n- " + strings.Join(paths, "\n- ") + "\n\n" + sandboxAskPrompt
+}
+
+// sandboxPathList 从落点工具返回的说明里抽出 `- <路径>` 那几行（沙盒给的相对路径，
+// 自带文件名）。认不出就返回空。
+func sandboxPathList(note string) []string {
+	var out []string
+	for _, line := range strings.Split(note, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		if entry := strings.TrimSpace(strings.TrimPrefix(line, "- ")); entry != "" {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// joinInboxNotes 合并两段沙盒说明（上一轮挂起的 + 本轮的），空串忽略。
+func joinInboxNotes(first, second string) string {
+	first, second = strings.TrimSpace(first), strings.TrimSpace(second)
+	switch {
+	case first == "":
+		return second
+	case second == "":
+		return first
+	default:
+		return first + "\n" + second
+	}
 }
 
 // messageFields 一条消息的归属——日志、会话键与工具身份都从这几个字段来。

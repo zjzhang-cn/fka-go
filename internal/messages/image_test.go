@@ -215,6 +215,113 @@ func TestPDF不当文本塞进提示词(t *testing.T) {
 	}
 }
 
+// Test媒体去向_sandbox纯文件只存不跑模型 FKA_MEDIA_MODE=sandbox 时，纯文件（无指令）
+// 只落沙盒、回一句回执，**不触发 LLM**；沙盒说明挂起，等下一轮指令消费。
+func Test媒体去向_sandbox纯文件只存不跑模型(t *testing.T) {
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"img-1": pngHead},
+	}
+	model := &imageModel{}
+	handler := newImageHandler(model)
+	handler.SetMediaMode(messages.MediaModeSandbox)
+	imported := false
+	handler.SetInboundImporter(func(ctx context.Context, principal, sessionKey string, files []tools.Attachment) (string, error) {
+		imported = true
+		return "已把这些文件存入沙盒：\n- inbox/a.png\n用 read 查看。", nil
+	})
+
+	out := handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
+
+	if !imported {
+		t.Error("sandbox 模式该把文件落沙盒")
+	}
+	if out.Explain == "" || !strings.Contains(out.Explain, "沙盒") {
+		t.Errorf("该回一句「已存沙盒」的回执，实际 %q", out.Explain)
+	}
+	if !strings.Contains(out.Explain, "inbox/a.png") {
+		t.Errorf("回执该带上沙盒路径与文件名，实际 %q", out.Explain)
+	}
+	if model.calls != 0 {
+		t.Errorf("sandbox 纯文件不该触发 LLM，实际调了 %d 次", model.calls)
+	}
+}
+
+// Test媒体去向_sandbox下一轮带指令时并进沙盒路径 sandbox 模式挂起的沙盒说明，会在
+// 下一条（带指令的）消息里并进问题，模型据此知道文件在哪。
+func Test媒体去向_sandbox下一轮带指令时并进沙盒路径(t *testing.T) {
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"img-1": pngHead},
+	}
+	model := &imageModel{}
+	handler := newImageHandler(model)
+	handler.SetMediaMode(messages.MediaModeSandbox)
+	handler.SetInboundImporter(func(ctx context.Context, principal, sessionKey string, files []tools.Attachment) (string, error) {
+		return "已存入沙盒：inbox/a.png", nil
+	})
+
+	// 第一轮：纯文件 → 只存不答
+	handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
+
+	// 第二轮：给指令 → 跑模型，问题里带上沙盒路径
+	follow := imageMessage()
+	follow.MessageID = "m2"
+	follow.Parts = []channels.Part{channels.TextPart("把图里的话提取出来")}
+	out := handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: follow})
+
+	if out.Explain != "" {
+		t.Fatalf("该答出来：%q", out.Explain)
+	}
+	if !strings.Contains(model.content, "inbox/a.png") {
+		t.Errorf("下一轮该带上沙盒路径：%q", model.content)
+	}
+}
+
+// Test媒体去向_both既喂模型又标自动落沙盒 FKA_MEDIA_MODE=both 时媒体照常进模型，
+// 同时落沙盒、路径并进问题。
+func Test媒体去向_both既喂模型又自动落沙盒(t *testing.T) {
+	channel := &fetchingChannel{
+		fakeChannel: &fakeChannel{accountID: "acct-1"},
+		blobs:       map[string][]byte{"img-1": pngHead},
+	}
+	model := &imageModel{}
+	handler := newImageHandler(model)
+	handler.SetMediaMode(messages.MediaModeBoth)
+	handler.SetInboundImporter(func(ctx context.Context, principal, sessionKey string, files []tools.Attachment) (string, error) {
+		return "已存入沙盒：inbox/a.png", nil
+	})
+
+	out := handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
+
+	if out.Explain != "" {
+		t.Fatalf("该答出来：%q", out.Explain)
+	}
+	if len(model.images) != 1 {
+		t.Errorf("both 模式该照常喂图片，实际 %d", len(model.images))
+	}
+	if !strings.Contains(model.content, "inbox/a.png") {
+		t.Errorf("both 模式该把沙盒路径并进问题：%q", model.content)
+	}
+}
+
+// TestMediaMode_归一 取值归一：空/认不出退回 llm（现状），不改变行为。
+func TestMediaMode_归一(t *testing.T) {
+	cases := map[string]messages.MediaMode{
+		"":        messages.MediaModeLLM,
+		"llm":     messages.MediaModeLLM,
+		"BOTH":    messages.MediaModeBoth,
+		" both ":  messages.MediaModeBoth,
+		"sandbox": messages.MediaModeSandbox,
+		"nope":    messages.MediaModeLLM,
+	}
+	for raw, want := range cases {
+		if got := messages.NormalizeMediaMode(raw); got != want {
+			t.Errorf("NormalizeMediaMode(%q) = %q，想要 %q", raw, got, want)
+		}
+	}
+}
+
 // Test语音转写当文本 渠道提供了转写文本时，直接当一段文本用。
 func Test语音转写当文本(t *testing.T) {
 	channel := &fetchingChannel{

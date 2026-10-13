@@ -47,6 +47,47 @@ const (
 // 「空文本 + 内容块」的接受度不一致，给一句明确指令最稳。
 const defaultMediaQuestion = "请看看我发来的内容。"
 
+// MediaMode 入站媒体去哪。
+//
+//   - MediaModeLLM（默认）：进模型（图片 vision / 文本并进问题 / 二进制元信息），
+//     沙盒**按需**——模型当轮调 FKA_MEDIA_SINK 那个工具时才落。
+//   - MediaModeBoth：既进模型，又在开轮时**自动**落一次沙盒（路径进历史，后续轮可引用）。
+//   - MediaModeSandbox：**不进模型**，自动落沙盒，把路径交给模型（适合非视觉模型 /
+//     只想让工具处理）。
+type MediaMode string
+
+const (
+	MediaModeLLM     MediaMode = "llm"
+	MediaModeBoth    MediaMode = "both"
+	MediaModeSandbox MediaMode = "sandbox"
+)
+
+// MediaModeEnv 决定入站媒体去向的环境变量名。**仓库头部也记了它的语义。**
+const MediaModeEnv = "FKA_MEDIA_MODE"
+
+// FeedsModel 这种模式下媒体是否还喂给模型。
+func (m MediaMode) FeedsModel() bool { return m != MediaModeSandbox }
+
+// AutoImports 这种模式下是否在开轮时自动把入站字节落沙盒。
+func (m MediaMode) AutoImports() bool { return m == MediaModeBoth || m == MediaModeSandbox }
+
+// NormalizeMediaMode 认一个取值。**空或认不出退回 llm（现状）**，并对认不出的记一条
+// Warn——配置笔误不该改变行为，但必须留下痕迹。
+func NormalizeMediaMode(raw string) MediaMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(MediaModeLLM):
+		return MediaModeLLM
+	case string(MediaModeBoth):
+		return MediaModeBoth
+	case string(MediaModeSandbox):
+		return MediaModeSandbox
+	default:
+		config.Log().Warn(config.TypeMSG, MediaModeEnv+" 认不出的取值，按 llm 处理",
+			config.Context{"value": raw})
+		return MediaModeLLM
+	}
+}
+
 // inboundKind 一个媒体件的类别。对齐沙盒 `read` 的 fileKind。
 type inboundKind int
 
