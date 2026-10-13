@@ -127,11 +127,12 @@ rebuild: ## 强制重建（改了依赖之后用）
 DOCKER_IMAGE ?= docker.io/zjzhang/fka-sandbox:latest
 DOCKER_ARCH  ?= $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
-# 镜像里预装的 Python 库开关（见 mcp/mcp_sandbox/Dockerfile）。默认「数据 + 可视化」；
-# 精简部署可 `make docker-sandbox SANDBOX_PY_DATA=0 SANDBOX_PY_PLOT=0` 一键裁掉。
+# 镜像里预装的 Python 库开关（见 mcp/mcp_sandbox/Dockerfile）。默认「数据 + 可视化 +
+# 文档读取」——DOCS 装上 pypdf/reportlab，普通 PDF 才读得了（不装的话模型得自己 pip install）；
+# 精简部署可 `make docker-sandbox SANDBOX_PY_DATA=0 SANDBOX_PY_PLOT=0 SANDBOX_PY_DOCS=0` 一键裁掉。
 SANDBOX_PY_DATA  ?= 1
 SANDBOX_PY_PLOT  ?= 1
-SANDBOX_PY_DOCS  ?= 0
+SANDBOX_PY_DOCS  ?= 1
 SANDBOX_PY_MEDIA ?= 0
 SANDBOX_PY_SCIPY ?= 0
 

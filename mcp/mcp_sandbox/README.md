@@ -159,7 +159,7 @@ PID、user 全在容器内——所以容器里的 fka-sandbox 走 **`--mode dir
 | （总是装） | — | `requests`、`openpyxl`、`pillow`、`tzdata` |
 | `SANDBOX_PY_DATA` | `1` | `numpy`、`pandas` |
 | `SANDBOX_PY_PLOT` | `1` | `matplotlib` + `fonts-noto-cjk`（**中文图不再画成方框**） |
-| `SANDBOX_PY_DOCS` | `0` | `lxml`、`bs4` + `pypdf`、`reportlab` |
+| `SANDBOX_PY_DOCS` | `1` | `lxml`、`bs4` + `pypdf`、`reportlab`（PDF 读取） |
 | `SANDBOX_PY_MEDIA` | `0` | `ffmpeg` |
 | `SANDBOX_PY_SCIPY` | `0` | `scipy` |
 

@@ -69,13 +69,14 @@ RUN sed -i \
 # 装到**系统** site-packages（/usr 只读但可读，沙盒里直接用），**绝不装 /sandbox**——
 # 那是每个租户单独的卷，装进去别人看不到。
 #
-# 开关（1 开 / 0 关），默认烘焙「数据 + 可视化」这一档；大件（scipy/ffmpeg/docs）默认关。
+# 开关（1 开 / 0 关），默认烘焙「数据 + 可视化 + 文档」这一档（DOCS 带上 pypdf/reportlab，
+# 普通 PDF 才读得了）；大件（scipy/ffmpeg）默认关。
 #   SANDBOX_PY_DATA   numpy/pandas             SANDBOX_PY_PLOT  matplotlib + 中文字体
 #   SANDBOX_PY_DOCS   lxml/bs4 + pypdf/reportlab    SANDBOX_PY_MEDIA ffmpeg
 #   SANDBOX_PY_SCIPY  scipy
 ARG SANDBOX_PY_DATA=1
 ARG SANDBOX_PY_PLOT=1
-ARG SANDBOX_PY_DOCS=0
+ARG SANDBOX_PY_DOCS=1
 ARG SANDBOX_PY_MEDIA=0
 ARG SANDBOX_PY_SCIPY=0
 RUN set -eux; \
