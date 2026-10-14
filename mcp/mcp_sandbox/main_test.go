@@ -93,7 +93,9 @@ func TestSSE传输_工具经HTTP能调得动(t *testing.T) {
 
 	mcpServer := server.NewMCPServer("fka-sandbox", "0.1.0",
 		server.WithToolCapabilities(true))
-	register(mcpServer, Options{Root: newTestSandbox(t).Root}, nil)
+	// 这条测的是 SSE 传输，不是隔离——模式要与其它用例一致用 direct：
+	// 不填 Mode 会落回默认的 bwrap，没装 bwrap 的机器（macOS）上必红
+	register(mcpServer, Options{Root: newTestSandbox(t).Root, Mode: ModeDirect}, nil)
 
 	httpServer := httptest.NewServer(server.NewSSEServer(mcpServer))
 	t.Cleanup(httpServer.Close)
