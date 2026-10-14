@@ -192,3 +192,20 @@ button.icon.stop {
 }
 .picker-kind { color: var(--muted); font-size: 12px; }
 .picker-empty { padding: 10px 12px; color: var(--muted); }
+
+/* 拖拽文件进页面时的全屏提示遮罩。**pointer-events:none** 让放置事件照常落到
+   window 上；`[hidden]` 要显式关掉 display，否则 .dropzone 的 display:flex 会盖过它。 */
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(43, 108, 255, 0.08);
+  border: 2px dashed #2b6cff;
+  color: #2b6cff;
+  font-size: 18px;
+  pointer-events: none;
+}
+.dropzone[hidden] { display: none; }

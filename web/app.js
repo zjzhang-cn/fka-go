@@ -17,6 +17,7 @@
     attach: document.getElementById("attach"),
     file: document.getElementById("file"),
     picker: document.getElementById("picker"),
+    dropzone: document.getElementById("dropzone"),
   };
 
   var state = { conversation: "", source: null, running: false };
@@ -505,6 +506,45 @@
       }
     }
     if (files.length) sendFiles(files).catch(function () { addNote("error", "发送失败"); });
+  });
+
+  // 拖拽文件进页面：整页都是放置区，拖进来时盖一层提示，松开即作为一条带文件的消息发出。
+  // **只认带文件的拖拽**（拖文字、拖链接不拦）；dragenter/dragleave 会在子元素间反复触发，
+  // 用计数抵消，计数归零才收起遮罩。
+  function draggingFiles(ev) {
+    var types = (ev.dataTransfer && ev.dataTransfer.types) || [];
+    for (var i = 0; i < types.length; i++) {
+      if (types[i] === "Files") return true;
+    }
+    return false;
+  }
+  var dragDepth = 0;
+  window.addEventListener("dragenter", function (ev) {
+    if (!draggingFiles(ev)) return;
+    ev.preventDefault();
+    dragDepth++;
+    el.dropzone.hidden = false;
+  });
+  window.addEventListener("dragover", function (ev) {
+    if (!draggingFiles(ev)) return;
+    ev.preventDefault(); // 必须：不拦的话浏览器不把这里当放置区
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
+  });
+  window.addEventListener("dragleave", function (ev) {
+    if (!draggingFiles(ev)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) el.dropzone.hidden = true;
+  });
+  window.addEventListener("drop", function (ev) {
+    if (!draggingFiles(ev)) return;
+    ev.preventDefault(); // 别让浏览器直接打开这个文件
+    dragDepth = 0;
+    el.dropzone.hidden = true;
+    var files = Array.prototype.slice.call((ev.dataTransfer && ev.dataTransfer.files) || []);
+    if (!files.length) return;
+    if (state.running) { addNote("error", "正在回答，等这一轮结束再发"); return; }
+    if (!state.conversation) { addNote("error", "先连接再发文件"); return; }
+    sendFiles(files).catch(function () { addNote("error", "发送失败"); });
   });
 
   // 初始化
