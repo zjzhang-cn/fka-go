@@ -103,18 +103,47 @@ main {
 .note.tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .note.error { color: #d0463b; }
 
+/* 工具调用（含 MCP）与推理：**默认折叠**。<summary> 只露一行摘要，展开才见正文。
+   折叠标记自己画（▸ / ▾），去掉浏览器默认三角，好让整行可点、样式统一。 */
+details.note.tool,
+details.note.reasoning { padding: 0; }
+details.note.tool > summary,
+details.note.reasoning > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0 4px;
+  outline: none;
+}
+details.note.tool > summary::-webkit-details-marker,
+details.note.reasoning > summary::-webkit-details-marker { display: none; }
+details.note.tool > summary::before,
+details.note.reasoning > summary::before { content: "▸ "; }
+details.note.tool[open] > summary::before,
+details.note.reasoning[open] > summary::before { content: "▾ "; }
+details.note.tool > summary:hover,
+details.note.reasoning > summary:hover { color: var(--text); }
+
+/* 折叠正文与工具 / 应答块一致：整段显示、不截断、不自己滚动。左侧一道细线
+   把它和摘要行区分开。 */
+.tool-body,
+.reasoning-body {
+  margin: 4px 0 0 16px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+}
+.tool-field { margin-top: 4px; }
+.tool-field-label { color: var(--muted); font-size: 11px; }
+.tool-field-value {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 用量（一轮的账目）：比过程提示更淡，不抢眼。 */
 .note.usage { opacity: 0.7; }
 
 /* 文件已落沙盒的系统提示：一行、比聊天更淡。 */
 .note.stored { opacity: 0.8; }
-
-/* 推理块与工具 / 应答块一致：整段显示、不截断、不自己滚动。左侧一道细线
-   把它和工具 / 错误提示区分开。 */
-.note.reasoning {
-  border-left: 2px solid var(--line);
-  padding-left: 8px;
-}
 
 .media { max-width: min(46rem, 82%); }
 .media img, .media video {

@@ -25,9 +25,9 @@
   // 选择器时惰性拉取）；换会话、收到新文件、或自己发过文件后置 null，下次重拉。
   state.resources = null;
   state.resourcesLoading = false;
-  // 当前**推理段**的元素：推理增量往它上面追加；一次工具调用或一条答案 = 这一段
-  // 结束，下段另起一块（避免整轮的推理全堆在一个地方）。见 tool/message 处理器。
-  var reasoningLine = null;
+  // 当前**推理段**的正文元素：推理增量往它上面追加；一次工具调用或一条答案 = 这一段
+  // 结束，下段另起一块（避免整轮的推理全堆在一个地方）。见 reasoning/tool/message 处理器。
+  var reasoningBody = null;
 
   // 键用图标，不用文字：发送是一支纸飞机，执行中换成停止方块。
   var ICON_SEND = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9z"/></svg>';
@@ -65,6 +65,55 @@
     el.log.appendChild(line);
     scroll();
     return line;
+  }
+
+  // 工具调用（含 MCP）：**默认折叠**——摘要一行（🔧 工具名 → 结果首段），点开才看见
+  // 完整参数与结果。<details>/<summary> 是原生折叠，不引框架；展开状态由浏览器自己管。
+  function toolField(label, value) {
+    var wrap = document.createElement("div");
+    wrap.className = "tool-field";
+    var head = document.createElement("div");
+    head.className = "tool-field-label";
+    head.textContent = label;
+    var pre = document.createElement("pre");
+    pre.className = "tool-field-value";
+    pre.textContent = value;
+    wrap.appendChild(head);
+    wrap.appendChild(pre);
+    return wrap;
+  }
+
+  function addTool(data) {
+    var details = document.createElement("details");
+    details.className = "note tool";
+    var summary = document.createElement("summary");
+    var preview = (data.result || "").replace(/\s+/g, " ").trim().slice(0, 60);
+    summary.textContent = "🔧 " + (data.name || "工具") + (preview ? " → " + preview : "");
+    details.appendChild(summary);
+    var body = document.createElement("div");
+    body.className = "tool-body";
+    if (data.arguments) body.appendChild(toolField("参数", data.arguments));
+    body.appendChild(toolField("结果", data.result || "（无输出）"));
+    details.appendChild(body);
+    el.log.appendChild(details);
+    scroll();
+    return details;
+  }
+
+  // 推理：同样**默认折叠**——摘要一行「💭 推理」，点开才见整段思考。推理是**增量**流式来的，
+  // 所以返回里面的正文元素，由调用方往它上面追加（摘要不跟着变，避免每来一字就抖一下）。
+  function addReasoning() {
+    var details = document.createElement("details");
+    details.className = "note reasoning";
+    var summary = document.createElement("summary");
+    summary.textContent = "💭 推理";
+    details.appendChild(summary);
+    var body = document.createElement("div");
+    body.className = "reasoning-body";
+    details.appendChild(body);
+    el.log.appendChild(details);
+    scroll();
+    return body;
   }
 
   // 一轮的真实 token 用量（服务端报的，经 usage 事件推来）。**没给总数就省略
@@ -349,20 +398,20 @@
       // 一段完整答复。**最终答案与主动推送都走这里**（Emitter.Answer 是空的）
       var data = JSON.parse(ev.data);
       addBubble("bot", data.text || "");
-      reasoningLine = null;
+      reasoningBody = null;
     });
     source.addEventListener("reasoning", function (ev) {
       var data = JSON.parse(ev.data);
-      if (!reasoningLine) reasoningLine = addNote("reasoning", "");
+      if (!reasoningBody) reasoningBody = addReasoning();
       // 推理块**不设限高、不自己滚动**——像工具 / 应答块一样整段向下长，留在原地。
-      reasoningLine.textContent += data.text || "";
+      reasoningBody.textContent += data.text || "";
       scroll();
     });
     source.addEventListener("tool", function (ev) {
       var data = JSON.parse(ev.data);
-      addNote("tool", "🔧 " + data.name + " → " + (data.result || "").slice(0, 200));
+      addTool(data); // 默认折叠，见 addTool：点开才看参数与完整结果
       // 一次工具调用 = 一段结束：下一段推理另起一块，不跟这一段堆在一起
-      reasoningLine = null;
+      reasoningBody = null;
     });
     source.addEventListener("file", function (ev) {
       addMedia(JSON.parse(ev.data));
@@ -371,7 +420,7 @@
     source.addEventListener("usage", function (ev) {
       // 轮末的账目：每个会话只看自己的用量。过程事件（推理/工具）之后到。
       addNote("usage", usageText(JSON.parse(ev.data)));
-      reasoningLine = null;
+      reasoningBody = null;
     });
     source.addEventListener("stored", function (ev) {
       // 文件已落沙盒：服务端只给**结构化路径**，这里自己拼成一行系统提示（不是聊天气泡）。
