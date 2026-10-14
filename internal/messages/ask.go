@@ -153,13 +153,14 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 			if question == "" {
 				// **纯文件、无指令：只存不答、不跑模型**——挂起沙盒说明等下一轮指令；
 				// 用一条**通知**（像用量那样，不是聊天回复）告诉用户文件在哪、请下指令。
+				// 通知只带**结构化路径**，措辞由各前端自己拼。
 				h.rememberInbox(sessionID, imported)
-				line := sandboxStoredLine(imported)
+				paths := sandboxPathList(imported)
 				config.Log().Info(config.TypeMSG, "文件已落沙盒，等待指令", mergeFields(fields,
-					config.Context{"line": line}))
-				if !notifyChannelReporting(ctx, channel, channels.MediaStoredNotice{Line: line}) {
+					config.Context{"paths": strings.Join(paths, "、")}))
+				if !notifyChannelReporting(ctx, channel, channels.MediaStoredNotice{Paths: paths}) {
 					// 渠道收不到通知（如 iLink）：退回一条文本，至少让人看见。
-					return AskOutcome{Explain: line}
+					return AskOutcome{Explain: mediaStoredFallback(paths)}
 				}
 				return AskOutcome{}
 			}
@@ -220,13 +221,13 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 	return AskOutcome{Result: result}
 }
 
-// sandboxStoredLine 拼「已落沙盒」的**单行**通知：带上沙盒里的路径与文件名（落点工具
-// 返回的 `- inbox/x.png` 行）；抽不到路径就退回一句不带列表的。
-func sandboxStoredLine(note string) string {
-	if paths := sandboxPathList(note); len(paths) > 0 {
-		return "已存入沙盒：" + strings.Join(paths, "、") + "。" + sandboxAskPrompt
+// mediaStoredFallback 给**收不到结构化通知**的渠道（iLink）兜底的文本：把已落沙盒的
+// 路径拼成一句平实的话。能收通知的前端（web / CLI）各自拼自己的措辞，不走这里。
+func mediaStoredFallback(paths []string) string {
+	if len(paths) == 0 {
+		return "文件已存入沙盒。" + sandboxAskPrompt
 	}
-	return "文件已存入沙盒。" + sandboxAskPrompt
+	return "已存入沙盒：" + strings.Join(paths, "、") + "。" + sandboxAskPrompt
 }
 
 // sandboxPathList 从落点工具返回的说明里抽出 `- <路径>` 那几行（沙盒给的相对路径，

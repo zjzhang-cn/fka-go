@@ -239,8 +239,10 @@
       reasoningLine = null;
     });
     source.addEventListener("stored", function (ev) {
-      // 文件已落沙盒：一行系统提示（不是聊天气泡）。
-      addNote("stored", JSON.parse(ev.data).text || "");
+      // 文件已落沙盒：服务端只给**结构化路径**，这里自己拼成一行系统提示（不是聊天气泡）。
+      var paths = JSON.parse(ev.data).paths || [];
+      var head = paths.length ? "已存入沙盒：" + paths.join("、") + "。" : "文件已存入沙盒。";
+      addNote("stored", head + "请说要我拿它做什么。");
     });
     source.addEventListener("turn", function (ev) {
       // 执行中状态：发送键 ↔ 停止键

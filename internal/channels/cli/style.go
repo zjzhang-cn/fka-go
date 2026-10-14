@@ -128,3 +128,13 @@ func usageLine(in, out, total, cached int) string {
 	}
 	return line
 }
+
+// mediaStoredLine 把已落沙盒的**结构化路径**拼成一行系统提示。**纯函数**：服务端
+// 只给路径（`channels.MediaStoredNotice.Paths`），措辞由前端自己定——这条与
+// `usageLine` 同一条规矩。没有可解析的路径时退回一句不带列表的。
+func mediaStoredLine(paths []string) string {
+	if len(paths) == 0 {
+		return "文件已存入沙盒。请说要我拿它做什么。"
+	}
+	return "已存入沙盒：" + strings.Join(paths, "、") + "。请说要我拿它做什么。"
+}

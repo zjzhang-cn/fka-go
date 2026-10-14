@@ -184,17 +184,16 @@ func (c *Channel) say(text string) {
 }
 
 // Notify 收到工具循环的通知。用量**缓冲**下来等 `say` 打答复时补一行；沙盒落盘通知
-// （`MediaStoredNotice`）没有后续答复，**立即**打一行系统提示。
+// （`MediaStoredNotice`）没有后续答复，**立即**打一行系统提示。落沙盒通知只带**路径**，
+// 措辞（`mediaStoredLine`）由这里——前端自己——拼。
 func (c *Channel) Notify(notice channels.Notice) {
 	if stored, ok := notice.(channels.MediaStoredNotice); ok {
-		if strings.TrimSpace(stored.Line) == "" {
-			return
-		}
+		line := mediaStoredLine(stored.Paths)
 		if c.mode == ModeChat {
-			fmt.Fprintf(c.ui, "%s\n", c.palette.Dim("· "+stored.Line))
+			fmt.Fprintf(c.ui, "%s\n", c.palette.Dim("· "+line))
 			return
 		}
-		fmt.Fprintf(c.ui, "[文件] %s\n", stored.Line)
+		fmt.Fprintf(c.ui, "[文件] %s\n", line)
 		return
 	}
 

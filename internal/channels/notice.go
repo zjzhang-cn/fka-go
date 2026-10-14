@@ -54,15 +54,18 @@ type TurnStateNotice struct {
 
 func (TurnStateNotice) notice() {}
 
-// MediaStoredNotice 入站文件已落沙盒的通知（`FKA_MEDIA_MODE=both/sandbox`）。**一行**文字，
-// 前端当系统提示渲染（像用量那样），**不是聊天回复**。
+// MediaStoredNotice 入站文件已落沙盒的通知（`FKA_MEDIA_MODE=both/sandbox`）。
+//
+// **只带结构化事实**——落进沙盒的相对路径（自带文件名）。「怎么讲给用户听」由各前端
+// 自己拼：web 收 SSE 帧后自行拼成一行系统提示、CLI 自己拼成一行。服务端**不预先拼好
+// 一整句话**——这与 `UsageNotice` 只给数字、由前端拼「用量：…」是同一条规矩。
 //
 // 为什么单开一个类型：它是「系统做了一件事」的账目，不是模型说的话——与 UsageNotice 同类，
 // 但不该混进用量；也**不该走 Senders().Text**（那会变成一条聊天气泡）。收得到通知的前端
 // （web 的 SSE 回显、CLI）用它；收不到的（iLink）由消息层退回文本，至少让人看见。
 type MediaStoredNotice struct {
-	// Line 单行说明，如「已存入沙盒：inbox/a.png。请说要我拿它做什么。」
-	Line string
+	// Paths 已落沙盒的相对路径（如 `inbox/a.png`）。落点工具没回可解析的行时为空。
+	Paths []string
 }
 
 func (MediaStoredNotice) notice() {}

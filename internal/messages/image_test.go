@@ -242,17 +242,14 @@ func Test媒体去向_sandbox纯文件只发通知不跑模型(t *testing.T) {
 	if model.calls != 0 {
 		t.Errorf("sandbox 纯文件不该触发 LLM，实际调了 %d 次", model.calls)
 	}
-	var line string
+	var paths []string
 	for _, notice := range channel.noticesOf() {
 		if stored, ok := notice.(channels.MediaStoredNotice); ok {
-			line = stored.Line
+			paths = stored.Paths
 		}
 	}
-	if !strings.Contains(line, "inbox/a.png") {
-		t.Errorf("通知该带沙盒路径与文件名，实际 %q", line)
-	}
-	if strings.ContainsAny(line, "\n") {
-		t.Errorf("通知该只显示一行，实际 %q", line)
+	if len(paths) != 1 || paths[0] != "inbox/a.png" {
+		t.Errorf("通知该带**结构化**的沙盒路径，实际 %v", paths)
 	}
 }
 
