@@ -34,6 +34,9 @@ type Channel struct {
 	// FetchMedia 读回。**与 blobs（出站下载）分开**：入站那份不该从 `/files/{id}`
 	// 暴露出去，两条路用两个 store。
 	inbound *blobStore
+	// resources 会话媒体目录：名字 → 句柄，供 `#引用` 与 GET /resources。
+	// **只记名字与句柄、不存字节**（见 resource.go）。
+	resources *resourceStore
 
 	mu        sync.Mutex
 	server    *http.Server
@@ -53,6 +56,7 @@ func newChannel(accountID, addr string, users map[string]string, staticDir strin
 		hub:       newHub(),
 		blobs:     newBlobStore(),
 		inbound:   newBlobStore(),
+		resources: newResourceStore(),
 		status:    channels.StatusOffline,
 	}
 }
@@ -146,6 +150,8 @@ func (c *Channel) sendMedia(p channels.SendMediaParams, kind string) (channels.S
 	if !ok {
 		return channels.SendResult{}, errors.New("媒体暂存超限，无法发送")
 	}
+	// 记进会话媒体目录：用户之后可以用 `#名字` 把这份媒体再引用回来。
+	c.recordOutbound(p.Target.ConversationID, id, p.FileName, mime)
 	c.hub.broadcast(p.Target.ConversationID, "file", map[string]any{
 		"url": "/files/" + id, "name": p.FileName, "mimeType": mime, "kind": kind,
 	})

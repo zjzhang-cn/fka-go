@@ -47,6 +47,7 @@ func (c *Channel) routes() http.Handler {
 	mux.HandleFunc("GET /events", c.requireAuth(c.handleEvents))
 	mux.HandleFunc("POST /messages", c.requireAuth(c.handleMessages))
 	mux.HandleFunc("POST /stop", c.requireAuth(c.handleStop))
+	mux.HandleFunc("GET /resources", c.requireAuth(c.handleResources))
 	mux.HandleFunc("GET /files/{id}", c.requireAuth(c.handleFiles))
 	return mux
 }
@@ -140,6 +141,9 @@ func (c *Channel) handleLogin(w http.ResponseWriter, r *http.Request) {
 // 支持两种线格式：**JSON**（纯文字，旧行为不变）与 **multipart**（带图：字段
 // conversation/text + 若干 `image` 文件）。图片字节落进 `inbound` 暂存，产出的
 // part 只带句柄——消息层稍后经 `FetchMedia` 取回，与微信走同一条路。
+//
+// 正文里的 `#名字` 引用（见 resource.go）在这里解析：命中会话媒体的，取回字节并成
+// part 一起交出去，于是与上传的文件走**同一条**分派（图片作附件、文本并进问题…）。
 func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, principal string) {
 	conversation, text, images, ok := c.parseInbound(w, r)
 	if !ok {
@@ -162,10 +166,24 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, princip
 		return
 	}
 
+	// 内部会话键纳入 principal（两个用户各取同名 conversation 也不会串）。
+	internal := sessionConversation(principal, conversation)
+
+	// 上传的媒体记进会话目录，供**之后**（也含本轮）的 `#引用`。
+	uploaded := make(map[string]bool, len(images))
+	for _, p := range images {
+		c.recordInbound(internal, p)
+		if name := strings.TrimSpace(p.Media.FileName); name != "" {
+			uploaded[name] = true
+		}
+	}
+
 	parts := make([]channels.Part, 0, len(images)+1)
 	if text != "" {
 		parts = append(parts, channels.TextPart(text))
 	}
+	// `#名字` 引用：把命中的会话媒体并进本轮，与上传的文件走同一条分派（uploaded 去重）。
+	parts = append(parts, c.resolveRefs(internal, text, uploaded)...)
 	parts = append(parts, images...)
 
 	onMessage(channels.InboundMessage{
@@ -176,7 +194,7 @@ func (c *Channel) handleMessages(w http.ResponseWriter, r *http.Request, princip
 		PrincipalID: principal,
 		RecipientID: c.accountID,
 		// 内部会话键纳入 principal：两个用户各取同名 conversation 也不会串（见 sessionConversation）
-		ConversationID: sessionConversation(principal, conversation),
+		ConversationID: internal,
 		Parts:          parts,
 		Timestamp:      nowMillis(),
 	})
@@ -285,6 +303,31 @@ func (c *Channel) handleStop(w http.ResponseWriter, r *http.Request, principal s
 	}
 	stopped := c.cancelTurn(principal, body.Conversation)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stopped": stopped})
+}
+
+// ── 会话资源（`#引用` 的候选）───────────────────────────
+
+// handleResources 列出某会话里可 `#引用` 的媒体（用户上传的 + agent 发来的）。前端在
+// 输入框打 `#` 时拉这份清单。**字节已过期的条目不列**——列一个引用不了的名字没意义。
+//
+// 将来接沙盒资源时在这里并进来（`source` 换成 sandbox），前端不用改。
+func (c *Channel) handleResources(w http.ResponseWriter, r *http.Request, principal string) {
+	raw := r.URL.Query().Get("conversation")
+	if !validConversation(raw) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "会话 id 不合法"})
+		return
+	}
+	items := c.resources.snapshot(sessionConversation(principal, raw))
+	out := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		if !c.resourceAvailable(it) {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name": it.Name, "kind": it.Kind, "mimeType": it.Mime, "source": it.Source,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resources": out})
 }
 
 // ── SSE ─────────────────────────────────────────────────
