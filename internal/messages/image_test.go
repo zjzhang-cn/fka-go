@@ -83,9 +83,9 @@ func imageMessage() channels.InboundMessage {
 	}
 }
 
-// Test入站图片作为附件发给模型 渠道产出的图片 part → MediaFetcher 取回 → data URI
-// 附件，且纯图自动补一句默认提示语。
-func Test入站图片作为附件发给模型(t *testing.T) {
+// Test入站图片无指令不默认跑模型 纯图（无文字）**不再默认补一句问题、不跑模型**：
+// 只回一句「请连同指令再发」，避免「只是上传个文件」被擅自作答。
+func Test入站图片无指令不默认跑模型(t *testing.T) {
 	channel := &fetchingChannel{
 		fakeChannel: &fakeChannel{accountID: "acct-1"},
 		blobs:       map[string][]byte{"img-1": pngHead},
@@ -93,17 +93,11 @@ func Test入站图片作为附件发给模型(t *testing.T) {
 	model := &imageModel{}
 	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
 
-	if out.Explain != "" {
-		t.Fatalf("该答出来，却回了说明：%q", out.Explain)
+	if model.calls != 0 {
+		t.Errorf("纯图无指令不该跑模型，实际调了 %d 次", model.calls)
 	}
-	if !model.sawUser || len(model.images) != 1 {
-		t.Fatalf("模型该看到 1 张图，实际 %d", len(model.images))
-	}
-	if !strings.HasPrefix(model.images[0].DataURI, "data:image/png;base64,") {
-		t.Errorf("附件该是 png data URI：%q", model.images[0].DataURI)
-	}
-	if !strings.HasPrefix(model.content, "请看看我发来的内容。") {
-		t.Errorf("纯图该补默认提示语，实际正文 = %q", model.content)
+	if out.Explain == "" {
+		t.Error("该回一句「请连同指令再发」")
 	}
 }
 
@@ -139,10 +133,10 @@ func Test文本文件内容并入问题(t *testing.T) {
 	message := channels.InboundMessage{
 		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
 		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
-		Parts: []channels.Part{{
-			Kind:  channels.KindFile,
-			Media: channels.MediaRef{ID: "f1", FileName: "note.txt"},
-		}},
+		Parts: []channels.Part{
+			channels.TextPart("看看这个文件"),
+			{Kind: channels.KindFile, Media: channels.MediaRef{ID: "f1", FileName: "note.txt"}},
+		},
 	}
 	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
 
@@ -167,10 +161,10 @@ func Test二进制文件只给元信息(t *testing.T) {
 	message := channels.InboundMessage{
 		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
 		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
-		Parts: []channels.Part{{
-			Kind:  channels.KindFile,
-			Media: channels.MediaRef{ID: "f1", FileName: "data.zip", MimeType: "application/zip"},
-		}},
+		Parts: []channels.Part{
+			channels.TextPart("看看这个文件"),
+			{Kind: channels.KindFile, Media: channels.MediaRef{ID: "f1", FileName: "data.zip", MimeType: "application/zip"}},
+		},
 	}
 	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
 
@@ -197,10 +191,10 @@ func TestPDF不当文本塞进提示词(t *testing.T) {
 	message := channels.InboundMessage{
 		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
 		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
-		Parts: []channels.Part{{
-			Kind:  channels.KindFile,
-			Media: channels.MediaRef{ID: "f1", FileName: "doc.pdf"},
-		}},
+		Parts: []channels.Part{
+			channels.TextPart("看看这个文件"),
+			{Kind: channels.KindFile, Media: channels.MediaRef{ID: "f1", FileName: "doc.pdf"}},
+		},
 	}
 	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
 
@@ -305,9 +299,10 @@ func (c *noNoticeChannel) FetchMedia(_ context.Context, ref channels.MediaRef) (
 	return data, nil
 }
 
-// Test媒体去向_sandbox下一轮带指令时并进沙盒路径 sandbox 模式挂起的沙盒说明，会在
-// 下一条（带指令的）消息里并进问题，模型据此知道文件在哪。
-func Test媒体去向_sandbox下一轮带指令时并进沙盒路径(t *testing.T) {
+// Test媒体去向_sandbox文件不自动跨轮 sandbox 纯文件落沙盒后，**不再**把沙盒路径自动挂到
+// 下一轮问题——要用文件得连同指令再发（或走新的引用方式）。第二轮只带指令、不带文件时，
+// 模型该看不到任何沙盒路径。
+func Test媒体去向_sandbox文件不自动跨轮(t *testing.T) {
 	channel := &fetchingChannel{
 		fakeChannel: &fakeChannel{accountID: "acct-1"},
 		blobs:       map[string][]byte{"img-1": pngHead},
@@ -322,7 +317,7 @@ func Test媒体去向_sandbox下一轮带指令时并进沙盒路径(t *testing.
 	// 第一轮：纯文件 → 只存不答
 	handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
 
-	// 第二轮：给指令 → 跑模型，问题里带上沙盒路径
+	// 第二轮：只给指令、不点名 → 跑模型，问题里不该有沙盒路径
 	follow := imageMessage()
 	follow.MessageID = "m2"
 	follow.Parts = []channels.Part{channels.TextPart("把图里的话提取出来")}
@@ -331,8 +326,8 @@ func Test媒体去向_sandbox下一轮带指令时并进沙盒路径(t *testing.
 	if out.Explain != "" {
 		t.Fatalf("该答出来：%q", out.Explain)
 	}
-	if !strings.Contains(model.content, "inbox/a.png") {
-		t.Errorf("下一轮该带上沙盒路径：%q", model.content)
+	if strings.Contains(model.content, "inbox/a.png") {
+		t.Errorf("不点名时不该把沙盒路径并进无关问题：%q", model.content)
 	}
 }
 
@@ -350,7 +345,9 @@ func Test媒体去向_both既喂模型又自动落沙盒(t *testing.T) {
 		return "已存入沙盒：inbox/a.png", nil
 	})
 
-	out := handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: imageMessage()})
+	message := imageMessage()
+	message.Parts = append([]channels.Part{channels.TextPart("看看这张图")}, message.Parts...)
+	out := handler.Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
 
 	if out.Explain != "" {
 		t.Fatalf("该答出来：%q", out.Explain)
@@ -390,10 +387,10 @@ func Test语音转写当文本(t *testing.T) {
 	message := channels.InboundMessage{
 		ChannelID: "fake", AccountID: "acct-1", MessageID: "m1",
 		SenderID: "s1", PrincipalID: "u1", ConversationID: "c1",
-		Parts: []channels.Part{{
-			Kind: channels.KindVoice, Transcript: "提醒我买牛奶",
-			Media: channels.MediaRef{ID: "v1", FileName: "voice.amr"},
-		}},
+		Parts: []channels.Part{
+			channels.TextPart("转写一下"),
+			{Kind: channels.KindVoice, Transcript: "提醒我买牛奶", Media: channels.MediaRef{ID: "v1", FileName: "voice.amr"}},
+		},
 	}
 	out := newImageHandler(model).Ask(context.Background(), messages.AskInput{Channel: channel, Message: message})
 

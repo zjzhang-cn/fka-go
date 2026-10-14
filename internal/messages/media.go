@@ -43,10 +43,6 @@ const (
 	maxInboundTextBytes = 32 << 10
 )
 
-// defaultMediaQuestion 只发媒体、不带文字时补的问题。**必须补一句**：各家模型对
-// 「空文本 + 内容块」的接受度不一致，给一句明确指令最稳。
-const defaultMediaQuestion = "请看看我发来的内容。"
-
 // MediaMode 入站媒体去哪。
 //
 //   - MediaModeLLM（默认）：进模型（图片 vision / 文本并进问题 / 二进制元信息），

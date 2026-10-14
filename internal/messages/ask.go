@@ -130,31 +130,12 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 			}
 		}
 
-		if mode.FeedsModel() {
-			images = append(images, media.images...)
-			// 一件内容都没取回来（也没落成沙盒）：如实说，别跑模型空猜
-			if question == "" && len(media.sections) == 0 && imported == "" {
-				config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
-					config.Context{"failures": strings.Join(media.failures, "；")}))
-				return AskOutcome{Explain: replyMediaUnavailable}
-			}
-			// 纯媒体（文字为空）补一句默认提示语：空文本 + 内容块各家模型接受度不一
-			if question == "" {
-				question = defaultMediaQuestion
-			}
-			question += media.questionSuffix()
-		} else {
-			// sandbox：媒体不进模型。一件都没落成时如实说。
-			if len(inbound) == 0 {
-				config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
-					config.Context{"failures": strings.Join(media.failures, "；")}))
-				return AskOutcome{Explain: replyMediaUnavailable}
-			}
-			if question == "" {
-				// **纯文件、无指令：只存不答、不跑模型**——挂起沙盒说明等下一轮指令；
-				// 用一条**通知**（像用量那样，不是聊天回复）告诉用户文件在哪、请下指令。
-				// 通知只带**结构化路径**，措辞由各前端自己拼。
-				h.rememberInbox(sessionID, imported)
+		// **纯媒体、无文字指令：只收不回、不跑模型**——既不补一句默认问题，也不把它
+		// 挂到后续问题。要用文件就把它连同指令一起发。
+		if question == "" {
+			// 落沙盒的（both/sandbox）：通知文件在哪、请下指令。
+			// 通知只带**结构化路径**，措辞由各前端自己拼。
+			if imported != "" {
 				paths := sandboxPathList(imported)
 				config.Log().Info(config.TypeMSG, "文件已落沙盒，等待指令", mergeFields(fields,
 					config.Context{"paths": strings.Join(paths, "、")}))
@@ -164,13 +145,32 @@ func (h *Handler) Ask(ctx context.Context, in AskInput) AskOutcome {
 				}
 				return AskOutcome{}
 			}
+			// 一件都没取回来（渠道不能取文件 / 取回失败）：如实说，别跑模型空猜。
+			if len(inbound) == 0 {
+				config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
+					config.Context{"failures": strings.Join(media.failures, "；")}))
+				return AskOutcome{Explain: replyMediaUnavailable}
+			}
+			// llm：取到了字节，但既没落点、也不默认喂模型——请连同指令再发。
+			config.Log().Info(config.TypeMSG, "收到文件但没有指令，未处理", fields)
+			return AskOutcome{Explain: replyMediaNeedsInstruction}
+		}
+
+		if mode.FeedsModel() {
+			images = append(images, media.images...)
+			question += media.questionSuffix()
+		} else if len(inbound) == 0 {
+			// sandbox 模式带指令，但一件都没落成：如实说。
+			config.Log().Warn(config.TypeMSG, "入站文件一件都没取回来", mergeFields(fields,
+				config.Context{"failures": strings.Join(media.failures, "；")}))
+			return AskOutcome{Explain: replyMediaUnavailable}
 		}
 	}
 
-	// 挂起的沙盒说明（上一个「只存」的文件）+ 本轮落沙盒的说明，并进本轮问题——
-	// 于是模型这一轮与后续轮都知道文件在沙盒的哪些路径。
-	if note := joinInboxNotes(h.takeInbox(sessionID), imported); note != "" {
-		question += "\n\n（用户发来的文件已存入沙盒）\n" + note
+	// 本轮落沙盒的说明并进本轮问题——**只并本轮、不跨轮挂起**，于是它不会漏进用户
+	// 后面问的无关问题。
+	if imported != "" {
+		question += "\n\n（用户发来的文件已存入沙盒）\n" + imported
 	}
 
 	// ── 跑一轮 ─────────────────────────────────────────────
@@ -244,19 +244,6 @@ func sandboxPathList(note string) []string {
 		}
 	}
 	return out
-}
-
-// joinInboxNotes 合并两段沙盒说明（上一轮挂起的 + 本轮的），空串忽略。
-func joinInboxNotes(first, second string) string {
-	first, second = strings.TrimSpace(first), strings.TrimSpace(second)
-	switch {
-	case first == "":
-		return second
-	case second == "":
-		return first
-	default:
-		return first + "\n" + second
-	}
 }
 
 // messageFields 一条消息的归属——日志、会话键与工具身份都从这几个字段来。

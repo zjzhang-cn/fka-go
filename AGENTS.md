@@ -221,8 +221,9 @@ mcp/mcp_sandbox     独立 MCP server（沙盒 bash 执行；默认 bwrap 命名
 > 一个**被点名**的沙盒供工具二次处理——配 `FKA_MEDIA_SINK=<工具全名>`
 > （如 `mcp__sandbox__import`），循环只在模型调用**恰好那个工具**时把本轮字节注进去，
 > 沙盒写进本租户 `inbox/`。**不按工具名猜**（多沙盒会扇出、路由会静默漂移）；没点名就不落，
-> 只喂模型。**`FKA_MEDIA_MODE=llm|both|sandbox`** 决定媒体整体去向（默认 `llm`=现状；
-> `both`=既喂模型又自动落沙盒、`sandbox`=只落沙盒不进模型，**纯文件时只存不答、不跑 LLM**；
+> 只喂模型。**`FKA_MEDIA_MODE=llm|both|sandbox`** 决定媒体整体去向（默认 `llm`；
+> `both`=既喂模型又自动落沙盒、`sandbox`=只落沙盒不进模型）。**三种模式都：没有文字指令的
+> 纯媒体只收不回、不跑 LLM**——不默认补问题、也不挂到后续问题，文件要连同指令一起发才喂模型；
 > 都要先配 `FKA_MEDIA_SINK` 且放行 `external`）。见 `docs/decisions.md` 第 25、26 条。
 >
 > ⚠️ **改了 `mcp/mcp_sandbox/**` 后，容器里跑的还是旧二进制——镜像必须重建**：
