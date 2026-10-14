@@ -67,32 +67,36 @@ make smoke 的 smoke-sandbox     # 沙盒 bash 的端到端，**真起 bwrap**
 ## 模块清单
 
 用例数是 `go test -list` 的条数（顶层 `Test` 函数，不含 `t.Run` 子测试）；
-**全仓 409 个顶层用例**。
+**全仓 607 个顶层用例**。
 
 | 模块 | 落点 | 用例 | 关键验证 |
 |---|---|---|---|
-| **工具循环** | `internal/agent` | 13 | 步数上限是硬约束、工具失败转 tool message、收尾兜错、模型的错往上抛 |
-| **工具接缝 + 注册表** | `internal/tools` | 11 | 源前缀、effect 放行、参数校验、**两种「没有」是不同的话** |
-| **MCP client** | `internal/tools/mcp` | 18 | mark3labs、stdio + HTTP、惰性连接、连不上跳过、工作目录与 transport 的两种错法 |
-| **LLM provider** | `internal/llm/openai` | 13 | 流式 + 双超时（整体/断流）、`tool_choice` 裸字符串、**请求体额外字段可配（默认值与旧行为一字不差）**、**推理写注入的 writer（默认 stderr，绝不进 stdout）** |
-| **提示词** | `internal/prompts` | 3 | 宪法 + 拒答话术 + 注入防护 + **工具参数真实性**（那是权限边界的提示层）；`Compose` 不留尾随空行 |
-| **会话历史** | `internal/llm` | 14 | 按组丢弃不拆散 tool_calls、留下的逐字不动、原样读回会话文件 |
-| **日志 + 归属绑定** | `internal/config` | 23 | 行首三格前缀、字段按字典序、`键=值` 而不是 JSON、**一条日志一行**、账号从 ctx 自动合并、**默认控制台级别压住 info/debug** |
+| **工具循环** | `internal/agent` | 26 | 步数上限是硬约束、工具失败转 tool message、收尾兜错、模型的错往上抛 |
+| **工具接缝 + 注册表** | `internal/tools` | 12 | 源前缀、effect 放行、参数校验、**两种「没有」是不同的话** |
+| **输出通道 reply** | `internal/tools/reply` | 12 | `send` 默认关；本地文件另有一道闸（`FKA_REPLY_LOCAL_FILES`）；越界 / 软链 / 非普通文件 / 超上限在 `reply.resolve` 里拒掉 |
+| **历史清理 history** | `internal/tools/history` | 5 | `delete` 默认关；只清 `SessionID` 指向的当前会话的 jsonl |
+| **MCP client** | `internal/tools/mcp` | 36 | mark3labs、stdio + HTTP、惰性连接、连不上跳过、工作目录与 transport 的两种错法 |
+| **LLM provider** | `internal/llm/openai` | 30 | 流式 + 双超时（整体/断流）、`tool_choice` 裸字符串、**请求体额外字段可配（默认值与旧行为一字不差）**、**推理写注入的 writer（默认 stderr，绝不进 stdout）** |
+| **提示词** | `internal/prompts` | 6 | 宪法 + 拒答话术 + 注入防护 + **工具参数真实性**（那是权限边界的提示层）；`Compose` 不留尾随空行 |
+| **会话历史** | `internal/llm` | 18 | 按组丢弃不拆散 tool_calls、留下的逐字不动、原样读回会话文件 |
+| **日志 + 归属绑定** | `internal/config` | 24 | 行首三格前缀、字段按字典序、`键=值` 而不是 JSON、**一条日志一行**、账号从 ctx 自动合并、**默认控制台级别压住 info/debug** |
 | **装配 + CLI** | `internal/app`、`cmd/fka` | 44 | 构造函数链替代 cordis.yml；`ask`/`chat`/`tools`/`serve`/`login`/`version`；**参数只解析一次**（认不出的以 2 退出，绝不当问题）；控制台级别只有一处出处；`chat` 真终端上由 readline 接管行编辑（中文回退按宽度擦除） |
-| **iLink 协议层** | `internal/channels/ilink/bot` | 97 | uint64 无损、snake_case、`ret` 缺席算成功、**4xx/非 JSON 应答不算成功**、**游标先落盘再上抛（落盘失败要上报）**、过期清游标、ECB 按块、PKCS#7 逐字节核对、**大响应体的超时归读 body 的那一层**、**失败轮次不算成功（退避才会递增）**、**扫码中间态如实上报且不重复**、**收发都有大小上限** |
+| **iLink 协议层** | `internal/channels/ilink/bot` | 105 | uint64 无损、snake_case、`ret` 缺席算成功、**4xx/非 JSON 应答不算成功**、**游标先落盘再上抛（落盘失败要上报）**、过期清游标、ECB 按块、PKCS#7 逐字节核对、**大响应体的超时归读 body 的那一层**、**失败轮次不算成功（退避才会递增）**、**扫码中间态如实上报且不重复**、**收发都有大小上限** |
 | **iLink 适配层** | `internal/channels/ilink` | 36 | 归一化、**能力声明与发送器一致**、每次重读账号表（不缓存）、入站先记上下文再上抛、**会话上下文有上限（留最近的 N 条）**、过期不被 offline 覆盖（**且停机不在轮询自己的 goroutine 上等自己**）、启动失败不留「已启动」假状态、`.env` 块就地替换 |
-| **消息层** | `internal/messages` | 17 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号+身份分片**（同「账号+身份」串行、不同之间并行，身份为空时退回账号）；身份缺失就拒答；**回话带上工具那一步的 ctx**；发不出去只记日志、不发第二条 |
+| **消息层** | `internal/messages` | 46 | 入站 → 身份来自消息层（不是模型说了算）→ 工具循环 → **带同一回复令牌**回原会话；**按账号+身份分片**（同「账号+身份」串行、不同之间并行，身份为空时退回账号）；身份缺失就拒答；**回话带上工具那一步的 ctx**；发不出去只记日志、不发第二条 |
 | **技能源** | `internal/tools/skills` | 21 | **无条件注册**（目录空不藏工具）；极简 front matter（不引 YAML）；多目录**后者覆盖前者**；改完不用重启；清单顺序稳定（**前缀缓存要命中**）；空目录时 list 返 `[]` 而 load 说清放哪 |
 | **渠道接缝** | `internal/channels` | 16 | 不认识任何渠道实现；**`(种类,账号)` 与跨渠道账号标识双唯一**；广播**先判退订再投递**（单个 select 会随机挑）；可选能力靠**类型断言**而不是 `ok=false`；**契约上每个方法都有活着的调用方**（`contract_test.go`） |
-| **网页渠道（SSE）** | `internal/channels/web` | 15 | SSE 收 + POST 发；**token→HttpOnly cookie 认证**（EventSource/`<img>` 带不了头）；会话 id 校验（进 SessionKey/历史文件名）；**实现 EmitterProvider**（流式推 reasoning/tool，**最终答案走 Senders.Text、Answer 置空避免重复**）；出站媒体内存暂存 + `/files/{id}`；**入站文件**：`POST /messages` 支持 multipart、接受任意文件，字节进独立 `inbound` 暂存、实现 `MediaFetcher`（File/Image 收发都开；消息层按三类语义分派）；静态目录缺失给说明不 500；未配置不产实例、有地址没令牌拒绝启用 |
-| **记忆 server（边界 + 工具层）** | `mcp/memory` | 7 | `mcp/memory/**` 不许 import 树外任何包（编译器管不到，由测试守）；是 `main` 包；只认自己那张表；**参数按声明读**（`limit` 是 number 就得用 `GetInt`）；**别人的 private 不进结果** |
+| **CLI 渠道** | `internal/channels/cli` | 35 | CLI 是第三个渠道（decisions 第 21 条）；`chat` 真终端由 readline 接管行编辑（中文回退按宽度擦除） |
+| **网页渠道（SSE）** | `internal/channels/web` | 38 | SSE 收 + POST 发；**token→HttpOnly cookie 认证**（EventSource/`<img>` 带不了头）；会话 id 校验（进 SessionKey/历史文件名）；**实现 EmitterProvider**（流式推 reasoning/tool，**最终答案走 Senders.Text、Answer 置空避免重复**）；出站媒体内存暂存 + `/files/{id}`；**入站文件**：`POST /messages` 支持 multipart、接受任意文件，字节进独立 `inbound` 暂存、实现 `MediaFetcher`（File/Image 收发都开；消息层按三类语义分派）；静态目录缺失给说明不 500；未配置不产实例、有地址没令牌拒绝启用 |
+| **记忆 server（边界 + 工具层）** | `mcp/memory`（含 `internal/log`） | 8 | `mcp/memory/**` 不许 import 树外任何包（编译器管不到，由测试守）；是 `main` 包；只认自己那张表；**参数按声明读**（`limit` 是 number 就得用 `GetInt`）；**别人的 private 不进结果** |
 | **记忆存储 + 迁移** | `mcp/memory/internal/store` | 17 | **认领老库 v0→v1，一行不动**；认领失败**绝不重建**；共用库时只认自己那张表；**库比代码新要拒绝启动**；权限过滤在 WHERE、关键词之间是「且」、`%`/`_` 要转义 |
-| **沙盒 sandbox server** | `mcp/mcp_sandbox` | 52 | **多租户**：身份经 MCP `_meta`（`fka/principal`）从 agent 注入、模型改不了，每个 `PrincipalID` 一个沙盒子目录 `<基根>/<safe(principal)>`，**缺身份 fail-closed**；**bwrap 真隔离**：只读绑定宿主最小必要部分（`/usr /bin /lib /etc`），宿主其余与兄弟租户在沙盒里**不存在**、只有本租户根可写、独立网络/PID/IPC/UTS/user；**找不到 bwrap 拒绝启动**（不静默降到不隔离）；cwd 词法+符号链接双检；超时杀整进程组；命令首词策略**是护栏不是墙**（`direct` 档只固定 cwd）；**read 工具**与 `@引用` 同语义、经 MCP 内容块把沙盒文件交给模型（文本 text、图片 `type:"image"`、音频 `type:"audio"`、其余二进制元信息，同一套越界检查）；**export 工具**把文件作为 `audience=["user"]` 的嵌入资源返回，agent 只认该字段、经渠道发给用户（字节端到端，远端 SSE 沙盒也成立）；**import 工具**是反向入口：agent 按 `FKA_MEDIA_SINK` 点名的工具全名，把用户本轮发来的图片字节经工具参数注进来，写进本租户 `inbox/`，供 read/run 二次处理（`inbox/` 单文件 8 MiB、重名让位）；MCP 客户端识别全部内容类型（text/image/audio/resource/resource_link）与 `annotations.audience`，图片随消息发送、其余作文字元信息 |
+| **沙盒 sandbox server** | `mcp/mcp_sandbox`（含 `internal/log`） | 72 | **多租户**：身份经 MCP `_meta`（`fka/principal`）从 agent 注入、模型改不了，每个 `PrincipalID` 一个沙盒子目录 `<基根>/<safe(principal)>`，**缺身份 fail-closed**；**bwrap 真隔离**：只读绑定宿主最小必要部分（`/usr /bin /lib /etc`），宿主其余与兄弟租户在沙盒里**不存在**、只有本租户根可写、独立网络/PID/IPC/UTS/user；**找不到 bwrap 拒绝启动**（不静默降到不隔离）；cwd 词法+符号链接双检；超时杀整进程组；命令首词策略**是护栏不是墙**（`direct` 档只固定 cwd）；**read 工具**与 `@引用` 同语义、经 MCP 内容块把沙盒文件交给模型（文本 text、图片 `type:"image"`、音频 `type:"audio"`、其余二进制元信息，同一套越界检查）；**export 工具**把文件作为 `audience=["user"]` 的嵌入资源返回，agent 只认该字段、经渠道发给用户（字节端到端，远端 SSE 沙盒也成立）；**import 工具**是反向入口：agent 按 `FKA_MEDIA_SINK` 点名的工具全名，把用户本轮发来的图片字节经工具参数注进来，写进本租户 `inbox/`，供 read/run 二次处理（`inbox/` 单文件 8 MiB、重名让位）；MCP 客户端识别全部内容类型（text/image/audio/resource/resource_link）与 `annotations.audience`，图片随消息发送、其余作文字元信息 |
+| **评测示例 server（Node.js）** | `mcp/mcp_sqlite`、`mcp/mcp_time` | —（不接 Go 测试） | 不接 Go 构建（`node_modules` 不入库）；sqlite 只读连接 + 名称混淆（Text-to-SQL 评测）；time 演示 resources / prompts。见 decisions 第 28 条 |
 | **端到端（跨进程）** | `make smoke` 的 `smoke-memory` / `smoke-sandbox` | — | 记忆：A 进程记一条 → **另起一个进程**查回来 → 换个 viewer 查不到。沙盒：真起 bwrap，断言越界被拒、只读根挡住沙盒外的写 |
 
 > 仍然没有用例的只有 `internal/app`（纯装配，它的正确性由 `make smoke` 的行为验）
-> 与 `mcp/memory/internal/{domain,searchterms,log}`（合计 107 行的小工具）。
-> `internal/prompts` 那条**真缺口已经补上**（3 个用例，钉住第一道防线的那几节）。
+> 与 `mcp/memory/internal/{domain,searchterms}`（合计 107 行的小工具）。
+> `internal/prompts` 那条**真缺口已经补上**（6 个用例，钉住第一道防线的那几节）。
 
 ---
 

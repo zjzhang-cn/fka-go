@@ -690,6 +690,28 @@ agent 循环只保留「模型自己调落点工具时注入字节」那条按�
 
 ---
 
+## 28. 两个示例 / 评测 MCP server 用 Node.js，不接 Go 构建
+
+**决定：** `mcp/mcp_sqlite` 与 `mcp/mcp_time` 是**示例 / 评测用**的独立 MCP server，
+用 Node.js 写、跑在独立进程、经 stdio 走 MCP 进来——与别的能力同一个入口。所以
+「5 个直接依赖 + 零 CGO」一个字没破：依赖它们的是 `mcp.json`，不是 `go.mod`；
+`node_modules` 不入库（npm 装回）；仓库里**没有**替它们预置注册，要用自己写
+`mcp.json`（各自 README 有片段）。
+
+- **`mcp_sqlite`**：Chinook 库的**只读**查询，供 Text-to-SQL 评测。只读靠**连接级
+  `readOnly`**——写入必失败；`^(SELECT|WITH)` 的正则只是先挡一道，不构成防线
+  （`WITH … DELETE` 能穿正则，穿不过连接）。
+- **名称混淆**：表 / 列 / 索引名换成与含义无关的 `z_` 短码，不让模型靠预训练里的
+  Chinook 名字蒙对，只能读 schema / 技能写 SQL——这才算测到了 Text-to-SQL。
+  混淆器（`obfuscate.mjs`）每次运行自检「无原名残留 + 行数一致」；`obfuscate.map.json`
+  含原名**不入库**，原始库与原始技能另存（`chinook.original.db` / `SKILL.original.md`）
+  供重生。`chinook.db` 与 `chinook.original.db` 是**有意入库的评测夹具**，不是运行时数据。
+- **`mcp_time`**：时间工具的示例 server，演示 `resources` 与 `prompts`（不只 tools）。
+- **stdout 纪律与语言无关**：两个 server 都只用 `console.error`——任何语言的 MCP
+  server 都一样，stdout 是 JSON-RPC 通道。
+
+---
+
 ## 附：零 CGO 是怎么达成的
 
 盘问时逐个检查过每个模块对 CGO 的需求，最后只剩 SQLite 一个候选，选了纯 Go：

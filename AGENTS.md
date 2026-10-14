@@ -57,13 +57,13 @@ go test -race ./internal/channels
 ```
 
 - `make verify` 里的 `smoke` 是**能力链路唯一的自动闸门**：它在隔离的临时目录里装一个
-  skill 与一个 MCP server，断言 `fka tools` 真列出了 `skills__load` / `skills__list` /
+  skill 与一个 MCP server，断言 `fka list all` 真列出了 `skills__load` / `skills__list` /
   `mcp__memory__search_memories` / `mcp__memory__remember_memory`，并且记忆库落进了
   `mcp.json` 里 `cwd` 指定的那份安装根。这三件事（技能读到没、server 连上没有、
   子进程在哪个目录跑）**静默失败时从界面上完全看不出来**——`cwd` 失效的表现是
   工具照常列出来、文件写到别处去了，所以只能查文件落没落对。
   「技能列表是空的」是正常状态，不是没装好。
-  同一道闸门还管另外三件：`fka tools --json` 的第一个字节必须是 `{`（日志混进 stdout
+  同一道闸门还管另外三件：`fka list all --json` 的第一个字节必须是 `{`（日志混进 stdout
   时退出码仍是 0）、`fka version` **零副作用**（连 `logs/` 都不该建）、以及
   `smoke-memory` 的**跨进程端到端**（A 进程记一条 private → B 进程查回来 →
   换个 viewer 查不到 → stdout 只有 JSON-RPC 帧）。最后那条是记忆 server 唯一
@@ -86,7 +86,7 @@ go test -race ./internal/channels
 | **`./bin/fka serve`（不设 `FKA_HOME`）** | **`bin/`** | **`bin/skills/`** |
 
 第三行是绝大多数「我的技能怎么不生效」的来源：**直接跑二进制和走 Makefile 读的不是同一份配置。**
-仓库里**没有** `skills/` 目录（`skills/` 未入库），所以 `fka tools` 的技能段为空是对的。
+仓库里**没有** `skills/` 目录（`skills/` 未入库），所以 `fka list all` 的技能段为空是对的。
 `make install` 装到 `/usr/local` 后安装根会变成 `/usr/local/bin` —— 要么把配置放那儿，要么 `export FKA_HOME`。
 
 ## 零 CGO 是硬约束
@@ -189,10 +189,10 @@ skill front matter 解析不引 YAML 库（只认 `key: value`，认不出的当
 **`docs/dev-log.md` 不要改**——它记的是当时的状态，里面的路径有的已经搬走了。
 `docs/node-to-go.md` 被人删掉了（一直没写），引用它的死链已清掉。
 
-**实际存在的树**（157 个 .go 文件，566 个顶层用例；按 `find . -name '*.go'` 与 `^func Test` 计）：
+**实际存在的树**（164 个 .go 文件，607 个顶层用例；按 `find . -name '*.go'` 与 `^func Test` 计）：
 
 ```
-cmd/fka/            入口：ask / chat / tools / serve / login / version
+cmd/fka/            入口：ask / chat / list / serve / login / version
 internal/agent      工具循环（≤N 步，LLM_MAX_STEPS）
 internal/app        装配根（唯一装配点）
 internal/channels   渠道接缝 + ilink/{adapter,provider} + ilink/bot（协议）+ cli（ask/chat 同为渠道）
@@ -203,9 +203,11 @@ internal/prompts    系统提示词
 internal/tools      契约 + 五类 effect 放行 + 注册表 + mcp/ + skills/
 mcp/memory          独立 MCP server（memories 一张表，PRAGMA user_version 迁移）
 mcp/mcp_sandbox     独立 MCP server（沙盒 bash 执行；默认 bwrap 命名空间隔离）
+mcp/mcp_sqlite      独立 MCP server（Chinook 示例库只读查询，名称混淆用于 Text-to-SQL 评测）
+mcp/mcp_time        独立 MCP server（时间相关工具，Node.js 实现）
 ```
 
-> `fka-sandbox` 是**第二个** MCP server，同样自给自足（boundary 测试禁止引树外包）。
+> `fka-sandbox` 是 MCP server 之一，同样自给自足（boundary 测试禁止引树外包）。
 > 它默认用 **Bubblewrap** 做真实隔离：**只读绑定宿主的最小必要部分**（`/usr /bin /lib /etc` 等），
 > 宿主其余部分（安装根 `.env`/`data`/`logs`、家目录、**兄弟租户目录**）在沙盒里**根本不存在**；
 > 只有该租户根可写；独立网络/PID/user；
