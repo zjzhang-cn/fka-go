@@ -204,7 +204,7 @@ type Provider struct {
 	// Reasoning 推理片段写到哪。**nil = os.Stderr**。
 	//
 	// 放在这里而不是写死 `fmt.Print`，是因为「往哪写」是**部署事实**：
-	// CLI 的 stdout 只该有结果（`fka ask` 的答案、`fka tools --json` 的 JSON），
+	// CLI 的 stdout 只该有结果（`fka ask` 的答案、`fka list all --json` 的 JSON），
 	// 而推理是过程信息。装配根注入（`internal/app` 的 `defaultLLMProviders`），
 	// 这样 `fka ask > 答案.txt` 拿到的是干净的答案。
 	//
@@ -678,7 +678,7 @@ func wrapRequestError(
 // ## 为什么是注入的，而不是直接 fmt.Print
 //
 // 这里以前直接往**进程 stdout** 写。而 stdout 是 CLI 的结果输出通道
-// （`fka ask` 把答案打在那儿，`fka tools --json` 把 JSON 打在那儿）——
+// （`fka ask` 把答案打在那儿，`fka list all --json` 把 JSON 打在那儿）——
 // 推理混进去之后，`fka ask > 答案.txt` 里就有半截推理，而重定向到文件的部署会
 // 得到一份「既不是日志也不是结果」的东西。
 //

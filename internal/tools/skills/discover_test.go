@@ -8,7 +8,7 @@ import (
 	"github.com/zjzhang-cn/fka-go/internal/tools"
 )
 
-// TestDiscover和模型看到的是同一份 `fka tools` 要显示「有哪些技能」，
+// TestDiscover和模型看到的是同一份 `fka list` 要显示「有哪些技能」，
 // 而模型看到的是源自己的扫描结果。**两条路径必须一致**——
 // 不一致的话就会出现「清单里没有、模型却说有」。
 func TestDiscover和模型看到的是同一份(t *testing.T) {

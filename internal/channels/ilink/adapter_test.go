@@ -750,7 +750,7 @@ func Test槽位选择器(t *testing.T) {
 }
 
 // Test按ID排序注册 槽位是从环境扫出来的，map 遍历是随机的——
-// 不排序的话每次启动账号顺序都不同，日志与 `fka tools` 的输出就没法比对。
+// 不排序的话每次启动账号顺序都不同，日志与 `fka list tool` 的输出就没法比对。
 func Test按ID排序注册(t *testing.T) {
 	provider := NewProvider()
 	provider.Accounts = []bot.WeixinAccount{

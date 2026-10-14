@@ -1,7 +1,7 @@
 // 本文件钉「推理片段写到哪儿」。
 //
 // 这不是小事：以前它直接 `fmt.Print` 到**进程 stdout**，而 stdout 是 CLI 的结果通道
-// （`fka ask` 的答案、`fka tools --json` 的 JSON）——于是 `fka ask > 答案.txt` 里
+// （`fka ask` 的答案、`fka list all --json` 的 JSON）——于是 `fka ask > 答案.txt` 里
 // 混着半截推理，**退出码还是 0**，脚本拿到一份既不是日志也不是结果的东西。
 package openai
 

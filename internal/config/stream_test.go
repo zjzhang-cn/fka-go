@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Test控制台日志只写stderr CLI 的 stdout 是**结果**（`fka tools --json` 的第一个
+// Test控制台日志只写stderr CLI 的 stdout 是**结果**（`fka list all --json` 的第一个
 // 字节必须是 `{`、`fka ask` 的第一行必须是答案），日志不是。
 //
 // ## 这条为什么必须钉在源码上
@@ -24,7 +24,7 @@ import (
 // 思路：编译器管不了「写到哪条流」，那就让测试管。
 //
 // 真正的端到端闸门在 `make smoke`：独立进程里、故意配一个笔误的
-// `LLM_TOOL_EFFECTS` 跑 `fka tools --json`，断言首字节仍是 `{`。
+// `LLM_TOOL_EFFECTS` 跑 `fka list all --json`，断言首字节仍是 `{`。
 func Test控制台日志只写stderr(t *testing.T) {
 	// 默认落点就是 stderr（生产路径不注入，见 consoleStream）
 	if got := consoleStream(); got != os.Stderr {

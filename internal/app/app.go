@@ -47,9 +47,9 @@ import (
 type App struct {
 	// Tools 工具注册表
 	Tools tools.Service
-	// Policy 放行策略（`fka tools` 要展示）
+	// Policy 放行策略（`fka list tool` 要展示）
 	Policy tools.Policy
-	// LLMProvider 接上的模型实现（**没配模型时是空串**）。给 `fka tools` 与错误提示用
+	// LLMProvider 接上的模型实现（**没配模型时是空串**）。给 `fka list` 与错误提示用
 	LLMProvider string
 	// LLMReady 有没有配好模型服务
 	LLMReady bool
@@ -207,7 +207,7 @@ func Build(ctx context.Context, opts Options) *App {
 // 的地方之一（另一个是 cmd/fka 里打印 host 的那处）。
 //
 // `Reasoning: os.Stderr` 是**装配根该做的那个决定**：推理是过程信息，而 stdout 只该有
-// 结果（`fka ask` 的答案、`fka tools --json` 的 JSON）。以前 provider 直接 `fmt.Print`
+// 结果（`fka ask` 的答案、`fka list all --json` 的 JSON）。以前 provider 直接 `fmt.Print`
 // 到 stdout，于是 `fka ask > 答案.txt` 里混着半截推理。想彻底关掉用
 // `LLM_SHOW_REASONING=0`。
 //

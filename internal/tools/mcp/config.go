@@ -77,7 +77,7 @@ func (c ServerConfig) describe() string {
 
 // Config 一份读好的 mcp.json。
 type Config struct {
-	// Path 实际读到的文件路径，日志与 `fka tools` 都要说清楚
+	// Path 实际读到的文件路径，日志与 `fka list` 都要说清楚
 	Path    string
 	Servers map[string]ServerConfig
 }

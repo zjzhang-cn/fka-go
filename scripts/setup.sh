@@ -280,8 +280,8 @@ cat <<EOF
   FKA_HOME=$HOME_DIR $HOME_DIR/fka serve
   # 或： cd $HOME_DIR && ./fka serve
 
-看一眼模型现在能看到哪些工具：
-  FKA_HOME=$HOME_DIR $HOME_DIR/fka tools
+看一眼装好了什么（技能 / 工具 / MCP 服务器）：
+  FKA_HOME=$HOME_DIR $HOME_DIR/fka list all
 
 说明：
 - sandbox 工具走容器 http://127.0.0.1:$SANDBOX_MCP_PORT/mcp，容器没起时会被跳过并 WARN

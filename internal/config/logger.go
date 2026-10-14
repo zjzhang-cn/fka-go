@@ -244,7 +244,7 @@ func (l *Logger) SetCriticalHandler(fn func(message string, ctx Context)) {
 // ## 它是**全局唯一**的那一份默认值
 //
 // `cmd/fka` 直接引用它，不再自己写一个字面量。以前两处各写一份，症状是
-// 「改一处只影响一半路径」——而漏掉的那半条路正好是 `fka tools --json`：
+// 「改一处只影响一半路径」——而漏掉的那半条路正好是 `fka list all --json`：
 // 日志插进 JSON 前面，退出码仍是 0，调用方只看到「解析失败」。
 //
 // ## 为什么是 Warn 而不是 Debug
@@ -281,7 +281,7 @@ const timeLayout = "2006-01-02T15:04:05.000Z"
 // 那条规则看着合理（「只有错误才算异常」），但它把**日志**和**结果**混在了
 // 同一条流上，而 CLI 的 stdout 是结果：
 //
-//	fka tools --json > out.json     # out.json 的第一个字节必须是 `{`
+//	fka list all --json > out.json     # out.json 的第一个字节必须是 `{`
 //	fka ask > answer.txt            # answer.txt 第一行必须是答案
 //
 // `LLM_TOOL_EFFECTS` 里一个笔误、或某个 MCP server 连不上，都会在**打印结果
@@ -314,7 +314,7 @@ func (l *Logger) write(level Level, typ Type, message string, ctx Context) {
 	l.mu.Unlock()
 
 	// 控制台输出：按级别过滤、**一律走 stderr**——stdout 只属于结果输出
-	//（`fka ask` 的答案、`fka tools --json` 的 JSON）。
+	//（`fka ask` 的答案、`fka list all --json` 的 JSON）。
 	//
 	// 以前只有 Error 及以上走 stderr、其余走 stdout，而 CLI 的默认控制台级别
 	// 恰是 Warn——任何一条告警（MCP 连不上、effect 拼错、技能目录读不了）都会

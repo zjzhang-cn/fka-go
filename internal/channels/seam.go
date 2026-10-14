@@ -332,7 +332,7 @@ func (s *Service) pickChannel(params ResolveTargetParams) (Channel, error) {
 		}
 		channel, ok := s.instances[key(params.Channel, accountID)]
 		if !ok {
-			return nil, AddressError("跑 `fka tools` 看当前接了哪些渠道与账号",
+			return nil, AddressError("先 `fka login` 登录该账号，或核对渠道与账号是否写对",
 				"没有渠道 %s 的账号 %s", params.Channel, accountID)
 		}
 		return channel, nil
@@ -361,7 +361,7 @@ func (s *Service) pickChannel(params ResolveTargetParams) (Channel, error) {
 			found = channel
 		}
 		if found == nil {
-			return nil, AddressError("跑 `fka tools` 看当前接了哪些渠道与账号",
+			return nil, AddressError("先 `fka login` 登录该账号，或核对渠道与账号是否写对",
 				"没有账号 %s", accountID)
 		}
 		return found, nil

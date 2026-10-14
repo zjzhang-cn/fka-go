@@ -75,7 +75,7 @@ func (p *Provider) Create(ctx context.Context) ([]channels.Channel, error) {
 	p.channels = nil
 
 	// 按 ID 排序：**注册顺序决定接缝里的稳定顺序**，而 map 遍历是随机的——
-	// 不排序的话每次启动账号顺序都不同，日志与 `fka tools` 的输出就没法比对
+	// 不排序的话每次启动账号顺序都不同，日志与 `fka list tool` 的输出就没法比对
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ID < accounts[j].ID })
 
 	out := make([]channels.Channel, 0, len(accounts))
