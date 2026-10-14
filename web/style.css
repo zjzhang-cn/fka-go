@@ -163,3 +163,32 @@ button.icon.stop {
   background: #d0463b;
   border-color: #d0463b;
 }
+
+/* `#` 引用选择器：固定定位、摆在输入框正上方（位置由 app.js 算）。 */
+.picker {
+  position: fixed;
+  z-index: 20;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.picker-item.active,
+.picker-item:hover { background: #eef3ff; }
+.picker-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picker-kind { color: var(--muted); font-size: 12px; }
+.picker-empty { padding: 10px 12px; color: var(--muted); }

@@ -16,9 +16,14 @@
     send: document.getElementById("send"),
     attach: document.getElementById("attach"),
     file: document.getElementById("file"),
+    picker: document.getElementById("picker"),
   };
 
   var state = { conversation: "", source: null, running: false };
+  // resources：本会话可 `#引用` 的媒体清单（服务端给）。null = 还没拉过（打开 `#`
+  // 选择器时惰性拉取）；换会话、收到新文件、或自己发过文件后置 null，下次重拉。
+  state.resources = null;
+  state.resourcesLoading = false;
   // 当前**推理段**的元素：推理增量往它上面追加；一次工具调用或一条答案 = 这一段
   // 结束，下段另起一块（避免整轮的推理全堆在一个地方）。见 tool/message 处理器。
   var reasoningLine = null;
@@ -171,6 +176,133 @@
     el.send.classList.toggle("stop", state.running);
   }
 
+  // ── `#` 引用选择器 ─────────────────────────────────────
+  // 输入框里打 `#` 弹出**本会话媒体清单**（服务端 `GET /resources`），选中插入 `#名字`；
+  // 名字含空格/标点时写成 `#"名字"`——与服务端的解析规则同构（见 resource.go）。
+  var picker = { open: false, items: [], index: 0, token: null };
+
+  // refTokenAt 看光标前那一段是不是个 `#引用`：从光标往前找词首的 `#`，到空白为止。
+  function refTokenAt(value, pos) {
+    var start = pos;
+    while (start > 0 && !/\s/.test(value[start - 1])) start--;
+    if (start < pos && value[start] === "#") {
+      return { start: start, end: pos, query: value.slice(start + 1, pos) };
+    }
+    return null;
+  }
+
+  // needsQuote 名字里有空白或句读标点时要用引号包起来，否则解析会在那里断开。
+  function needsQuote(name) { return /[\s，。！？、；：「」（）【】《》]/.test(name); }
+
+  async function loadResources() {
+    var list = [];
+    if (state.conversation) {
+      try {
+        var res = await fetch("/resources?conversation=" + encodeURIComponent(state.conversation));
+        if (res.ok) list = (await res.json()).resources || [];
+      } catch (e) {
+        list = [];
+      }
+    }
+    state.resources = list;
+  }
+
+  // invalidateResources 让 `#引用` 清单下次打开时重拉（换会话、来新文件、自己发过文件）。
+  function invalidateResources() { state.resources = null; state.resourcesLoading = false; }
+
+  function closePicker() {
+    picker.open = false;
+    picker.items = [];
+    picker.token = null;
+    el.picker.hidden = true;
+    el.picker.innerHTML = "";
+  }
+
+  function updatePicker() {
+    var tok = refTokenAt(el.text.value, el.text.selectionStart);
+    if (!tok) { closePicker(); return; }
+    picker.token = tok;
+    if (state.resources === null) {
+      if (!state.resourcesLoading) {
+        state.resourcesLoading = true;
+        loadResources().then(function () {
+          state.resourcesLoading = false;
+          if (refTokenAt(el.text.value, el.text.selectionStart)) renderPicker();
+        }, function () {
+          state.resourcesLoading = false;
+          closePicker();
+        });
+      }
+      return; // 加载中先不渲染，免得闪一下空清单
+    }
+    renderPicker();
+  }
+
+  function renderPicker() {
+    var q = (picker.token ? picker.token.query : "").toLowerCase();
+    picker.items = (state.resources || []).filter(function (r) {
+      return !q || (r.name || "").toLowerCase().indexOf(q) >= 0;
+    });
+    picker.index = 0;
+    el.picker.innerHTML = "";
+    if (!picker.items.length) {
+      var empty = document.createElement("div");
+      empty.className = "picker-empty";
+      empty.textContent = (state.resources && state.resources.length)
+        ? "没有匹配的文件" : "本会话还没有可引用的文件";
+      el.picker.appendChild(empty);
+      picker.open = false; // 无可选项：不拦 Enter
+    } else {
+      picker.items.forEach(function (r, i) {
+        var row = document.createElement("div");
+        row.className = "picker-item" + (i === picker.index ? " active" : "");
+        var name = document.createElement("span");
+        name.className = "picker-name";
+        name.textContent = r.name || "";
+        var kind = document.createElement("span");
+        kind.className = "picker-kind";
+        kind.textContent = r.kind === "image" ? "图片" : "文件";
+        row.appendChild(name);
+        row.appendChild(kind);
+        row.addEventListener("mousedown", function (ev) { ev.preventDefault(); pickItem(i); });
+        el.picker.appendChild(row);
+      });
+      picker.open = true;
+    }
+    placePicker();
+    el.picker.hidden = false;
+  }
+
+  // placePicker 摆在输入框正上方（固定定位，跟着输入框走）。
+  function placePicker() {
+    var rect = el.text.getBoundingClientRect();
+    el.picker.style.left = rect.left + "px";
+    el.picker.style.width = rect.width + "px";
+    el.picker.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+  }
+
+  function movePicker(delta) {
+    if (!picker.items.length) return;
+    picker.index = (picker.index + delta + picker.items.length) % picker.items.length;
+    var rows = el.picker.querySelectorAll(".picker-item");
+    for (var i = 0; i < rows.length; i++) rows[i].classList.toggle("active", i === picker.index);
+  }
+
+  function pickItem(i) {
+    var r = picker.items[i];
+    if (!r) return;
+    var tok = refTokenAt(el.text.value, el.text.selectionStart) || picker.token;
+    if (!tok) return;
+    var name = r.name || "";
+    var insert = needsQuote(name) ? '#"' + name + '"' : "#" + name;
+    var v = el.text.value;
+    el.text.value = v.slice(0, tok.start) + insert + v.slice(tok.end);
+    var caret = tok.start + insert.length;
+    closePicker();
+    el.text.focus();
+    el.text.setSelectionRange(caret, caret);
+  }
+
   // ── 连接 ───────────────────────────────────────────────
   async function connect() {
     var token = el.token.value.trim();
@@ -182,6 +314,7 @@
       return;
     }
     localStorage.setItem("fka.conversation", state.conversation);
+    invalidateResources(); // 换会话：`#引用` 清单作废
 
     el.connect.disabled = true;
     try {
@@ -232,6 +365,7 @@
     });
     source.addEventListener("file", function (ev) {
       addMedia(JSON.parse(ev.data));
+      invalidateResources(); // 来了新文件
     });
     source.addEventListener("usage", function (ev) {
       // 轮末的账目：每个会话只看自己的用量。过程事件（推理/工具）之后到。
@@ -296,6 +430,7 @@
     } catch (err) {
       addNote("error", "发送失败");
     }
+    invalidateResources(); // 自己发过文件
   }
 
   // 喊停当前会话进行中的一轮。键的回切靠服务端的 turn 通知，不在这里改。
@@ -317,6 +452,7 @@
     if (!text) return;
     addBubble("user", text);
     el.text.value = "";
+    closePicker();
     send(text).catch(function () { addNote("error", "发送失败"); });
   });
 
@@ -327,12 +463,22 @@
   });
 
   el.text.addEventListener("keydown", function (ev) {
+    // `#` 选择器开着时先归它：上下选、Enter/Tab 选中、Esc 关。
+    if (picker.open && picker.items.length) {
+      if (ev.key === "ArrowDown") { ev.preventDefault(); movePicker(1); return; }
+      if (ev.key === "ArrowUp") { ev.preventDefault(); movePicker(-1); return; }
+      if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); pickItem(picker.index); return; }
+      if (ev.key === "Escape") { ev.preventDefault(); closePicker(); return; }
+    }
     if (ev.key === "Enter" && !ev.shiftKey) {
       ev.preventDefault();
       if (state.running) return; // 执行中 Enter 不发也不停，只有点停止键才停
       el.form.requestSubmit();
     }
   });
+
+  el.text.addEventListener("input", updatePicker);
+  el.text.addEventListener("blur", function () { setTimeout(closePicker, 120); });
 
   el.connect.addEventListener("click", connect);
 
