@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -386,6 +387,12 @@ func (c *Channel) handleEvents(w http.ResponseWriter, r *http.Request, principal
 // ── 出站媒体 ─────────────────────────────────────────────
 
 // handleFiles 下载一份出站媒体。
+//
+// **黄金清单之外一律附件**（见 inlineMime）。这条端点在客户端**同源**上，而字节
+// 来自工具输出与远端沙盒——不可信内容（提示注入是结构性暴露）。前端对认不出的
+// 类型会给一个 `<a target="_blank">` 直达链接，用户一点就在同源下打开它；把
+// `text/html` 内联渲染等于给同源 XSS 开门。清单里的 **SVG** 是有意的例外：预览
+// 靠 `<img>`（image 上下文不跑脚本），直接打开靠下面那段 CSP 封死脚本与表单。
 func (c *Channel) handleFiles(w http.ResponseWriter, r *http.Request, _ string) {
 	id := r.PathValue("id")
 	item, ok := c.blobs.get(id)
@@ -393,18 +400,66 @@ func (c *Channel) handleFiles(w http.ResponseWriter, r *http.Request, _ string) 
 		http.NotFound(w, r)
 		return
 	}
-	if item.mime != "" {
-		w.Header().Set("Content-Type", item.mime)
+
+	mimeType := strings.TrimSpace(item.mime)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
 	}
-	if item.name != "" {
-		// inline：图片/视频/音频/PDF 由前端**直接显示在页面上**，不做附件下载。
-		w.Header().Set("Content-Disposition", "inline; filename=\""+sanitizeFilename(item.name)+"\"")
+	w.Header().Set("Content-Type", mimeType)
+	// 禁嗅探：没有它浏览器会对上面的类型判断做「再解释」（一份 HTML 字节配着
+	// image/png 头进来也能被当 HTML 渲染），nosniff 让 Content-Type 说了算。
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	disposition := "attachment"
+	if inlineMime(mimeType) {
+		disposition = "inline"
 	}
-	// SVG 是文本（可内联 <script>），而这个端点在客户端**同源**上。用 <img> 嵌它时脚本
-	// 本就不执行，但用户直接打开这条 URL 时脚本会在同源下跑——那是个 XSS 面。所以把
-	// 媒体**内联展示**（不退回附件下载）的同时，禁掉脚本与外链，让同源不再是可乘之机。
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'self' data:; media-src 'self'")
+	// 附件必须有名字（缺名时浏览器用 URL 末段即随机 id 兜底）；内联的名字只影响
+	// 「另存为」，`<img>`/`<video>` 不看它。
+	if name := sanitizeFilename(item.name); name != "" {
+		disposition += "; filename=\"" + name + "\""
+	}
+	w.Header().Set("Content-Disposition", disposition)
+
+	// CSP 兜底：万一将来某类主动内容被误放进内联清单，这几条让它跑不起来。
+	// **form-action / base-uri / frame-ancestors 不回落 default-src**，必须单列：
+	//   - form-action 'none'——否则一份内联页能把表单 POST 回同源的 /messages、/stop；
+	//   - base-uri 'none'——否则 <base> 能把相对 URL 指去别处；
+	//   - frame-ancestors 'self'——别的站点不能嵌它；本源自己的 PDF 预览 iframe 要留。
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; "+
+			"img-src 'self' data:; media-src 'self'; "+
+			"form-action 'none'; base-uri 'none'; frame-ancestors 'self'")
 	_, _ = w.Write(item.data)
+}
+
+// inlineMime 这个类型能不能内联展示。**黄金清单，不是黑名单**：清单之外的
+// （HTML、XHTML、XML、未知类型……）一律附件下载——内联一个能跑脚本的描述就是
+// 同源 XSS，而这条端点的字节来自工具与远端沙盒，属于不可信内容。
+//
+// 放行的是前端四种渲染元素需要的那几类：
+//   - image/*——含 **SVG**：它虽是 XML 文本（理论上可内联 <script>），但预览走
+//     `<img>`，而 image 上下文不跑脚本；直接打开这条 URL 的那条路由响应 CSP
+//     封死（见 handleFiles 里的 script-src 'none' 等 + nosniff）。
+//     **动那段 CSP 之前先看这里——SVG 能内联以它为前提。**
+//   - video/、audio/——容器格式，播放器不跑脚本；
+//   - application/pdf——浏览器自带查看器在独立环境渲染；
+//   - text/plain——纯文本（nosniff 保证它不被嗅探成 HTML）。
+func inlineMime(m string) bool {
+	base, _, err := mime.ParseMediaType(m)
+	if err != nil {
+		return false // 认不出的类型没有「值得信任」的理由，按附件走
+	}
+	base = strings.ToLower(base)
+	if strings.Contains(base, "*") {
+		return false
+	}
+	if base == "text/plain" || base == "application/pdf" {
+		return true
+	}
+	return strings.HasPrefix(base, "image/") ||
+		strings.HasPrefix(base, "video/") ||
+		strings.HasPrefix(base, "audio/")
 }
 
 // ── 静态页 ──────────────────────────────────────────────

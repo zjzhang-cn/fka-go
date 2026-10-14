@@ -138,6 +138,7 @@
   };
 
   // mediaKind 决定用哪种元素渲染：先看 MIME 前缀，看不出来再看后缀。
+  // SVG 也走 `<img>`：image 上下文不跑脚本，直接打开 URL 时服务端 CSP 禁脚本。
   function mediaKind(mime, name) {
     mime = (mime || "").toLowerCase();
     if (mime.indexOf("image/") === 0) return "image";

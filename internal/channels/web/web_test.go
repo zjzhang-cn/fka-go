@@ -623,9 +623,11 @@ func Test出站媒体_多种类型的MIME(t *testing.T) {
 	}
 }
 
-// Test出站媒体_SVG能渲染 端到端：SVG 字节经 sendFile 落库后，下载响应的
-// Content-Type 必须是 image/svg+xml，否则浏览器把它当 XML、`<img>` 显示不出来。
-func Test出站媒体_SVG能渲染(t *testing.T) {
+// Test出站媒体_SVG能预览 端到端：SVG 字节经 sendFile 落库后，下载响应必须是
+// `image/svg+xml` + inline，前端 `<img>` 才显示得出来（image 上下文不跑脚本）。
+// SVG 是 XML 文本，直接打开这条 URL 时脚本本可在同源下跑——所以断言里同时钉住
+// script-src 'none'：**这两个头是一对，内联的前提是 CSP 在**。
+func Test出站媒体_SVG能预览(t *testing.T) {
 	c := testChannel(t)
 	ts := httptest.NewServer(c.routes())
 	defer ts.Close()
@@ -649,12 +651,121 @@ func Test出站媒体_SVG能渲染(t *testing.T) {
 	if got := resp.Header.Get("Content-Type"); got != "image/svg+xml" {
 		t.Errorf("SVG 的 Content-Type 该是 image/svg+xml，实际 %q", got)
 	}
-	// 直接显示在页面上（inline），不是附件下载；同时禁脚本，免得同源下被 SVG 脚本 XSS。
 	if got := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
-		t.Errorf("该 inline 显示而非附件下载，实际 %q", got)
+		t.Errorf("该 inline 预览而非附件下载，实际 %q", got)
 	}
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'none'") {
-		t.Errorf("SVG 可内联脚本，必须禁掉，实际 CSP=%q", csp)
+		t.Errorf("SVG 可内联脚本，内联的前提是 CSP 禁脚本，实际 CSP=%q", csp)
+	}
+}
+
+// Test出站媒体_内联黄金清单 哪些类型内联、哪些走附件。内联的是前端四种渲染元素
+// 需要的类型（`<img>`/`<video>`/`<audio>`/PDF iframe）；HTML/XML 与认不出的类型
+// 一律附件——这条端点在客户端同源上，内联能跑脚本的描述就是同源 XSS。SVG 是有意
+// 的例外（要预览图表），它的直接打开面由响应 CSP 兜底，见 `Test出站媒体_SVG能预览`。
+func Test出站媒体_内联黄金清单(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	cases := []struct {
+		name, mime, file string
+		inline           bool
+	}{
+		{"光栅图片内联", "image/png", "pic.png", true},
+		{"纯文本内联", "text/plain; charset=utf-8", "note.txt", true},
+		{"视频内联", "video/mp4", "clip.mp4", true},
+		{"音频内联", "audio/mpeg", "sound.mp3", true},
+		{"PDF 内联", "application/pdf", "doc.pdf", true},
+		{"SVG 内联（前提是 CSP 禁脚本）", "image/svg+xml", "icon.svg", true},
+		{"HTML 不内联", "text/html; charset=utf-8", "page.html", false},
+		{"XML 不内联", "text/xml", "data.xml", false},
+		{"未知类型不内联", "application/octet-stream", "blob.bin", false},
+		{"通配不内联", "image/*", "x.weird", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, _ := c.blobs.put([]byte("x"), tc.file, tc.mime)
+			req, _ := http.NewRequest("GET", ts.URL+"/files/"+id, nil)
+			req.AddCookie(cookie("secret"))
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			got := resp.Header.Get("Content-Disposition")
+			if tc.inline && !strings.HasPrefix(got, "inline") {
+				t.Errorf("%s 该内联渲染，实际 %q", tc.mime, got)
+			}
+			if !tc.inline && !strings.HasPrefix(got, "attachment") {
+				t.Errorf("%s 该走附件下载，实际 %q", tc.mime, got)
+			}
+		})
+	}
+}
+
+// Test出站媒体_HTML走附件且头防漏 最要紧的一格：`text/html` 绝不内联（同源 XSS），
+// nosniff 顶住内容嗅探，且三个**不回落 default-src** 的 CSP 指令一个都不能少——
+// 漏掉 form-action，内联清单里的 SVG（唯一能内联脚本语法的类型）嵌一份 HTML 表单
+// 就能 POST 回同源的 /messages、/stop。
+func Test出站媒体_HTML走附件且头防漏(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	id, _ := c.blobs.put([]byte("<script>alert(1)</script>"), "page.html", "text/html; charset=utf-8")
+	req, _ := http.NewRequest("GET", ts.URL+"/files/"+id, nil)
+	req.AddCookie(cookie("secret"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
+		t.Errorf("HTML 必须走附件下载，实际 %q", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("该有 nosniff（否则嗅探会绕过类型判断），实际 %q", got)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	for _, want := range []string{
+		"script-src 'none'", "form-action 'none'", "base-uri 'none'", "frame-ancestors 'self'",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP 该含 %q（不回落 default-src，必须单列），实际 %q", want, csp)
+		}
+	}
+}
+
+// Test出站媒体_无名字也定去留 字节没名字（工具没给文件名）时策略不松：内联判据
+// 只看类型，附件缺 filename 由浏览器用 URL 末段兜底——绝不能因为没名字就退回默认内联。
+func Test出站媒体_无名字也定去留(t *testing.T) {
+	c := testChannel(t)
+	ts := httptest.NewServer(c.routes())
+	defer ts.Close()
+
+	get := func(mime string) *http.Response {
+		t.Helper()
+		id, _ := c.blobs.put([]byte("x"), "", mime)
+		req, _ := http.NewRequest("GET", ts.URL+"/files/"+id, nil)
+		req.AddCookie(cookie("secret"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	html := get("text/html")
+	defer html.Body.Close()
+	if got := html.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
+		t.Errorf("没名字的 HTML 也该走附件，实际 %q", got)
+	}
+	img := get("image/png")
+	defer img.Body.Close()
+	if got := img.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+		t.Errorf("没名字的 PNG 也该内联，实际 %q", got)
 	}
 }
 
