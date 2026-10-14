@@ -305,6 +305,12 @@ fka ask --session aabbcc 你的名字加小航
 工具（`reply__send_text` / `reply__send_file` / `reply__send_image`）交给模型。
 effect 都是 `send`，**默认关着**；这是整个仓库**唯一的内置工具源**。
 
+**本地文件访问另有一道默认关着的闸：** 放行 `send` 只让模型能回话，不等于让它把本机
+文件外带——所以 `send_file` / `send_image` 默认**不出现在工具表里**，要再设
+`FKA_REPLY_LOCAL_FILES=1` 才放出，`PromptSection`（报发送根那一段）也只在放出时才给。
+即**默认禁止本地的文件访问**。`send_text` 不受这道闸影响。要发文件又不想开本地路径的，
+走 MCP 的 audience=user 投递（见第 18 条）。
+
 **为什么这不算破「不带任何内置能力」那条原则：** `reply` **不是能力，是输出通道**。
 能力（查资料、记忆、执行、出网）仍然只从 MCP 与 skill 进来；这里只是把「回话」这件事
 的调度权也交给模型——最终答案本来就走同一条出口（`Senders.Text`），现在模型可以先发

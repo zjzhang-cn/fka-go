@@ -14,8 +14,10 @@ Go 版 agent 工具循环 + 两个渠道（微信 iLink、网页 SSE）。**它�
 其一是 `internal/tools/reply`：它**不是能力，是输出通道**——把「往当前会话
 回话」（文字 / 文件 / 图片）也做成工具交给模型，好让它能先发说明再发文件。它不拥有
 数据、不出网、不拉进程，所以没破坏上面那条原则。三个工具的 effect 都是 `send`，
-**默认关着**（`LLM_TOOL_EFFECTS` 默认只有 `read`）；发文件只认**发送根**内的相对路径
-（默认 `<安装根>/sandbox`，即 `fka-sandbox` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
+**默认关着**（`LLM_TOOL_EFFECTS` 默认只有 `read`）；**`send_file` / `send_image` 还有一道
+默认关着的闸**——要 `FKA_REPLY_LOCAL_FILES=1` 才放出，即**默认禁止本地的文件访问**（提示词里
+的发送根也只在放出时才报）。放出后发文件只认**发送根**内的相对路径（默认
+`<安装根>/sandbox`，即 `fka-sandbox` 的沙盒根，`FKA_SEND_ROOT` 可改），越界、软链
 逃逸、非普通文件、超上限都在 `reply.resolve` 里拒掉。见 `docs/decisions.md` 第 17 条。
 
 其二是 `internal/tools/history`：会话历史是 agent **自己落盘的状态**

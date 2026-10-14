@@ -63,21 +63,46 @@ func call(t *testing.T, s tools.Source, tc tools.Context, name string, args map[
 	return res
 }
 
-// Test源_三个工具都是send类别 默认只读策略下它们一个都看不到；要开放必须显式
-// 给 LLM_TOOL_EFFECTS 加 send。这条钉住「默认关着」是声明出来的，不是碰巧。
-func Test源_三个工具都是send类别(t *testing.T) {
-	s := NewSource(Options{Root: t.TempDir()})
-	specs, err := s.List(context.Background(), tools.Context{})
+// Test源_本地文件默认关 send_text 恒出；send_file / send_image **默认不出现**，
+// 要显式 AllowLocalFiles（或 FKA_REPLY_LOCAL_FILES=1）才放出。三者的类别都是 send。
+func Test源_本地文件默认关(t *testing.T) {
+	t.Setenv(EnvLocalFiles, "")
+
+	off := NewSource(Options{Root: t.TempDir()})
+	specs, err := off.List(context.Background(), tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != 1 || specs[0].Name != ToolText {
+		t.Fatalf("默认该只出 send_text，实际 %+v", specs)
+	}
+
+	on := NewSource(Options{Root: t.TempDir(), AllowLocalFiles: true})
+	specs, err = on.List(context.Background(), tools.Context{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(specs) != 3 {
-		t.Fatalf("该有 3 个工具，实际 %d", len(specs))
+		t.Fatalf("开启后该有 3 个工具，实际 %d", len(specs))
 	}
 	for _, spec := range specs {
 		if spec.Effect != tools.EffectSend {
 			t.Errorf("%s 的类别是 %s，该是 send", spec.Name, spec.Effect)
 		}
+	}
+}
+
+// Test本地文件关闭时不给发 关着时即便绕过工具表直接调也拒，并说清怎么开。
+func Test本地文件关闭时不给发(t *testing.T) {
+	t.Setenv(EnvLocalFiles, "")
+	s := NewSource(Options{Root: t.TempDir()})
+
+	res := call(t, s, tools.Context{Reply: &fakeReply{}}, ToolFile, map[string]any{"path": "a.txt"})
+	if res.OK {
+		t.Fatalf("默认关着时不该放行：%s", res.Content)
+	}
+	if !strings.Contains(res.Content, EnvLocalFiles) {
+		t.Errorf("该提示怎么开启，实际：%s", res.Content)
 	}
 }
 
@@ -98,7 +123,7 @@ func Test发文字_走Reply(t *testing.T) {
 // Test发文件_普通文件放行。
 func Test发文件_普通文件放行(t *testing.T) {
 	root, rel := newRoot(t)
-	s := NewSource(Options{Root: root})
+	s := NewSource(Options{Root: root, AllowLocalFiles: true})
 	r := &fakeReply{}
 
 	res := call(t, s, tools.Context{Reply: r}, ToolFile, map[string]any{"path": rel})
@@ -113,7 +138,7 @@ func Test发文件_普通文件放行(t *testing.T) {
 // Test发图片_走Image 图片与文件走的是 Reply 的不同方法（渠道据此退化成文件）。
 func Test发图片_走Image(t *testing.T) {
 	root, rel := newRoot(t)
-	s := NewSource(Options{Root: root})
+	s := NewSource(Options{Root: root, AllowLocalFiles: true})
 	r := &fakeReply{}
 
 	call(t, s, tools.Context{Reply: r}, ToolImage, map[string]any{"path": rel})
@@ -137,7 +162,7 @@ func Test路径越界被拒(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := NewSource(Options{Root: root})
+	s := NewSource(Options{Root: root, AllowLocalFiles: true})
 	r := &fakeReply{}
 	for _, bad := range []string{
 		outside,         // 绝对路径
@@ -160,7 +185,7 @@ func Test不是普通文件被拒(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := NewSource(Options{Root: root})
+	s := NewSource(Options{Root: root, AllowLocalFiles: true})
 	r := &fakeReply{}
 
 	res := call(t, s, tools.Context{Reply: r}, ToolFile, map[string]any{"path": "sub"})
@@ -177,7 +202,7 @@ func Test超过大小上限被拒(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, rel), make([]byte, 32), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewSource(Options{Root: root, MaxBytes: 16})
+	s := NewSource(Options{Root: root, MaxBytes: 16, AllowLocalFiles: true})
 	r := &fakeReply{}
 
 	res := call(t, s, tools.Context{Reply: r}, ToolFile, map[string]any{"path": rel})
@@ -215,7 +240,7 @@ func Test文字为空被拒(t *testing.T) {
 // TestPromptSection_给出根 模型得知道相对谁，否则只能瞎猜路径。
 func TestPromptSection_给出根(t *testing.T) {
 	root := t.TempDir()
-	s := NewSource(Options{Root: root})
+	s := NewSource(Options{Root: root, AllowLocalFiles: true})
 
 	section, err := s.PromptSection(tools.Context{})
 	if err != nil {
@@ -223,5 +248,20 @@ func TestPromptSection_给出根(t *testing.T) {
 	}
 	if !strings.Contains(section, root) {
 		t.Errorf("说明里该给出根路径 %q，实际：%s", root, section)
+	}
+}
+
+// TestPromptSection_默认不给根 本地文件关着时不报发送根——报了只会让模型去找一个
+// 它发不到的地方。
+func TestPromptSection_默认不给根(t *testing.T) {
+	t.Setenv(EnvLocalFiles, "")
+	s := NewSource(Options{Root: t.TempDir()})
+
+	section, err := s.PromptSection(tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if section != "" {
+		t.Errorf("默认关着时不该报发送根，实际：%q", section)
 	}
 }

@@ -24,7 +24,7 @@ var AllEffects = []Effect{
 var EffectLabels = map[Effect]string{
 	EffectRead:     "查资料（搜文档 / 列文档 / 取正文 / 查记忆）",
 	EffectMemory:   "记一条记忆（只增，不改不删）",
-	EffectSend:     "以 Bot 的身份发文件 / 图片给用户",
+	EffectSend:     "以 Bot 的身份往用户那边发东西（回话 / 文件 / 图片）",
 	EffectDelete:   "删除（删文档，或清空当前会话的历史）",
 	EffectExternal: "出网或拉起别的进程（MCP）",
 }

@@ -28,7 +28,7 @@ import (
 //	|-----------|---------------------------------|-------------------|
 //	| read      | 查资料（搜文档 / 列文档 / 取正文 / 查记忆） | 一条不准的答案     |
 //	| memory    | 记一条记忆（只增，不改不删）          | 记错一句，/回忆里多一条 |
-//	| send      | 以 Bot 的身份发给用户（文件、图片）      | 用户立刻看到，再发一次就好 |
+//	| send      | 以 Bot 的身份发给用户（回话、文件、图片） | 用户立刻看到，再发一次就好 |
 //	| delete    | 删文档、清空会话历史（不可撤销）      | 删了就没了          |
 //	| external  | 出网或拉起别的进程（MCP）              | 数据出境，无法回收    |
 //
@@ -50,7 +50,7 @@ const (
 	EffectRead Effect = "read"
 	// EffectMemory 记一条记忆
 	EffectMemory Effect = "memory"
-	// EffectSend 以 Bot 的身份发文件 / 图片
+	// EffectSend 以 Bot 的身份往用户那边发东西（回话 / 文件 / 图片）
 	EffectSend Effect = "send"
 	// EffectDelete 删文档
 	EffectDelete Effect = "delete"

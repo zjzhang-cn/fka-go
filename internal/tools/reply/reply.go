@@ -24,11 +24,17 @@
 // bash 造一个文件、再把它发出去」天然成立，而模型能发的也只有它本就能读写的那些
 // 文件。要放宽（例如允许发某个共享目录）就设 `FKA_SEND_ROOT`。
 //
-// ## 默认关着
+// ## 默认关着，且本地文件访问要额外开启
 //
 // 三个工具的 effect 都是 `send`，而 `LLM_TOOL_EFFECTS` 默认只有 `read`——
 // 不给 `send` 就一个都看不到。这与 `policy.go` 的「少给一个工具不会出错，
 // 多给一个会」一致：能主动往用户那边发东西，是部署方要显式打开的。
+//
+// **`send_file` / `send_image` 还要再开一道**：光放行 `send` 只让模型能回话，
+// 不等于让它把本机文件外带。所以这两个工具默认不出现在工具表里，要设
+// `FKA_REPLY_LOCAL_FILES=1` 才放出，`PromptSection` 也只在放出时才报发送根——
+// 默认**禁止本地的文件访问**。想发文件又不想开本地路径的，走 MCP 那条
+// audience=user 的投递路（见 `docs/decisions.md` 第 18 条）。
 package reply
 
 import (
@@ -59,6 +65,22 @@ const DefaultMaxBytes int64 = 64 << 20
 
 // EnvRoot 覆盖发送根的环境变量。
 const EnvRoot = "FKA_SEND_ROOT"
+
+// EnvLocalFiles 打开**本地文件发送**（`reply__send_file` / `reply__send_image`）的环境变量。
+//
+// **默认关着**：放行 `send` 只是让模型能回话，不等于让它把本机文件外带——把「发本地
+// 文件」变成一次额外的显式开启（`1`/`true`/`yes`/`on`）。关着时这两个工具不出现在
+// 工具表里，`PromptSection` 也不再报发送根。
+const EnvLocalFiles = "FKA_REPLY_LOCAL_FILES"
+
+// localFilesFromEnv 读 EnvLocalFiles。默认（空/认不出）为关。
+func localFilesFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvLocalFiles))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 // sandboxRootEnv 与 `fka-sandbox` 共用的沙盒根环境变量。默认根跟着它走，
 // 好让「bash 造文件、reply 发文件」在改动沙盒位置后仍然对得上。
@@ -107,6 +129,9 @@ type Options struct {
 	Root string
 	// MaxBytes 单文件上限。<=0 = DefaultMaxBytes。
 	MaxBytes int64
+	// AllowLocalFiles 是否放出 `send_file` / `send_image`（本地文件访问）。
+	// **默认 false**：与 `EnvLocalFiles` 取「或」——任一路打开即放出。
+	AllowLocalFiles bool
 }
 
 // ResolveRoot 定出发送根：FKA_SEND_ROOT > SANDBOX_ROOT > <安装根>/sandbox。
@@ -128,6 +153,8 @@ func ResolveRoot() string {
 type source struct {
 	root     string
 	maxBytes int64
+	// allowLocalFiles 关着时只出 `send_text`，且不报发送根（本地文件访问默认禁止）。
+	allowLocalFiles bool
 }
 
 // NewSource 造回复源。
@@ -145,20 +172,30 @@ func NewSource(opts Options) tools.Source {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBytes
 	}
-	return &source{root: abs, maxBytes: maxBytes}
+	return &source{
+		root:            abs,
+		maxBytes:        maxBytes,
+		allowLocalFiles: opts.AllowLocalFiles || localFilesFromEnv(),
+	}
 }
 
 func (s *source) ID() string    { return SourceID }
 func (s *source) Label() string { return "回话" }
 
 func (s *source) List(ctx context.Context, tc tools.Context) ([]tools.Spec, error) {
-	return []tools.Spec{textSpec, fileSpec, imageSpec}, nil
+	specs := []tools.Spec{textSpec}
+	if s.allowLocalFiles {
+		specs = append(specs, fileSpec, imageSpec)
+	}
+	return specs, nil
 }
 
-// PromptSection 把「发送根在哪」告诉模型。**必须给**：不给的话模型只知道要相对
-// 路径，却不知道相对谁，只能瞎猜。这一节只在 `send` 放行时才有意义，但接缝的
-// PromptSection 不带放行信息——多这一段几行的开销，换来的是模型不用试错。
+// PromptSection 把「发送根在哪」告诉模型。**只在本地文件发送打开时才给**：关着时
+// `send_file`/`send_image` 根本不在工具表里，报一个发送根只会让模型去找并不存在的路。
 func (s *source) PromptSection(tc tools.Context) (string, error) {
+	if !s.allowLocalFiles {
+		return "", nil
+	}
 	return "发文件 / 图片时，path 是相对这个目录的路径：" + s.root + "（绝对路径与 .. 会被拒）。", nil
 }
 
@@ -167,8 +204,14 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 	case ToolText:
 		return s.sendText(ctx, args, tc)
 	case ToolFile:
+		if !s.allowLocalFiles {
+			return tools.FailResult("本地文件发送未开启（设 %s=1 打开）。", EnvLocalFiles), nil
+		}
 		return s.sendMedia(ctx, args, tc, false)
 	case ToolImage:
+		if !s.allowLocalFiles {
+			return tools.FailResult("本地文件发送未开启（设 %s=1 打开）。", EnvLocalFiles), nil
+		}
 		return s.sendMedia(ctx, args, tc, true)
 	}
 	// 注册表只按声明分发，走到这里说明声明与实现不同步——那是代码缺陷
