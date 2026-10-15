@@ -95,6 +95,84 @@ func TestStreamToolCalls_缺index的续片接在同一条上(t *testing.T) {
 
 // TestStreamToolCalls_带index的各归各的 规范路径不回归：两个调用交错分片，
 // 参数各自完整、顺序按首次出现的 index。
+// chatWithTools 调一轮假模型，这次**带上工具声明**——打捞只在「给了工具」时才做。
+func chatWithTools(t *testing.T, server *httptest.Server, defs []llm.ToolDef) (llm.ChatResult, error) {
+	t.Helper()
+	chat := Provider{}.CreateChat(llm.Config{
+		BaseURL: server.URL + "/v1", APIKey: "k", Model: "test-model",
+		TimeoutMs: 5000, StreamTimeoutMs: 5000,
+	})
+	return chat(context.Background(), []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: "查一下"},
+	}, defs)
+}
+
+func listTablesDef() []llm.ToolDef {
+	return []llm.ToolDef{{Name: "mcp__sqlite__list_tables", Parameters: map[string]any{"type": "object"}}}
+}
+
+// Test打捞_正文里的工具调用 模型把调用写成正文而不是 tool_calls 时，provider 该把它
+// 翻译成真正的调用、并把标记从正文里摘掉——否则循环会把它当答案原样发给用户。
+func Test打捞_正文里的工具调用(t *testing.T) {
+	t.Setenv("LLM_SHOW_REASONING", "0")
+
+	content := "先查一下\n\n" +
+		"<tool_call>\n<function=mcp__sqlite__list_tables>\n</function>\n</tool_call>"
+	server := sseServer(t, "", content)
+
+	result, err := chatWithTools(t, server, listTablesDef())
+	if err != nil {
+		t.Fatalf("不该返错：%v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "mcp__sqlite__list_tables" {
+		t.Fatalf("没打捞成调用：%+v", result.ToolCalls)
+	}
+	if result.ToolCalls[0].Arguments != "{}" {
+		t.Errorf("参数 = %q，期望 {}", result.ToolCalls[0].Arguments)
+	}
+	if result.ToolCalls[0].ID == "" {
+		t.Error("打捞出来的调用必须带非空 id——tool 结果要靠它配对")
+	}
+	if result.Content != "先查一下" {
+		t.Errorf("正文该被摘干净，实际 %q", result.Content)
+	}
+}
+
+// Test打捞_推理里的工具调用 真机上第二种形状：调用落在 reasoning_content、正文为空。
+// 不打捞的话 provider 会报「既没有给出回答也没有调用工具」，整轮直接失败。
+func Test打捞_推理里的工具调用(t *testing.T) {
+	t.Setenv("LLM_SHOW_REASONING", "0")
+
+	reasoning := "我需要先查看数据库中有哪些表，然后找到音乐商店相关的表结构。\n\n" +
+		"<tool_call>\n<function=mcp__sqlite__list_tables>\n</function>\n</tool_call>"
+	server := sseServer(t, reasoning, "")
+
+	result, err := chatWithTools(t, server, listTablesDef())
+	if err != nil {
+		t.Fatalf("推理里的调用该被打捞，不该返错：%v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "mcp__sqlite__list_tables" {
+		t.Fatalf("没打捞成调用：%+v", result.ToolCalls)
+	}
+	if result.Content != "" {
+		t.Errorf("正文该仍是空串，实际 %q", result.Content)
+	}
+}
+
+// Test打捞_收尾那次不打捞 没给工具（步数用尽的收尾）时，正文/推理里就算有调用标记也
+// 不执行——那次就是在要一段纯文字答案。这里只有推理、正文为空，若误打捞就会把一次
+// 本该失败的收尾「救」成一次工具调用。
+func Test打捞_收尾那次不打捞(t *testing.T) {
+	t.Setenv("LLM_SHOW_REASONING", "0")
+
+	reasoning := "<tool_call><function=mcp__sqlite__list_tables></function></tool_call>"
+	server := sseServer(t, reasoning, "")
+
+	if _, err := chatWithTools(t, server, nil); err == nil {
+		t.Fatal("没给工具时不该打捞，应保持原来的「既没回答也没调用工具」")
+	}
+}
+
 func TestStreamToolCalls_带index的各归各的(t *testing.T) {
 	server := toolCallSSEServer(t, []map[string]any{
 		{"tool_calls": []any{

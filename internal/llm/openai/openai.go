@@ -578,6 +578,31 @@ func streamOnce(
 	}))
 
 	answer := strings.TrimSpace(content.String())
+
+	// 有些模型不把调用放进结构化的 `delta.ToolCalls`，而是照模板**写成文本**
+	// （见 llm/texttoolcalls.go）。只有「这一轮给了工具、结构化调用为空」时才兜：
+	// 收尾那次（无工具）不该把思考里的东西当成调用执行。
+	//
+	// 先在正文里捞；正文为空再看推理——那正是「正文空、调用在思考里」的形状，
+	// 不捞的话，下面那条「既没回答也没调用工具」会把整轮判失败。
+	recoveredFrom := ""
+	if len(calls) == 0 && len(request.Tools) > 0 {
+		if recovered, remaining := llm.ParseTextToolCalls(answer); len(recovered) > 0 {
+			calls, answer, recoveredFrom = recovered, remaining, "content"
+		} else if answer == "" {
+			if recovered, _ := llm.ParseTextToolCalls(reasoningBuf.String()); len(recovered) > 0 {
+				calls, recoveredFrom = recovered, "reasoning"
+			}
+		}
+	}
+	if recoveredFrom != "" {
+		// 模型没按协议走，值得记一条——不打捞的话用户看到的是原文标记或一句
+		// 「既没回答也没调用工具」，两种都看不出根因
+		config.Log().Warn(config.TypeLLM, "模型把工具调用写成了文本，已打捞成真正的调用", config.Fields(parentCtx, config.Context{
+			"model": cfg.Model, "from": recoveredFrom, "calls": len(calls),
+		}))
+	}
+
 	// 用量字段**有值才带**：服务端不给就少这两列，而不是报一对 0 让人以为真的用了 0。
 	returnFields := config.Context{
 		"chars": len([]rune(answer)), "toolCalls": len(calls),
