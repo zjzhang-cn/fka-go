@@ -127,6 +127,63 @@ docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d    # 起容器
 # { "mcpServers": { "sandbox": { "url": "http://127.0.0.1:8080/mcp", "transport": "http" } } }
 ```
 
+### 构建、部署、使用（Docker 三步）
+
+Docker 路线一句话：**先在宿主交叉编译 + 构建镜像 → `up -d` 起容器 → 宿主 `mcp.json`
+指向容器端口**。镜像里不编译（见下），所以顺序不能颠倒。
+
+**1. 构建镜像**（在仓库根执行）
+
+```bash
+make docker-sandbox
+# 或按需裁剪预装库（开关见「预装的 Python 库」）：
+make docker-sandbox SANDBOX_PY_DATA=0 SANDBOX_PY_PLOT=0 SANDBOX_PY_DOCS=0
+```
+
+**2. 部署**（起容器）
+
+```bash
+docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d
+```
+
+- 宿主端口默认 `8080`，用 `SANDBOX_MCP_PORT` 覆盖：`SANDBOX_MCP_PORT=8082 docker compose … up -d`。
+- 沙盒数据默认落命名卷；要落到宿主目录设 `SANDBOX_ROOT_DIR`（见下一节「查看沙盒文件」）。
+- ⚠️ 改了 `mcp/mcp_sandbox/**` 的代码后**必须回到第 1 步重建镜像**再 `up -d`，否则容器里
+  跑的还是旧二进制（细节见下）。
+
+**3. 使用**（让 agent 连上）
+
+容器以 streamable HTTP 挂在 `/mcp`，宿主 `mcp.json` 里写一端 `url`（**不再拉子进程**）：
+
+```jsonc
+// <安装根>/mcp.json
+{
+  "mcpServers": {
+    "sandbox": { "url": "http://127.0.0.1:8082/mcp", "transport": "http" }
+  }
+}
+```
+
+端口必须与第 2 步发布的宿主端口一致。还要放行 MCP 工具（**MCP 工具一律是 external**）：
+
+```
+LLM_TOOL_EFFECTS=read,external
+```
+
+之后模型即可调 `mcp__sandbox__run` / `read` / `export` / `import`（工具全名 `<源>__<工具>`，
+源名取 `mcp.json` 里的键，这里是 `sandbox`）。
+
+**一键**：`make setup`（`scripts/setup.sh`）把三步串起来——构建镜像 → 探测空闲端口 → `down`/`up`
+→ 把端口写进 `mcp.json`。`--no-docker` 或宿主没装 docker 时跳过容器，sandbox 工具连不上
+（补齐后重跑脚本即可）。
+
+**验证**
+
+```bash
+docker exec mcp_sandbox_sandbox_1 ls -l /sandbox   # 容器内沙盒根（非交互别加 -t）
+fka list all                                       # 应列出 mcp__sandbox__run / read / export / import
+```
+
 ⚠️ **改了 `mcp/mcp_sandbox/**` 的代码后，容器里跑的还是旧二进制——必须重建镜像**：
 `make docker-sandbox`（宿主交叉编译 + `docker build`）后**再** `docker compose ... up -d`。
 镜像里不编译（见下），所以只 `up` 不重建等于没改；症状是「代码改了但沙盒行为没变」。
