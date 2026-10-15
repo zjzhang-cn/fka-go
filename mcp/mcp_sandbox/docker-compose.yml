@@ -43,7 +43,9 @@ services:
       #   2. 若落到仓库里，这些 root/10001 属主的目录会污染构建上下文，非 root
       #      stat 不了，下次 `docker build` 直接失败。
       # 命名卷首次由镜像内容初始化，属主就是镜像里 chown 过的 fka。
-      - sandbox:/sandbox
+      # 默认仍是命名卷；设 SANDBOX_ROOT_DIR 为宿主绝对目录即改成 bind（属主坑见上，
+      # 需先 mkdir 并 chown 10001:10001，且别指向仓库内）。
+      - ${SANDBOX_ROOT_DIR:-sandbox}:/sandbox
       - logs:/logs
     # 容器即边界：根只读，只留沙盒与日志两处可写，/tmp 走内存。
     read_only: true

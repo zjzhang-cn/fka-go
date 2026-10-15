@@ -186,6 +186,32 @@ make docker-sandbox SANDBOX_PY_DATA=0 SANDBOX_PY_PLOT=0
 库都装在**系统** site-packages（沙盒里直接用），**不装 `/sandbox`**——那是每租户单独的卷，
 装进去别人看不到。
 
+### 查看沙盒文件 / 把沙盒落到宿主目录
+
+容器里沙盒根是 `/sandbox`，各租户是它下面的子目录（`<principal>/`，如 `default/`）。直接看：
+
+```bash
+docker exec mcp_sandbox_sandbox_1 ls -l /sandbox          # 容器内看一眼
+docker exec -ti mcp_sandbox_sandbox_1 bash                # 进容器看
+```
+
+⚠️ `-ti` 里的 `-t` 要真 TTY：**脚本 / 管道里带 `-t`（或 `-ti`）会报
+`the input device is not a TTY`**，非交互场景去掉 `-t`（`docker exec <容器> ls /sandbox`）。
+
+默认 `/sandbox` 是**命名卷**（属主天然是镜像里 chown 过的 `fka`）。要把它落到宿主某个目录，
+给 `SANDBOX_ROOT_DIR` 一个**宿主绝对路径**即可（compose 里是 `${SANDBOX_ROOT_DIR:-sandbox}`，
+不设就回落到命名卷 `sandbox`）：
+
+```bash
+mkdir -p /宿主目录 && sudo chown 10001:10001 /宿主目录
+SANDBOX_ROOT_DIR=/宿主目录 docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d
+```
+
+⚠️ bind 宿主目录要**先建好并 `chown 10001:10001`**：容器以非 root 的 `fka`（uid 10001）
+运行，宿主目录不可写会让容器**起来即退**（症状 `mkdir /sandbox/...: permission denied`）；
+Docker 代建的目录是 root 属主，同样写不进。也**别指向仓库内**，否则 root/10001 属主会污染
+构建上下文、下次 `docker build` 直接失败。
+
 ## 构建
 
 与主程序同一个 module，从仓库根构建：
