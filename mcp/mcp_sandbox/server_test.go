@@ -409,3 +409,103 @@ func TestSkillNamespace_不同技能名不撞(t *testing.T) {
 		t.Errorf("同一技能名该稳定：%q != %q", again, a)
 	}
 }
+
+// TestImport工具_inbox是软链要拒 写文件发生在 **server 进程**（不在 bwrap 内、有宿主
+// 全部权限），而模型能经 run 造软链——写路径若只做词法检查，WriteFile 会顺着软链
+// 把文件写到租户根外面。与 read 同一套双检必须也守写入。
+func TestImport工具_inbox是软链要拒(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(s.Root, "inbox")); err != nil {
+		t.Skipf("这个平台建不了软链：%v", err)
+	}
+
+	result, err := impl.handleImport(context.Background(), callRequest(map[string]any{
+		"files": []any{map[string]any{
+			"name": "photo.png", "mime": "image/png",
+			"data": base64.StdEncoding.EncodeToString([]byte("x")),
+		}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("inbox 是软链该拒绝：%s", resultText(t, result))
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("文件顺着软链写到了沙盒外：%v", entries)
+	}
+}
+
+// TestImportSkill工具_技能目录是软链要拒 同一洞的 import_skill 版：skills/<命名空间>
+// 被软链顶掉时，不但写入会逃逸，**MkdirAll 都会先在外面建目录**——所以双检要挡在
+// 建目录之前。
+func TestImportSkill工具_技能目录是软链要拒(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(s.Root, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(s.Root, "skills", skillNamespace("备份"))); err != nil {
+		t.Skipf("这个平台建不了软链：%v", err)
+	}
+
+	result, err := impl.handleImportSkill(context.Background(), callRequest(map[string]any{
+		"skill": "备份",
+		"files": []any{map[string]any{"name": "run.sh", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("技能目录是软链该拒绝：%s", resultText(t, result))
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("目录/文件顺着软链跑到了沙盒外：%v", entries)
+	}
+}
+
+// TestImportSkill工具_脚本的父目录是软链要拒 技能目录本身正常、但中间某级
+// （如 scripts/）被换成软链——逐文件的双检要接住这一层。
+func TestImportSkill工具_脚本的父目录是软链要拒(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(s.Root, "skills", skillNamespace("备份")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(s.Root, "skills", skillNamespace("备份"), "scripts")); err != nil {
+		t.Skipf("这个平台建不了软链：%v", err)
+	}
+
+	result, err := impl.handleImportSkill(context.Background(), callRequest(map[string]any{
+		"skill": "备份",
+		"files": []any{map[string]any{"name": "scripts/run.py", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("父目录是软链该拒绝：%s", resultText(t, result))
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("脚本顺着软链写到了沙盒外：%v", entries)
+	}
+}

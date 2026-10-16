@@ -571,6 +571,12 @@ func (s *sandboxServer) handleImport(ctx context.Context, request mcp.CallToolRe
 	}
 
 	inbox := filepath.Join(sb.Root, "inbox")
+	// inbox 也可能被软链顶掉（模型能经 run 造 ln -s）：先过**词法 + 符号链接**双检再建
+	// 目录，否则 MkdirAll 会顺着软链把目录建到租户根外面——写文件发生在 server 进程，
+	// 不受 bwrap 约束，光靠词法 within 挡不住。
+	if _, err := sb.resolveWithin("inbox", "inbox"); err != nil {
+		return fail(err.Error()), nil
+	}
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		return fail("建 inbox 目录失败：" + err.Error()), nil
 	}
@@ -593,9 +599,10 @@ func (s *sandboxServer) handleImport(ctx context.Context, request mcp.CallToolRe
 
 		name, _ := entry["name"].(string)
 		relative := filepath.ToSlash(filepath.Join("inbox", uniqueName(inbox, safeBaseName(name, index))))
-		target := filepath.Join(sb.Root, filepath.FromSlash(relative))
-		if !within(sb.Root, target) {
-			return fail("文件名越界，已拒绝。"), nil
+		// 与 read 同一套双检：只查词法的话，上一级若是软链，WriteFile 会跟出去
+		target, err := sb.resolveWithin(relative, "文件路径")
+		if err != nil {
+			return fail(err.Error()), nil
 		}
 		if err := os.WriteFile(target, data, 0o644); err != nil {
 			return fail("写入失败：" + err.Error()), nil
@@ -637,7 +644,13 @@ func (s *sandboxServer) handleImportSkill(ctx context.Context, request mcp.CallT
 		return fail("没有可落地的脚本：这个工具由 agent 自动填入技能脚本，模型只需给 `skill`。"), nil
 	}
 
-	dest := filepath.Join(sb.Root, "skills", skillNamespace(skill))
+	skillDir := "skills/" + skillNamespace(skill)
+	// 与 import 的 inbox 同理：skills/<命名空间> 若被软链顶掉，MkdirAll 会顺着它在
+	// 租户根外面建目录。先双检再建，每个文件落点再各自验一遍。
+	if _, err := sb.resolveWithin(skillDir, "技能目录"); err != nil {
+		return fail(err.Error()), nil
+	}
+	dest := filepath.Join(sb.Root, filepath.FromSlash(skillDir))
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return fail("建技能目录失败：" + err.Error()), nil
 	}
@@ -662,9 +675,12 @@ func (s *sandboxServer) handleImportSkill(ctx context.Context, request mcp.CallT
 		if !ok {
 			return fail(fmt.Sprintf("第 %d 个脚本的路径不合法：%q。", index+1, name)), nil
 		}
-		target := filepath.Join(dest, cleaned)
-		if !within(sb.Root, target) {
-			return fail("脚本路径越界，已拒绝。"), nil
+		relative := filepath.ToSlash(filepath.Join(skillDir, cleaned))
+		// 只查词法挡不住中间某级是软链：WriteFile 发生在 server 进程（不在 bwrap 内），
+		// 会跟着软链写出去。与 read 同一套双检。
+		target, err := sb.resolveWithin(relative, "脚本路径")
+		if err != nil {
+			return fail(err.Error()), nil
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fail("建脚本目录失败：" + err.Error()), nil
@@ -673,7 +689,7 @@ func (s *sandboxServer) handleImportSkill(ctx context.Context, request mcp.CallT
 			return fail("写入失败：" + err.Error()), nil
 		}
 		// 返回**相对沙盒根**的路径：模型直接拿去 run/read，不必知道 skills/ 与命名空间怎么拼
-		written = append(written, filepath.ToSlash(filepath.Join("skills", skillNamespace(skill), cleaned)))
+		written = append(written, relative)
 	}
 
 	return text("已把技能「" + skill + "」自带的脚本存入沙盒：\n- " + strings.Join(written, "\n- ") +
