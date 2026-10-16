@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -31,10 +32,11 @@ import (
 
 // 工具名。**刻意不带前缀**——前缀由上层注册表加（`mcp__sandbox__`）。
 const (
-	ToolRun    = "run"
-	ToolRead   = "read"
-	ToolExport = "export"
-	ToolImport = "import"
+	ToolRun         = "run"
+	ToolRead        = "read"
+	ToolExport      = "export"
+	ToolImport      = "import"
+	ToolImportSkill = "import_skill"
 )
 
 // ResourceRootURI 资源根。固定资源 `sandbox:///` 读出本租户文件清单；资源模板
@@ -128,6 +130,22 @@ func register(mcpServer *server.MCPServer, opts Options, execLog *ExecLog) {
 				"用 run 处理（转换、识别、裁剪等）。字节由 agent 自动填入，**你不需要也不应该传任何参数**；"+
 				"只有在需要把用户刚发的图落到文件上时才调用。"),
 	), s.handleImport)
+
+	// import_skill：把**某个技能自带的脚本**落到本租户沙盒的 `skills/<技能>/` 下，
+	// 之后用 run 跑、用 read 看。与 import 同一套注入骨架：`files` 由 agent 填
+	// （它从技能目录读出字节），模型只填 `skill` 名字。**declared 参数只有 skill**
+	// ——让模型看见一个它填不了的 `files` 只会诱导它瞎编（同 import）。
+	mcpServer.AddTool(mcp.NewTool(ToolImportSkill,
+		mcp.WithDescription(
+			"把某个技能自带的脚本落到你的沙盒 `skills/<技能>/` 下，返回可用的相对路径；"+
+				"之后用 run 执行（如 `bash skills/<技能>/run.sh`）、用 read 查看。"+
+				"`skill` 填系统提示里列出的技能名。字节由 agent 自动填入，**你不必也不应传文件内容**。"+
+				"只有要用某个技能自带的脚本时才调用它。"),
+		mcp.WithString("skill",
+			mcp.Description("技能名，见系统提示里的可用技能清单。"),
+			mcp.Required(),
+		),
+	), s.handleImportSkill)
 
 	// resources：把本租户沙盒里的文件也按 MCP 标准原语暴露出去，方便**别的 MCP 客户端**
 	// （如 Claude Desktop 直连 fka-sandbox）列举与读取。读取的合取与 read 工具同一套分类；
@@ -587,6 +605,103 @@ func (s *sandboxServer) handleImport(ctx context.Context, request mcp.CallToolRe
 
 	return text("已把这些文件存入沙盒：\n- " + strings.Join(written, "\n- ") +
 		"\n用 read 查看内容、run 处理（转换/识别/裁剪等）。"), nil
+}
+
+// handleImportSkill 把 agent 注进来的技能脚本写到本租户沙盒的 `skills/<技能>/` 下。
+//
+// ## 为什么与 import 分开
+//
+// import 落的是「用户本轮发来的东西」，落点是 `inbox/`，文件名只取 basename、
+// 重名让位；技能脚本落点是 `skills/<技能>/`，要**保留子目录结构**（`scripts/x.py`）、
+// 且**重名覆盖**（技能是安装方维护的，改一次就该生效，不该攒出 `x-1.py`）。
+// 两者语义相反，塞进一个工具只会让每个参数都得判一次模式。
+//
+// ## 命名空间：抗冲突
+//
+// `safeSegment` 会把非 ASCII 全压成 `_`，于是「备份照片」与「照片备份」会撞成同一个
+// 目录、互相覆盖脚本。所以加上原名的短哈希——**同一技能名稳定、不同技能名不撞**。
+// 具体路径由返回值给出，模型不必自己拼。
+func (s *sandboxServer) handleImportSkill(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sb, problem := s.sandboxOf(request)
+	if problem != nil {
+		return problem, nil
+	}
+
+	skill := strings.TrimSpace(request.GetString("skill", ""))
+	if skill == "" {
+		return fail("skill 是必填的：要落哪个技能自带的脚本。技能名见系统提示里的清单。"), nil
+	}
+
+	raw, _ := request.GetArguments()["files"].([]any)
+	if len(raw) == 0 {
+		return fail("没有可落地的脚本：这个工具由 agent 自动填入技能脚本，模型只需给 `skill`。"), nil
+	}
+
+	dest := filepath.Join(sb.Root, "skills", skillNamespace(skill))
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return fail("建技能目录失败：" + err.Error()), nil
+	}
+
+	var written []string
+	for index, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		encoded, _ := entry["data"].(string)
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return fail(fmt.Sprintf("第 %d 个脚本不是合法的 base64。", index+1)), nil
+		}
+		if int64(len(data)) > ImportMaxBytes {
+			return fail(fmt.Sprintf("第 %d 个脚本超过上限 %s。", index+1, humanBytes(ImportMaxBytes))), nil
+		}
+
+		name, _ := entry["name"].(string)
+		cleaned, ok := safeRelPath(name)
+		if !ok {
+			return fail(fmt.Sprintf("第 %d 个脚本的路径不合法：%q。", index+1, name)), nil
+		}
+		target := filepath.Join(dest, cleaned)
+		if !within(sb.Root, target) {
+			return fail("脚本路径越界，已拒绝。"), nil
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fail("建脚本目录失败：" + err.Error()), nil
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return fail("写入失败：" + err.Error()), nil
+		}
+		// 返回**相对沙盒根**的路径：模型直接拿去 run/read，不必知道 skills/ 与命名空间怎么拼
+		written = append(written, filepath.ToSlash(filepath.Join("skills", skillNamespace(skill), cleaned)))
+	}
+
+	return text("已把技能「" + skill + "」自带的脚本存入沙盒：\n- " + strings.Join(written, "\n- ") +
+		"\n用 run 执行（如 `bash " + written[0] + "`）、用 read 查看。"), nil
+}
+
+// skillNamespace 技能名 → 沙盒里 `skills/` 下的目录名。**稳定且抗冲突**：
+// 人类可读的安全段 + 原名的短哈希（否则中文名会被 safeSegment 压成一样的下划线）。
+func skillNamespace(skill string) string {
+	digest := sha1.Sum([]byte(skill))
+	return safeSegment(skill) + "-" + fmt.Sprintf("%x", digest)[:8]
+}
+
+// safeRelPath 校验一个「技能目录内的相对路径」：拒绝空、绝对、以及任何 `..` 逃逸，
+// 但**保留子目录结构**（与 import 的 safeBaseName 不同，后者只取 basename）。
+func safeRelPath(name string) (string, bool) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", false
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(trimmed))
+	if cleaned == "." || cleaned == ".." || filepath.IsAbs(cleaned) {
+		return "", false
+	}
+	if strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return cleaned, true
 }
 
 // safeBaseName 取上传文件的安全 basename：去掉路径分隔符，空则给个默认名。

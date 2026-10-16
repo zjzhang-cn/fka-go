@@ -296,3 +296,116 @@ func TestImport工具_重名自动让位(t *testing.T) {
 		t.Fatalf("两张同名图该各存一份，实际 %d 个文件", len(entries))
 	}
 }
+
+// TestImportSkill工具_落脚本并保留子目录 技能脚本落进本租户 `skills/<技能>/`，
+// 且**保留 `scripts/x.py` 这种子目录结构**（import 只取 basename，这里不能照抄）。
+func TestImportSkill工具_落脚本并保留子目录(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	result, err := impl.handleImportSkill(context.Background(), callRequest(map[string]any{
+		"skill": "备份",
+		"files": []any{
+			map[string]any{"name": "scripts/run.py", "data": base64.StdEncoding.EncodeToString([]byte("print(1)\n"))},
+			map[string]any{"name": "SKILL.md", "data": base64.StdEncoding.EncodeToString([]byte("步骤"))},
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("落脚本该成功：%s", resultText(t, result))
+	}
+
+	ns := skillNamespace("备份")
+	got, err := os.ReadFile(filepath.Join(s.Root, "skills", ns, "scripts", "run.py"))
+	if err != nil {
+		t.Fatalf("脚本没落进 skills/：%v", err)
+	}
+	if string(got) != "print(1)\n" {
+		t.Errorf("内容不对：%q", got)
+	}
+	if body := resultText(t, result); !strings.Contains(body, "skills/"+ns+"/scripts/run.py") {
+		t.Errorf("结果该返回相对沙盒根的可用路径：%s", body)
+	}
+}
+
+// TestImportSkill工具_重名覆盖 技能是安装方维护的：同名脚本再落一次要覆盖，
+// 不能像 import 那样攒出 `run-1.py`（否则改了脚本旧的还在）。
+func TestImportSkill工具_重名覆盖(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	call := func(body string) {
+		if _, err := impl.handleImportSkill(context.Background(), callRequest(map[string]any{
+			"skill": "备份",
+			"files": []any{map[string]any{"name": "run.sh", "data": base64.StdEncoding.EncodeToString([]byte(body))}},
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call("v1")
+	call("v2")
+
+	ns := skillNamespace("备份")
+	got, err := os.ReadFile(filepath.Join(s.Root, "skills", ns, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "v2" {
+		t.Errorf("重名该覆盖成最新：%q", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(s.Root, "skills", ns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("不该攒出多个同名文件：%v", entries)
+	}
+}
+
+// TestImportSkill工具_路径越界要拒 脚本名可能带 `..`——不能让技能借它把文件写到
+// 沙盒外面（或覆盖 SKILL.md 之外的路径）。
+func TestImportSkill工具_路径越界要拒(t *testing.T) {
+	s := newTestSandbox(t)
+	impl := newTestServer(s)
+
+	result, err := impl.handleImportSkill(context.Background(), callRequest(map[string]any{
+		"skill": "备份",
+		"files": []any{map[string]any{"name": "../evil.sh", "data": base64.StdEncoding.EncodeToString([]byte("x"))}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("越界路径该被拒")
+	}
+	if _, statErr := os.Stat(filepath.Join(s.Root, "evil.sh")); !os.IsNotExist(statErr) {
+		t.Errorf("越界文件被写出来了：%v", statErr)
+	}
+}
+
+// TestImportSkill工具_缺skill要拒 模型自己调、没给技能名时如实说一句。
+func TestImportSkill工具_缺skill要拒(t *testing.T) {
+	impl := newTestServer(newTestSandbox(t))
+	result, err := impl.handleImportSkill(context.Background(), callRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("缺 skill 该拒绝")
+	}
+}
+
+// TestSkillNamespace_不同技能名不撞 safeSegment 会把中文压成一样的一串下划线，
+// 单靠它「备份照片」与「照片备份」会落进同一个目录、互相覆盖脚本。短哈希要拉开。
+func TestSkillNamespace_不同技能名不撞(t *testing.T) {
+	a := skillNamespace("备份照片")
+	b := skillNamespace("照片备份")
+	if a == b {
+		t.Errorf("不同技能名不该撞到同一个目录：%q == %q", a, b)
+	}
+	if again := skillNamespace("备份照片"); again != a {
+		t.Errorf("同一技能名该稳定：%q != %q", again, a)
+	}
+}
