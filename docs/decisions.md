@@ -761,9 +761,11 @@ allowed-tools / license / metadata），**但不引 YAML 库**——手写一个
 `skills.go` 文件头，无法解析的内容安静丢弃。
 
 **仍然不同的（不是缺口，是架构）**：标准客户端里技能文件就在 agent 的文件系统上、直接跑；
-fka 的 agent **不执行任何东西**——脚本经 `import_skill` 注入沙盒再 `run`（见 #29）。所以
-带脚本的标准技能，其正文里「直接运行 scripts/x.py」要改写成 fka 的注入流程。目录布局本身
-兼容：`FKA_SKILLS_DIR` 指向 `~/.claude/skills` 即可用。
+fka 的 agent **不执行任何东西**——脚本经 `import_skill` 注入沙盒再 `run`（见 #29）。
+**但这套机制不写进技能正文**：技能照标准写（只提 `scripts/x.py`），「提到自带脚本时先落地
+再 run」这句由系统提示统一补（`prompts.SkillScriptsSection`，按 `FKA_SKILL_SINK` 生成）——
+一份提示词管所有技能，技能本身可移植。目录布局本身兼容：`FKA_SKILLS_DIR` 指向
+`~/.claude/skills` 即可用。
 
 ---
 

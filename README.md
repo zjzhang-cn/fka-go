@@ -171,19 +171,19 @@ metadata）——可以放 `~/.claude/skills` 下的标准技能，`FKA_SKILLS_D
 `fka list skill` 会打 ⚠、启动也记一条 Warn——那类技能 Claude 客户端会拒绝，但 fka 自己仍认。
 
 **唯一实质差异在执行**：标准客户端里技能文件就在 agent 盘上、直接跑；fka 的 agent 不执行
-任何东西，脚本要经 `import_skill` 注入沙盒再 `run`（见下）。所以带脚本的标准技能，正文里
-「直接运行 `scripts/x.py`」得改写成 fka 的注入流程。
+任何东西，脚本要经沙盒落地再 `run`（见下）。**但技能正文不用管这件事**——照标准写
+「运行 `scripts/x.py`」即可，落地机制由系统提示统一处理（见下），技能本身可移植。
 
 `skills__list` 与 `skills__load` **无条件注册**——目录空的时候它们也在，
 `list` 返 `[]`（空列表是合法答案，不是失败），`load` 会把该放哪的目录说清楚。
 所以「技能列表是空的」是正常状态，不是没装好。
 
-**技能可以自带脚本。** 技能目录除 `SKILL.md` 外还能放脚本（`scripts/x.py` 等）。
-agent 自己不执行任何东西，所以脚本要跑得先**落进沙盒**再 `run`：在 `mcp.json` 里配一个
-沙盒 MCP server（`mcp/mcp_sandbox`）并放行 `external`，再设 `FKA_SKILL_SINK` 点名它的
-落地工具全名（如 `mcp__sandbox__import_skill`）。需要时模型调那个工具、给出 `skill` 名，
-agent 把该技能目录里的脚本字节注进去，沙盒写进本租户 `skills/<技能>/`，模型再用
-`mcp__sandbox__run` 执行（路径由工具返回值给出）。
+**技能可以自带脚本。** 技能目录除 `SKILL.md` 外还能放脚本（`scripts/x.py` 等），
+`SKILL.md` 正文**照标准写、只提脚本文件名**——落地机制属于部署层，不写进技能。要跑脚本：
+在 `mcp.json` 里配一个沙盒 MCP server（`mcp/mcp_sandbox`）并放行 `external`，再设
+`FKA_SKILL_SINK` 点名它的落地工具全名（如 `mcp__sandbox__import_skill`）。系统提示会补一句
+「技能提到自带脚本时，先落地该技能再用 `run` 执行」，模型据此调用被点名的工具、给出技能名；
+agent 把该技能目录里的脚本字节注进去，沙盒写进本租户 `skills/<技能>/`，模型再执行工具返回的路径。
 
 字节走 MCP 注入，与用户媒体走 `FKA_MEDIA_SINK` 是**同一套骨架**；**只认点名的那个工具
 全名**，不按后缀猜（多沙盒时不扇出、路由不静默漂移）。没配 `FKA_SKILL_SINK`（或没接沙盒）

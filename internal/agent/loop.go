@@ -171,7 +171,11 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 		}
 	}
 	// 段落只算一次：技能目录每次都要扫磁盘，拼 system 与记日志用的必须是同一份。
+	// 技能脚本的用法是部署事实（来自 FKA_SKILL_SINK），补成最后一段——正文里不写它。
 	sections := r.tools.PromptSections(tc)
+	if section := prompts.SkillScriptsSection(r.SkillSink); section != "" {
+		sections = append(sections, section)
+	}
 	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), sections)
 
 	// 历史前缀：会话文件里那份，逐字原样（含工具调用与工具结果）。

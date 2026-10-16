@@ -75,6 +75,21 @@ func TestAgent_不是空串(t *testing.T) {
 	}
 }
 
+// TestSkillScriptsSection_机制不进技能正文 技能脚本的用法属于部署层：有落点工具时给出
+// 通用的「先落地再 run」一句（工具名在这里，不在 SKILL.md 里）；没落点就整段不出现。
+func TestSkillScriptsSection_机制不进技能正文(t *testing.T) {
+	if got := SkillScriptsSection(""); got != "" {
+		t.Errorf("没配落点该返回空串，实际 %q", got)
+	}
+	got := SkillScriptsSection("mcp__sandbox__import_skill")
+	if !strings.Contains(got, "mcp__sandbox__import_skill") {
+		t.Errorf("该点名落点工具：%q", got)
+	}
+	if !strings.Contains(got, "run") {
+		t.Errorf("该说清落地后用 run 执行：%q", got)
+	}
+}
+
 // TestCompose_空段跳过且不留尾随空行 技能目录为空时（**这是常态**）不该多出空行：
 // 前缀里多一个字节，provider 的前缀缓存就少命中一次。
 func TestCompose_空段跳过且不留尾随空行(t *testing.T) {

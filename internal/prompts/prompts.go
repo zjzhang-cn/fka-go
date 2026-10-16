@@ -116,6 +116,20 @@ var Agent = joinConcat(evidenceConstitution,
 	"没有引用来源时不要输出依据行。",
 )
 
+// SkillScriptsSection 技能自带脚本时的通用用法。**机制写在这里、不写进技能正文**——
+// 技能正文照标准 Agent Skills 写（只提 `scripts/xxx.py` 这类文件），把「怎么落地到沙盒」
+// 这件事留在部署层，一份提示词管所有技能，技能本身可移植。
+//
+// sink 是落点工具全名（`FKA_SKILL_SINK`）；空 = 这份安装没接技能脚本落点，返回空串。
+func SkillScriptsSection(sink string) string {
+	sink = strings.TrimSpace(sink)
+	if sink == "" {
+		return ""
+	}
+	return "若技能正文提到它自带的脚本文件（如 `scripts/xxx.py`），先把该技能落地到沙盒再执行：" +
+		"调用 `" + sink + "`（参数 skill 填技能名），它返回脚本在沙盒里的相对路径，再用沙盒的 `run` 执行那个路径。"
+}
+
 // Compose 系统提示 + 各来源追加的段落（技能目录就是它），空段跳过。
 //
 // 拼装只此一份：以前这一步散在 agent 循环里的三元表达式中，加第二条要拼装的路径
