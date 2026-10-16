@@ -230,6 +230,12 @@ mcp/mcp_time        独立 MCP server（时间相关工具，Node.js 实现）
 > 纯媒体只收不回、不跑 LLM**——不默认补问题、也不挂到后续问题，文件要连同指令一起发才喂模型；
 > 都要先配 `FKA_MEDIA_SINK` 且放行 `external`）。见 `docs/decisions.md` 第 25、26 条。
 >
+> **技能自带脚本走同一个反向入口**：技能目录（`skills/<名字>/`）除 `SKILL.md` 外放的脚本，
+> 由 agent 经 `FKA_SKILL_SINK=<工具全名>`（如 `mcp__sandbox__import_skill`）注入沙盒的
+> 本租户 `skills/<技能>/`，模型再用 `run` 执行。**agent 侧依旧不执行任何东西**——它只把
+> `skills.Scripts` 读出的字节填进被点名工具的 `files` 参数，与 `FKA_MEDIA_SINK` 同一套骨架，
+> 同样只认点名的工具全名、不按后缀猜。没配它技能就只是纯文本做法。见 `docs/decisions.md` 第 29 条。
+>
 > ⚠️ **改了 `mcp/mcp_sandbox/**` 后，容器里跑的还是旧二进制——镜像必须重建**：
 > `make docker-sandbox`（宿主交叉编译 `bin/fka-sandbox-linux-<arch>` + `docker build`），
 > 再 `docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d`。
