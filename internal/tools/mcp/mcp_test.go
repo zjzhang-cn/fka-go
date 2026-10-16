@@ -68,6 +68,52 @@ func TestReadConfig_stdio与http两种形状(t *testing.T) {
 	}
 }
 
+// TestReadConfig_允许注释 mcp.json 是给人手写的（README 的示例本来就带注释），
+// 所以 `//` 与 `/* */` 都要能读；但**字符串里的 `//` 不是注释**——URL 里必有它，
+// 认错会把 url 截断，而那正是「配了却没生效」里最难查的一种。
+func TestReadConfig_允许注释(t *testing.T) {
+	write(t, `{
+	  // 整行注释
+	  "mcpServers": {
+	    "local": {
+	      /* 块注释
+	         可以跨行，里面有个 " 引号也别乱 */
+	      "command": "npx",
+	      "args": ["-y", "server"] // 行尾注释
+	    },
+	    "remote": { "url": "https://example.com/a//b" }
+	  }
+	}`)
+
+	read, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("带注释的配置该能读：%v", err)
+	}
+	if got := read.Servers["local"].Command; got != "npx" {
+		t.Errorf("command = %q", got)
+	}
+	if args := read.Servers["local"].Args; len(args) != 2 {
+		t.Errorf("args = %v", args)
+	}
+	if got := read.Servers["remote"].URL; got != "https://example.com/a//b" {
+		t.Errorf("字符串里的 // 被当成注释了：%q", got)
+	}
+}
+
+// TestReadConfig_转义引号不结束字符串 `\"` 后面那段仍是字符串，它里面的 `//`
+// 也是内容而不是注释。漏了转义处理就会在这一处截断值。
+func TestReadConfig_转义引号不结束字符串(t *testing.T) {
+	write(t, `{"mcpServers": {"a": {"command": "x", "env": {"K": "a\"//b"}}}}`)
+
+	read, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig 返错：%v", err)
+	}
+	if got, want := read.Servers["a"].Env["K"], `a"//b`; got != want {
+		t.Errorf("env = %q，期望 %q", got, want)
+	}
+}
+
 func TestReadConfig_没有mcpServers键算空(t *testing.T) {
 	write(t, `{"别的": 1}`)
 

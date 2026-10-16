@@ -111,6 +111,12 @@ func ResolveConfigPath() string {
 // 有 command 的是 **stdio**（本地起进程），有 url 的是 **streamable HTTP**。
 // stdio 还可以给 `cwd` 指定子进程的工作目录（相对路径按安装根解析）。
 //
+// ## 允许注释（jsonc）
+//
+// 用户要在配置里写清「这行是干嘛的」，标准 JSON 不给注释，逼得人要么把说明
+// 写进一个假字段、要么另开文档。所以读之前先剥掉 `//` 与 `/* */`（见
+// stripJSONComments）。README 里的示例本来就是这么写的。
+//
 // ## 文件不存在 = 没有 MCP，是正常状态
 //
 // 与技能目录同一条：没配不是错，不告警。**格式错**才是错——那会让用户以为
@@ -126,6 +132,8 @@ func ReadConfig() (*Config, error) {
 		}
 		return nil, newConfigError("mcp.json 读不了：%s", path)
 	}
+
+	raw = stripJSONComments(raw)
 
 	var parsed any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -160,6 +168,87 @@ func ReadConfig() (*Config, error) {
 	}
 
 	return &Config{Path: path, Servers: servers}, nil
+}
+
+// stripJSONComments 把 `//` 与 `/* */` 注释抹成空格，让 mcp.json 能写注释。
+//
+// ## 为什么自己写，不引 JSON5/YAML 库
+//
+// 本仓库的依赖纪律是「先想能不能手写」。剥注释只认两件事——字符串边界和
+// 两种注释符——几十行就够，不值得为它多一个模块。
+//
+// ## 为什么抹成等长空格，而不是删掉
+//
+// 删掉会移动后面所有字节，json.Unmarshal 报的 offset 就对不上原文件：
+// 用户照着「第 1 行第 200 列」去翻，那一行根本没那段。换成空格（换行保留）
+// 后长度与行列一一对应，错误信息能直接定位。
+//
+// ## 字符串里的 `//` 不是注释
+//
+// `"https://example.com/mcp"` 就长这样，URL 里必有 `//`。所以要先认字符串
+// 状态，只把裸引号当边界，`\` 转义的下一个字符不算边界。
+//
+// 未闭合的 `/*` 一直抹到文件尾——那多半是漏了 `*/`，剩下的内容解析时自然会报错。
+func stripJSONComments(raw []byte) []byte {
+	out := make([]byte, len(raw))
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+
+		if inString {
+			out[i] = c
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			out[i] = c
+			continue
+		}
+
+		if c == '/' && i+1 < len(raw) {
+			switch raw[i+1] {
+			case '/':
+				out[i], out[i+1] = ' ', ' '
+				i++
+				for i+1 < len(raw) && raw[i+1] != '\n' {
+					i++
+					out[i] = ' '
+				}
+				continue
+			case '*':
+				out[i], out[i+1] = ' ', ' '
+				i += 2
+				for ; i < len(raw); i++ {
+					if raw[i] == '*' && i+1 < len(raw) && raw[i+1] == '/' {
+						out[i], out[i+1] = ' ', ' '
+						i++
+						break
+					}
+					if raw[i] == '\n' {
+						out[i] = '\n'
+					} else {
+						out[i] = ' '
+					}
+				}
+				continue
+			}
+		}
+
+		out[i] = c
+	}
+
+	return out
 }
 
 func parseServer(name string, value any, path string) (ServerConfig, error) {
