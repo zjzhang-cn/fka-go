@@ -30,18 +30,30 @@
 // 目录不存在、或一个技能都没有，都返回空，**不报错也不告警**：那只是「这份安装
 // 没放技能」，与「技能坏了」不是一回事。
 //
-// ## 格式
+// ## 格式：兼容标准 Agent Skills
 //
-// 允许（但不要求）一段极简 front matter：
+// 允许（但不要求）一段 front matter，形状对齐 Anthropic Agent Skills 标准：
 //
 //	---
-//	name: 备份照片
-//	description: 把手机里的照片归档到 NAS
+//	name: photo-backup
+//	description: >
+//	  把手机里的照片归档到 NAS。
+//	allowed-tools: Read, Bash(git:*)
+//	metadata:
+//	  version: 1.0
 //	---
 //	正文……
 //
-// **不引 YAML 库**——只认 `key: value` 一行一条，认不出的一律当正文，
+// **不引 YAML 库**——手写一个小解析器，只覆盖标准实际用到的形状（标量、多行标量
+// `|`/`>`、行内/块列表、一层嵌套 metadata）；认不出的行**丢弃、不报错**，
 // **绝不因为格式不合就丢掉一个技能**。
+//
+// `allowed-tools` / `license` / `metadata` 只解析、只展示，**不执行**：fka 的放行在
+// 部署层（`LLM_TOOL_EFFECTS`），没有技能级的工具作用域可对应。
+//
+// name 不符合标准规则（小写字母/数字/连字符、≤64、且与目录名一致）时记一条 Warn
+// ——那类技能 Claude 等客户端会**直接拒绝**，提示一句能解释「为什么看不见它」；
+// **只提示不拒绝**，fka 自己照常认（大小写与空白都不算差别）。
 //
 // ## 技能可以自带脚本
 //
@@ -108,6 +120,13 @@ type Skill struct {
 	Dir string
 	// Path 技能目录的绝对路径。`Scripts` 靠它找脚本文件。
 	Path string
+	// AllowedTools 标准 front matter 的 allowed-tools。**只解析、只展示，不执行**：
+	// fka 的放行在部署层（LLM_TOOL_EFFECTS），没有技能级的工具作用域可对应。
+	AllowedTools []string
+	// License 标准 front matter 的 license，信息性字段
+	License string
+	// Metadata 标准 front matter 的 metadata 一段（如 version / author），扁平存放
+	Metadata map[string]string
 }
 
 // ResolveDirs 技能目录列表。`FKA_SKILLS_DIR` 可覆盖，**可用系统路径分隔符给多个**；
@@ -143,28 +162,82 @@ func ResolveDirs() []string {
 // fallbackName 是目录名——没写 name: 时用它，总比没有名字强。
 func ParseSkill(raw string, fallbackName string) Skill {
 	text := strings.TrimPrefix(raw, "\ufeff")
-	fields, body := readFrontMatter(text)
+	fm, body := readFrontMatter(text)
 
-	name := strings.TrimSpace(fields["name"])
+	name := strings.TrimSpace(fm.scalars["name"])
 	if name == "" {
 		name = fallbackName
 	}
-	description := strings.TrimSpace(fields["description"])
+	description := strings.TrimSpace(fm.scalars["description"])
 	if description == "" {
 		description = firstLine(body)
 	}
 
-	return Skill{Name: name, Description: description, Body: strings.TrimSpace(body), Dir: fallbackName}
+	skill := Skill{
+		Name:         name,
+		Description:  description,
+		Body:         strings.TrimSpace(body),
+		Dir:          fallbackName,
+		AllowedTools: allowedTools(fm),
+		License:      strings.TrimSpace(fm.scalars["license"]),
+	}
+	for key, value := range fm.scalars {
+		if rest, ok := strings.CutPrefix(key, "metadata."); ok {
+			if skill.Metadata == nil {
+				skill.Metadata = map[string]string{}
+			}
+			skill.Metadata[rest] = value
+		}
+	}
+	return skill
 }
 
-func readFrontMatter(text string) (map[string]string, string) {
+// allowedTools 取 allowed-tools：既认行内/块列表，也认「一串用空白或逗号分隔的词」
+// （Claude Code 里通常写成 `Bash(git:*) Read` 这一串）。
+func allowedTools(fm frontMatter) []string {
+	if list := fm.lists["allowed-tools"]; len(list) > 0 {
+		return list
+	}
+	raw := strings.TrimSpace(fm.scalars["allowed-tools"])
+	if raw == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+	out := make([]string, 0, len(fields))
+	for _, item := range fields {
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// frontMatter 解析出的 front matter。**只覆盖标准 Agent Skills 用到的形状**，不是
+// 通用 YAML：嵌套块（如 metadata:）压成 `metadata.version` 这样的扁平键。
+//
+// 认不出的行**丢弃、不报错**——与「绝不因为格式不合就丢掉一个技能」同一条：宁可少
+// 读一个字段，也不能让一个技能整个消失。
+type frontMatter struct {
+	scalars map[string]string
+	lists   map[string][]string
+}
+
+// readFrontMatter 切出 --- 包裹的一段并解析，返回解析结果与正文。
+//
+// 支持的形状（其余按 `key: value` 尽力而为）：
+//   - 标量：`description: 一句话`（两侧引号会去掉）
+//   - 多行标量：`description: |`（保留换行）/ `>`（折成空格），尾部 `-` 去尾换行
+//   - 行内列表：`allowed-tools: [Read, Bash(git:*)]`
+//   - 块列表：`allowed-tools:` 下每行 `- 项`
+//   - 一层嵌套：`metadata:` 下 `version: 1` → `metadata.version`
+func readFrontMatter(text string) (frontMatter, string) {
+	fm := frontMatter{scalars: map[string]string{}, lists: map[string][]string{}}
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 
 	// front matter 必须以 --- 单独一行开头、以 --- 单独一行结束
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return map[string]string{}, text
+		return fm, text
 	}
-
 	end := -1
 	for i := 1; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == "---" {
@@ -173,20 +246,132 @@ func readFrontMatter(text string) (map[string]string, string) {
 		}
 	}
 	if end < 0 {
-		return map[string]string{}, text
+		return fm, text
 	}
 
-	fields := map[string]string{}
-	for _, line := range lines[1:end] {
+	parseFrontMatterLines(lines[1:end], &fm)
+	return fm, strings.Join(lines[end+1:], "\n")
+}
+
+func parseFrontMatterLines(lines []string, fm *frontMatter) {
+	// parent 是上一行声明的顶层键：接下来的缩进行（嵌套 map 或块列表）都归到它名下
+	parent := ""
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+
+		if indent > 0 {
+			item := strings.TrimSpace(line)
+			if strings.HasPrefix(item, "- ") || item == "-" {
+				fm.lists[parent] = append(fm.lists[parent], unquote(strings.TrimSpace(strings.TrimPrefix(item, "-"))))
+				continue
+			}
+			if at := strings.IndexByte(item, ':'); at > 0 {
+				key := strings.ToLower(strings.TrimSpace(item[:at]))
+				if parent != "" {
+					key = parent + "." + key
+				}
+				fm.scalars[key] = unquote(strings.TrimSpace(item[at+1:]))
+			}
+			continue
+		}
+
 		at := strings.IndexByte(line, ':')
 		if at <= 0 {
+			parent = ""
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(line[:at]))
-		fields[key] = strings.TrimSpace(line[at+1:])
-	}
+		rest := strings.TrimSpace(line[at+1:])
 
-	return fields, strings.Join(lines[end+1:], "\n")
+		switch {
+		case rest == "":
+			// 可能是嵌套 map 或块列表，看接下来的缩进行
+			parent = key
+		case isBlockScalar(rest):
+			value, last := readBlockScalar(lines, i, indent, strings.HasPrefix(rest, ">"))
+			fm.scalars[key] = value
+			parent = ""
+			i = last
+		case strings.HasPrefix(rest, "[") && strings.HasSuffix(rest, "]"):
+			fm.lists[key] = splitInlineList(rest)
+			parent = ""
+		default:
+			fm.scalars[key] = unquote(rest)
+			parent = ""
+		}
+	}
+}
+
+func isBlockScalar(rest string) bool {
+	switch rest {
+	case "|", ">", "|-", ">-", "|+", ">+":
+		return true
+	}
+	return false
+}
+
+// readBlockScalar 收集一个多行标量的缩进内容。folded（`>`）折成单行空格，`|` 保留
+// 换行。返回**最后消费的行号**（调用方据此接回外层循环）。
+func readBlockScalar(lines []string, start, keyIndent int, folded bool) (string, int) {
+	var collected []string
+	base := -1
+	last := start
+	for i := start + 1; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			collected = append(collected, "")
+			last = i
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if indent <= keyIndent {
+			break
+		}
+		if base < 0 {
+			base = indent
+		}
+		text := line
+		if len(text) >= base {
+			text = text[base:]
+		}
+		collected = append(collected, text)
+		last = i
+	}
+	for len(collected) > 0 && strings.TrimSpace(collected[len(collected)-1]) == "" {
+		collected = collected[:len(collected)-1]
+	}
+	if folded {
+		return strings.TrimSpace(strings.Join(collected, " ")), last
+	}
+	return strings.TrimSpace(strings.Join(collected, "\n")), last
+}
+
+func splitInlineList(raw string) []string {
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
+	if inner == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(inner, ",") {
+		if value := unquote(strings.TrimSpace(part)); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// unquote 去掉标量两侧成对的引号（标准技能里 name/description 常带引号）。
+func unquote(raw string) string {
+	if len(raw) >= 2 {
+		if (raw[0] == '"' && raw[len(raw)-1] == '"') || (raw[0] == '\'' && raw[len(raw)-1] == '\'') {
+			return raw[1 : len(raw)-1]
+		}
+	}
+	return raw
 }
 
 // firstLine 取正文里第一行有内容、且不是标题/列表符的文字，当作一句话说明。
@@ -223,6 +408,8 @@ type source struct {
 	haveCache bool
 	// warnedDirs 已经告警过的目录，避免每轮扫描都刷同一条日志
 	warnedDirs map[string]bool
+	// warnedSkills 已经告警过「name 不符合标准」的技能，理由同上
+	warnedSkills map[string]bool
 }
 
 // NewSource 造技能源。dirs 为空时按 FKA_SKILLS_DIR 解析。
@@ -230,7 +417,45 @@ func NewSource(dirs []string) tools.Source {
 	if len(dirs) == 0 {
 		dirs = ResolveDirs()
 	}
-	return &source{dirs: dirs, warnedDirs: map[string]bool{}}
+	return &source{dirs: dirs, warnedDirs: map[string]bool{}, warnedSkills: map[string]bool{}}
+}
+
+// isStandardName 标准 Agent Skills 对 name 的要求：全小写字母/数字/连字符，1..64 字符。
+//
+// fka 自己**不按这条限制**（中文名、大小写、空白都认），但不符合它的人家客户端会
+// 直接拒绝——所以要 Warn 一句，解释「为什么在 Claude 里看不见这个技能」。
+func isStandardName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// warnNonStandard 技能名（或目录名与 name 不一致）不符合标准时告警一次。**只告警，
+// 不拒绝**：宁可让 fka 能用的技能继续可用，也不能因为格式把技能藏起来。
+func (s *source) warnNonStandard(skill Skill, dirName string) {
+	if isStandardName(skill.Name) && normalizeName(skill.Name) == normalizeName(dirName) {
+		return
+	}
+	key := normalizeName(skill.Name)
+	if key == "" {
+		key = normalizeName(dirName)
+	}
+	if s.warnedSkills[key] {
+		return
+	}
+	s.warnedSkills[key] = true
+	config.Log().Warn(config.TypeTOOL,
+		"技能名不符合标准 Agent Skills 规则（小写字母/数字/连字符、≤64 字符、且与目录名一致），"+
+			"Claude 等客户端会拒绝它；fka 自己仍照常认",
+		config.Context{"name": skill.Name, "dir": dirName})
 }
 
 // Discover 找出这些目录里有哪些技能。
@@ -364,6 +589,7 @@ func (s *source) load() []Skill {
 			skill := ParseSkill(string(raw), name)
 			// Path 由这里补：ParseSkill 是纯函数，只认内容，不知道目录在哪
 			skill.Path = filepath.Join(dir, name)
+			s.warnNonStandard(skill, name)
 			key := normalizeName(skill.Name)
 			if key == "" {
 				key = normalizeName(name)

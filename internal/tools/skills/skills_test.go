@@ -61,6 +61,89 @@ description: 把手机里的照片归档到 NAS
 	}
 }
 
+// TestParseSkill_多行描述 标准技能常用 `description: >` / `|` 写一段多行说明。
+// 旧解析器只认单行，会把 `>` 当描述、把说明正文丢掉。
+func TestParseSkill_多行描述(t *testing.T) {
+	folded := ParseSkill("---\nname: a\ndescription: >\n  把手机里的照片\n  归档到 NAS。\n---\n正文", "a")
+	if folded.Description != "把手机里的照片 归档到 NAS。" {
+		t.Errorf("`>` 该折成一行：%q", folded.Description)
+	}
+
+	literal := ParseSkill("---\nname: a\ndescription: |\n  第一行\n  第二行\n---\n正文", "a")
+	if literal.Description != "第一行\n第二行" {
+		t.Errorf("`|` 该保留换行：%q", literal.Description)
+	}
+}
+
+// TestParseSkill_标准字段 对齐标准 Agent Skills：allowed-tools（行内/块列表）、
+// license、metadata（一层嵌套扁平化）。这些字段**只解析不执行**，但得读得到。
+func TestParseSkill_标准字段(t *testing.T) {
+	skill := ParseSkill(`---
+name: photo-backup
+description: 归档照片
+license: MIT
+allowed-tools: [Read, "Bash(git:*)"]
+metadata:
+  version: 1.2.0
+  author: 张三
+---
+正文`, "photo-backup")
+
+	if skill.License != "MIT" {
+		t.Errorf("license = %q", skill.License)
+	}
+	if len(skill.AllowedTools) != 2 || skill.AllowedTools[0] != "Read" || skill.AllowedTools[1] != "Bash(git:*)" {
+		t.Errorf("行内 allowed-tools 解析不对：%v", skill.AllowedTools)
+	}
+	if skill.Metadata["version"] != "1.2.0" || skill.Metadata["author"] != "张三" {
+		t.Errorf("metadata 该扁平化：%v", skill.Metadata)
+	}
+
+	// 块列表写法，以及空格分隔的整串写法（Claude Code 常见）
+	block := ParseSkill("---\nname: a\nallowed-tools:\n  - Read\n  - Write\n---\n正文", "a")
+	if len(block.AllowedTools) != 2 || block.AllowedTools[1] != "Write" {
+		t.Errorf("块列表 allowed-tools 解析不对：%v", block.AllowedTools)
+	}
+	spaced := ParseSkill("---\nname: a\nallowed-tools: Read Bash(git:*)\n---\n正文", "a")
+	if len(spaced.AllowedTools) != 2 || spaced.AllowedTools[1] != "Bash(git:*)" {
+		t.Errorf("整串 allowed-tools 该按空白拆：%v", spaced.AllowedTools)
+	}
+}
+
+// TestParseSkill_认不出不丢技能 front matter 里混进怪行不能让整个技能消失——
+// 至少 name/description/正文还在。这是「绝不因为格式不合丢技能」的底线。
+func TestParseSkill_认不出不丢技能(t *testing.T) {
+	skill := ParseSkill("---\nname: a\ndescription: d\n这是个怪行没有冒号\n:::\n---\n正文还在", "a")
+	if skill.Name != "a" || skill.Description != "d" {
+		t.Errorf("怪行不该影响已知字段：%+v", skill)
+	}
+	if !strings.Contains(skill.Body, "正文还在") {
+		t.Errorf("正文不该丢：%q", skill.Body)
+	}
+}
+
+// TestIsStandardName 标准要求：小写字母/数字/连字符，1..64 字符（中文、大写、
+// 空格、下划线都不合标）。fka 自己仍认这些名，只是要 Warn。
+func TestIsStandardName(t *testing.T) {
+	cases := map[string]bool{
+		"photo-backup": true,
+		"a1-b2":        true,
+		"":             false,
+		"PhotoBackup":  false,
+		"备份照片":         false,
+		"has space":    false,
+		"under_score":  false,
+	}
+	for name, want := range cases {
+		if got := isStandardName(name); got != want {
+			t.Errorf("isStandardName(%q) = %v，期望 %v", name, got, want)
+		}
+	}
+	if isStandardName(strings.Repeat("a", 65)) {
+		t.Error("超过 64 字符不合标")
+	}
+}
+
 // TestParseSkill_没有frontmatter就全文当正文 手工放进去的技能很可能不写 front matter。
 func TestParseSkill_没有frontmatter就全文当正文(t *testing.T) {
 	skill := ParseSkill("# 标题\n\n这一步做归档，别的都不用管。\n", "backup")
