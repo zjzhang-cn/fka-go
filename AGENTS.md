@@ -236,6 +236,10 @@ mcp/mcp_time        独立 MCP server（时间相关工具，Node.js 实现）
 > `skills.Scripts` 读出的字节填进被点名工具的 `files` 参数，与 `FKA_MEDIA_SINK` 同一套骨架，
 > 同样只认点名的工具全名、不按后缀猜。没配它技能就只是纯文本做法。见 `docs/decisions.md` 第 29 条。
 >
+> **技能 front matter 对齐标准 Agent Skills**（手写解析器，不引 YAML）：多行 `|`/`>`、行内/块
+> 列表、一层嵌套 metadata 都认；`allowed-tools`/`license`/`metadata` **只解析展示、不执行**
+> （放行在部署层 `LLM_TOOL_EFFECTS`）。name 不合标准只 Warn 不拒绝。见 `docs/decisions.md` 第 30 条。
+>
 > ⚠️ **改了 `mcp/mcp_sandbox/**` 后，容器里跑的还是旧二进制——镜像必须重建**：
 > `make docker-sandbox`（宿主交叉编译 `bin/fka-sandbox-linux-<arch>` + `docker build`），
 > 再 `docker compose -f mcp/mcp_sandbox/docker-compose.yml up -d`。

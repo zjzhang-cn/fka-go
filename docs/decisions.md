@@ -737,6 +737,36 @@ agent 循环只保留「模型自己调落点工具时注入字节」那条按�
 
 ---
 
+## 30. 技能 front matter 对齐 Anthropic Agent Skills 标准
+
+**决定：** 技能的 `SKILL.md` front matter 形状对齐标准 Agent Skills（name / description /
+allowed-tools / license / metadata），**但不引 YAML 库**——手写一个小解析器，只覆盖标准
+实际用到的形状；认不出的行丢弃不报错（守住「绝不因格式丢技能」）。
+
+- **解析形状**：标量（两侧引号去掉）、多行标量 `|`/`>`、行内列表 `[a, b]`、块列表、一层
+  嵌套（`metadata:` 下扁平化成 `metadata.version`）。
+- **`allowed-tools` / `license` / `metadata` 只解析、只展示，不执行。** fka 的放行在部署层
+  （`LLM_TOOL_EFFECTS` 五类 effect），没有技能级的工具作用域可对应——假装 enforcement 比
+  不解析更糟。`skills__load` 返回体与 `fka list skill` 会带上这些字段。
+- **name 不合标准只 Warn 不拒绝**：标准要求 `^[a-z0-9-]{1,64}$` 且与目录名一致；那类技能
+  Claude 客户端会直接拒绝。fka 自己照旧宽松匹配（中文、大小写、空白都认），只记一条 Warn
+  解释「为什么在别的客户端看不见它」。
+- **沙盒命名空间**：标准名是安全的 ASCII，`safeSegment` 无损——`skillNamespace` 直接用它
+  （不加哈希），标准技能稳定落在 `skills/<name>/`，正文里的相对路径可预测；有损名（中文）
+  才补原名短哈希防撞。agent 侧循环用**规范名**覆盖模型填的 `skill`，同一技能无论怎么写都
+  落到同一个目录。
+
+**为什么手写而不引 `gopkg.in/yaml.v3`**：标准用到的形状有限（没有锚点/多文档/复杂标签），
+30 行够用；依赖纪律要求第 6 个直接依赖是有意识的决定。代价是解析边界有限——明确写进
+`skills.go` 文件头，无法解析的内容安静丢弃。
+
+**仍然不同的（不是缺口，是架构）**：标准客户端里技能文件就在 agent 的文件系统上、直接跑；
+fka 的 agent **不执行任何东西**——脚本经 `import_skill` 注入沙盒再 `run`（见 #29）。所以
+带脚本的标准技能，其正文里「直接运行 scripts/x.py」要改写成 fka 的注入流程。目录布局本身
+兼容：`FKA_SKILLS_DIR` 指向 `~/.claude/skills` 即可用。
+
+---
+
 ## 附：零 CGO 是怎么达成的
 
 盘问时逐个检查过每个模块对 CGO 的需求，最后只剩 SQLite 一个候选，选了纯 Go：

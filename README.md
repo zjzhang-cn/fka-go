@@ -163,6 +163,17 @@ server 里的相对路径稳定，就得显式写 `cwd`**（写 `"."` 就是安�
 `FKA_SKILLS_DIR` 可以给多个目录（系统路径分隔符隔开），**同名技能后者覆盖前者**。
 技能格式与多目录覆盖规则见 `internal/tools/skills/skills.go` 的文件头注释。
 
+**front matter 对齐标准 Agent Skills**（name / description / allowed-tools / license /
+metadata）——可以放 `~/.claude/skills` 下的标准技能，`FKA_SKILLS_DIR` 指过去即可用。
+字段用标准形状书写（多行 `>`/`|`、行内或块列表、一层 `metadata` 嵌套都认）。
+`allowed-tools` / `license` / `metadata` **只解析展示、不执行**（fka 的放行是部署层的
+`LLM_TOOL_EFFECTS`）。name 不符合标准（小写字母/数字/连字符、≤64、且与目录名一致）时
+`fka list skill` 会打 ⚠、启动也记一条 Warn——那类技能 Claude 客户端会拒绝，但 fka 自己仍认。
+
+**唯一实质差异在执行**：标准客户端里技能文件就在 agent 盘上、直接跑；fka 的 agent 不执行
+任何东西，脚本要经 `import_skill` 注入沙盒再 `run`（见下）。所以带脚本的标准技能，正文里
+「直接运行 `scripts/x.py`」得改写成 fka 的注入流程。
+
 `skills__list` 与 `skills__load` **无条件注册**——目录空的时候它们也在，
 `list` 返 `[]`（空列表是合法答案，不是失败），`load` 会把该放哪的目录说清楚。
 所以「技能列表是空的」是正常状态，不是没装好。
