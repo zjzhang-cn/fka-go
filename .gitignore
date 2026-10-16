@@ -43,3 +43,4 @@ mcp/mcp_sqlite/obfuscate.map.json
 .DS_Store
 .idea/
 .vscode/
+.qoder/settings.local.json
