@@ -502,7 +502,7 @@ func TestScripts_列出脚本并保留相对路径(t *testing.T) {
 	}
 
 	source := NewSource([]string{dir})
-	files, ok := source.(ScriptProvider).Scripts("备份")
+	files, _, ok := source.(ScriptProvider).Scripts("备份")
 	if !ok {
 		t.Fatal("技能存在，应返回 true")
 	}
@@ -526,7 +526,7 @@ func TestScripts_列出脚本并保留相对路径(t *testing.T) {
 // 后者是技能本来就没脚本，两者给模型的下一步不一样。
 func TestScripts_技能不存在返回false(t *testing.T) {
 	source := NewSource([]string{t.TempDir()})
-	if _, ok := source.(ScriptProvider).Scripts("根本没有"); ok {
+	if _, _, ok := source.(ScriptProvider).Scripts("根本没有"); ok {
 		t.Error("技能不存在该返回 false")
 	}
 }
@@ -545,7 +545,7 @@ func TestScripts_跳过符号链接(t *testing.T) {
 		t.Skipf("这个平台建不了软链：%v", err)
 	}
 
-	files, ok := NewSource([]string{dir}).(ScriptProvider).Scripts("备份")
+	files, _, ok := NewSource([]string{dir}).(ScriptProvider).Scripts("备份")
 	if !ok {
 		t.Fatal("技能存在，应返回 true")
 	}

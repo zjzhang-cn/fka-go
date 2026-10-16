@@ -694,9 +694,11 @@ func (s *source) Close() error { return nil }
 // （`Runner.SkillFiles`），而不必让 agent 认识 skills 包。**不是 tools.Source 的
 // 一部分**：MCP 那类源没有脚本，硬塞进通用契约只会让每处实现都要空转。
 type ScriptProvider interface {
-	// Scripts 返回某个技能目录里的普通文件（相对路径 + 原始字节）。
-	// 技能不存在返回 false；存在但没有脚本返回 (nil, true)。
-	Scripts(name string) ([]tools.Attachment, bool)
+	// Scripts 返回某个技能目录里的普通文件（相对路径 + 原始字节），以及该技能的
+	// **规范名**（front matter 的 name）——循环用它覆盖模型填的 skill 参数，好让
+	// 同一技能无论被怎么拼写都落到沙盒里同一个目录。
+	// 技能不存在返回 ok=false；存在但没有脚本返回 (nil, canonical, true)。
+	Scripts(name string) ([]tools.Attachment, string, bool)
 }
 
 // 脚本体积上限。技能是**运维/安装方放进来的**，多数很小，但一个技能目录里混进
@@ -722,14 +724,14 @@ const (
 //
 // 与「一个技能读不了不能带走别的技能」同一条：混进一个大文件，其余脚本照样能用。
 // 顺序由 `WalkDir` 保证字典序，稳定——注入的文件列表不该每轮乱序（前缀缓存）。
-func (s *source) Scripts(name string) ([]tools.Attachment, bool) {
+func (s *source) Scripts(name string) ([]tools.Attachment, string, bool) {
 	s.mu.Lock()
 	skills := s.load()
 	s.mu.Unlock()
 
 	found := findSkill(skills, name)
 	if found == nil {
-		return nil, false
+		return nil, "", false
 	}
 
 	var files []tools.Attachment
@@ -766,7 +768,7 @@ func (s *source) Scripts(name string) ([]tools.Attachment, bool) {
 		return nil
 	})
 
-	return files, true
+	return files, found.Name, true
 }
 
 // findSkill 按名字找技能：front matter 的名字与目录名都认，大小写/空白归一。

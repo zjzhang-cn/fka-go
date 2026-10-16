@@ -101,9 +101,10 @@ type Runner struct {
 	// 只有模型调用**这一个**工具时，循环才把 `skill` 参数指定的技能字节注进去
 	// （见 loop.go 的 injectSkill）。
 	SkillSink string
-	// SkillFiles 按技能名取脚本字节（装配根接到 skills.Scripts）。与 SkillSink 一起用。
-	// nil 或返回 false 时，调用落点工具会得到一句「没有这个技能」而不是空文件。
-	SkillFiles func(name string) ([]tools.Attachment, bool)
+	// SkillFiles 按技能名取脚本字节与规范名（装配根接到 skills.Scripts）。与 SkillSink
+	// 一起用。nil 或 ok=false 时，调用落点工具会得到一句「没有这个技能」而不是空文件。
+	// 规范名用来覆盖模型填的 `skill`，让同一技能落到沙盒里同一个目录。
+	SkillFiles func(name string) ([]tools.Attachment, string, bool)
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
 	Model           string
@@ -166,8 +167,8 @@ type RunnerOptions struct {
 	InboundSink string
 	// SkillSink 技能脚本的落点工具全名（见 Runner.SkillSink）。空 = 无落点
 	SkillSink string
-	// SkillFiles 按技能名取脚本字节（见 Runner.SkillFiles）
-	SkillFiles func(name string) ([]tools.Attachment, bool)
+	// SkillFiles 按技能名取脚本字节与规范名（见 Runner.SkillFiles）
+	SkillFiles func(name string) ([]tools.Attachment, string, bool)
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
 	Model           string

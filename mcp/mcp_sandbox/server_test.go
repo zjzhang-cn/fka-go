@@ -397,6 +397,14 @@ func TestImportSkill工具_缺skill要拒(t *testing.T) {
 	}
 }
 
+// TestSkillNamespace_标准名不加哈希 标准 Agent Skills 的名字是全 ASCII，safeSegment
+// 无损——直接用原名，让正文里的 `skills/<name>/` 相对路径可预测。
+func TestSkillNamespace_标准名不加哈希(t *testing.T) {
+	if got := skillNamespace("current-time"); got != "current-time" {
+		t.Errorf("标准名该原样使用，实际 %q", got)
+	}
+}
+
 // TestSkillNamespace_不同技能名不撞 safeSegment 会把中文压成一样的一串下划线，
 // 单靠它「备份照片」与「照片备份」会落进同一个目录、互相覆盖脚本。短哈希要拉开。
 func TestSkillNamespace_不同技能名不撞(t *testing.T) {

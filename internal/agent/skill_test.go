@@ -36,7 +36,7 @@ func TestRun_技能脚本注入被点名的落点工具(t *testing.T) {
 		calls++
 		if calls == 1 {
 			return llm.ChatResult{ToolCalls: []llm.ToolCall{
-				{ID: "c1", Name: "fake__import_skill", Arguments: `{"skill":"备份"}`},
+				{ID: "c1", Name: "fake__import_skill", Arguments: `{"skill":"Backup"}`},
 			}}, nil
 		}
 		return llm.ChatResult{Content: "好了"}, nil
@@ -44,14 +44,14 @@ func TestRun_技能脚本注入被点名的落点工具(t *testing.T) {
 	runner := &Runner{
 		chat: chat, tools: registry, MaxSteps: 2, enabled: true,
 		SkillSink: "fake__import_skill",
-		SkillFiles: func(name string) ([]tools.Attachment, bool) {
-			if name != "备份" {
-				return nil, false
+		SkillFiles: func(name string) ([]tools.Attachment, string, bool) {
+			if normalize(name) != "backup" {
+				return nil, "", false
 			}
 			return []tools.Attachment{
 				{Name: "scripts/run.py", Data: []byte("print(1)")},
 				{Name: "SKILL.md", Data: []byte("步骤")},
-			}, true
+			}, "backup", true
 		},
 	}
 
@@ -61,6 +61,10 @@ func TestRun_技能脚本注入被点名的落点工具(t *testing.T) {
 
 	if len(source.calls) != 1 {
 		t.Fatalf("该调一次落点工具，实际 %d", len(source.calls))
+	}
+	// 模型拼的是 "Backup"，循环要用规范名覆盖——否则沙盒按不同串算命名空间会分裂
+	if got := source.calls[0].args["skill"]; got != "backup" {
+		t.Errorf("skill 该被规范名覆盖成 %q，实际 %#v", "backup", got)
 	}
 	files, ok := source.calls[0].args["files"].([]map[string]any)
 	if !ok || len(files) != 2 {
@@ -73,6 +77,9 @@ func TestRun_技能脚本注入被点名的落点工具(t *testing.T) {
 		t.Errorf("字节不对：%#v", files[0])
 	}
 }
+
+// normalize 测试里用的名字归一（与 agent 无关，只为让回调宽松匹配）。
+func normalize(raw string) string { return strings.ToLower(strings.TrimSpace(raw)) }
 
 // TestRun_技能不存在当场回错 模型把技能名叫错时，要把它挡在注册表之前并回一句
 // 「没有叫 X 的技能」，而不是注入空 files 让沙盒去报一句含糊的错。
@@ -95,7 +102,7 @@ func TestRun_技能不存在当场回错(t *testing.T) {
 	runner := &Runner{
 		chat: chat, tools: registry, MaxSteps: 2, enabled: true,
 		SkillSink:  "fake__import_skill",
-		SkillFiles: func(string) ([]tools.Attachment, bool) { return nil, false },
+		SkillFiles: func(string) ([]tools.Attachment, string, bool) { return nil, "", false },
 	}
 
 	if _, err := runner.Run(context.Background(), RunnerInput{SessionID: "s1", Question: "跑"}); err != nil {
@@ -130,7 +137,7 @@ func TestRun_技能没脚本当场回错(t *testing.T) {
 	runner := &Runner{
 		chat: chat, tools: registry, MaxSteps: 2, enabled: true,
 		SkillSink:  "fake__import_skill",
-		SkillFiles: func(string) ([]tools.Attachment, bool) { return nil, true },
+		SkillFiles: func(string) ([]tools.Attachment, string, bool) { return nil, "", true },
 	}
 
 	if _, err := runner.Run(context.Background(), RunnerInput{SessionID: "s1", Question: "跑"}); err != nil {
@@ -161,7 +168,9 @@ func TestRun_没点名技能落点就不注入(t *testing.T) {
 	}
 	runner := &Runner{
 		chat: chat, tools: registry, MaxSteps: 2, enabled: true,
-		SkillFiles: func(string) ([]tools.Attachment, bool) { return []tools.Attachment{{Name: "x.sh"}}, true },
+		SkillFiles: func(string) ([]tools.Attachment, string, bool) {
+			return []tools.Attachment{{Name: "x.sh"}}, "backup", true
+		},
 	}
 
 	if _, err := runner.Run(context.Background(), RunnerInput{SessionID: "s1", Question: "跑"}); err != nil {

@@ -465,7 +465,7 @@ func (r *Runner) injectSkill(toolName string, args map[string]any) (tools.Result
 	if r.SkillFiles == nil {
 		return tools.FailResult("技能脚本的落点已配置，但这份安装没有可用的技能源。"), true
 	}
-	files, ok := r.SkillFiles(strings.TrimSpace(wanted))
+	files, canonical, ok := r.SkillFiles(strings.TrimSpace(wanted))
 	if !ok {
 		return tools.FailResult("没有叫「%s」的技能。可用的技能见系统提示里的清单，或用技能工具的 list 查。", wanted), true
 	}
@@ -476,6 +476,11 @@ func (r *Runner) injectSkill(toolName string, args map[string]any) (tools.Result
 		args = map[string]any{}
 	}
 	args["files"] = tools.FilesArg(files)["files"]
+	// 用**规范名**覆盖模型拼的 skill：同一技能无论被写成大写还是带空白，沙盒里都
+	// 落到同一个目录（沙盒按这个串算命名空间）
+	if canonical != "" {
+		args["skill"] = canonical
+	}
 	return tools.Result{}, false
 }
 

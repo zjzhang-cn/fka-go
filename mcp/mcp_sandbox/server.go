@@ -696,11 +696,19 @@ func (s *sandboxServer) handleImportSkill(ctx context.Context, request mcp.CallT
 		"\n用 run 执行（如 `bash " + written[0] + "`）、用 read 查看。"), nil
 }
 
-// skillNamespace 技能名 → 沙盒里 `skills/` 下的目录名。**稳定且抗冲突**：
-// 人类可读的安全段 + 原名的短哈希（否则中文名会被 safeSegment 压成一样的下划线）。
+// skillNamespace 技能名 → 沙盒里 `skills/` 下的目录名。
+//
+// **标准名（safeSegment 无损，即全 ASCII 的字母/数字/`-`/`_`/`.`）直接用原名**——
+// 这样标准 Agent Skills 的技能稳定落在 `skills/<name>/`，正文里写的相对路径可预测。
+// 有损的名字（中文等会被压成一串 `_`）才补原名的短哈希，避免「备份照片」与
+// 「照片备份」撞进同一个目录、互相覆盖脚本。
 func skillNamespace(skill string) string {
+	sanitized := safeSegment(skill)
+	if sanitized == strings.TrimSpace(skill) {
+		return sanitized
+	}
 	digest := sha1.Sum([]byte(skill))
-	return safeSegment(skill) + "-" + fmt.Sprintf("%x", digest)[:8]
+	return sanitized + "-" + fmt.Sprintf("%x", digest)[:8]
 }
 
 // safeRelPath 校验一个「技能目录内的相对路径」：拒绝空、绝对、以及任何 `..` 逃逸，

@@ -347,7 +347,7 @@ const envSkillSink = "FKA_SKILL_SINK"
 
 // skillScripts 把技能源接成 runner 的取脚本函数。源不实现 ScriptProvider（理论上
 // 只有 MCP 那类源）就返回 nil——runner 会据此在落点被调用时说一句「没有可用技能源」。
-func skillScripts(src tools.Source) func(string) ([]tools.Attachment, bool) {
+func skillScripts(src tools.Source) func(string) ([]tools.Attachment, string, bool) {
 	provider, ok := src.(skills.ScriptProvider)
 	if !ok {
 		return nil
@@ -369,7 +369,7 @@ func warnSkillsWithoutSink(src tools.Source, dirs []string) {
 		return
 	}
 	for _, skill := range skills.Discover(dirs) {
-		if files, found := provider.Scripts(skill.Name); found && len(files) > 0 {
+		if files, _, found := provider.Scripts(skill.Name); found && len(files) > 0 {
 			config.Log().Warn(config.TypeSYS,
 				"有技能自带脚本，但没配 FKA_SKILL_SINK，脚本跑不起来——设它为该落点工具的全名（如 mcp__sandbox__import_skill）后可注入沙盒执行",
 				config.Context{"skill": skill.Name, "files": len(files)})
