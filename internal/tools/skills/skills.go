@@ -42,11 +42,19 @@
 //
 // **不引 YAML 库**——只认 `key: value` 一行一条，认不出的一律当正文，
 // **绝不因为格式不合就丢掉一个技能**。
+//
+// ## 技能可以自带脚本
+//
+// 一个技能目录除 `SKILL.md` 外还可以放脚本（`scripts/x.py` 等）。agent 自己不
+// 执行任何东西，所以脚本要跑就得**落到沙盒里**再 `run`——见 `Scripts`：它把技能
+// 目录里的普通文件读成字节，交给装配根接进循环，由循环按 `FKA_SKILL_SINK` 注入
+// 到被点名的沙盒工具（与用户媒体走 `FKA_MEDIA_SINK` 同一套注入骨架）。
 package skills
 
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -98,6 +106,8 @@ type Skill struct {
 	Body string
 	// Dir 技能目录名。按名字找时也认它——front matter 的名字可能带空格或标点
 	Dir string
+	// Path 技能目录的绝对路径。`Scripts` 靠它找脚本文件。
+	Path string
 }
 
 // ResolveDirs 技能目录列表。`FKA_SKILLS_DIR` 可覆盖，**可用系统路径分隔符给多个**；
@@ -352,6 +362,8 @@ func (s *source) load() []Skill {
 				continue
 			}
 			skill := ParseSkill(string(raw), name)
+			// Path 由这里补：ParseSkill 是纯函数，只认内容，不知道目录在哪
+			skill.Path = filepath.Join(dir, name)
 			key := normalizeName(skill.Name)
 			if key == "" {
 				key = normalizeName(name)
@@ -451,6 +463,85 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 }
 
 func (s *source) Close() error { return nil }
+
+// ScriptProvider 技能脚本的取用口。装配根借此把「技能源」接到工具循环上
+// （`Runner.SkillFiles`），而不必让 agent 认识 skills 包。**不是 tools.Source 的
+// 一部分**：MCP 那类源没有脚本，硬塞进通用契约只会让每处实现都要空转。
+type ScriptProvider interface {
+	// Scripts 返回某个技能目录里的普通文件（相对路径 + 原始字节）。
+	// 技能不存在返回 false；存在但没有脚本返回 (nil, true)。
+	Scripts(name string) ([]tools.Attachment, bool)
+}
+
+// 脚本体积上限。技能是**运维/安装方放进来的**，多数很小，但一个技能目录里混进
+// 大文件（数据库、素材）不该把内存撑爆，也不该让注入的 MCP 参数无界增长。
+const (
+	// MaxScriptBytes 单个脚本文件上限
+	MaxScriptBytes int64 = 8 << 20
+	// MaxScriptsBytes 一个技能的脚本总量上限
+	MaxScriptsBytes int64 = 32 << 20
+	// MaxScriptCount 一个技能的脚本个数上限
+	MaxScriptCount = 200
+)
+
+// Scripts 读一个技能目录里的普通文件，供注入沙盒用。
+//
+// ## 只认普通文件，**不追符号链接**
+//
+// 符号链接能把路径引到技能目录之外（`.env`、家目录），而脚本要落到沙盒里——
+// 那等于借技能的手把宿主文件搬进去。`WalkDir` 默认不追目录软链，这里再显式跳过
+// 软链文件，两道都留。
+//
+// ## 超限**跳过那一个**而不是整个失败
+//
+// 与「一个技能读不了不能带走别的技能」同一条：混进一个大文件，其余脚本照样能用。
+// 顺序由 `WalkDir` 保证字典序，稳定——注入的文件列表不该每轮乱序（前缀缓存）。
+func (s *source) Scripts(name string) ([]tools.Attachment, bool) {
+	s.mu.Lock()
+	skills := s.load()
+	s.mu.Unlock()
+
+	found := findSkill(skills, name)
+	if found == nil {
+		return nil, false
+	}
+
+	var files []tools.Attachment
+	var total int64
+
+	_ = filepath.WalkDir(found.Path, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		if len(files) >= MaxScriptCount {
+			return filepath.SkipAll
+		}
+		rel, relErr := filepath.Rel(found.Path, path)
+		if relErr != nil {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		if info.Size() > MaxScriptBytes || total+info.Size() > MaxScriptsBytes {
+			config.Log().Warn(config.TypeTOOL, "技能脚本超过上限，已跳过",
+				config.Context{"skill": found.Name, "file": filepath.ToSlash(rel)})
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			config.Log().Warn(config.TypeTOOL, "技能脚本读不了，已跳过",
+				config.Context{"skill": found.Name, "file": filepath.ToSlash(rel), "error": readErr.Error()})
+			return nil
+		}
+		total += int64(len(data))
+		files = append(files, tools.Attachment{Name: filepath.ToSlash(rel), Data: data})
+		return nil
+	})
+
+	return files, true
+}
 
 // findSkill 按名字找技能：front matter 的名字与目录名都认，大小写/空白归一。
 func findSkill(skills []Skill, wanted string) *Skill {

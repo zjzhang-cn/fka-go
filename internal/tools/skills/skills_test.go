@@ -401,6 +401,78 @@ func TestSource_提示段落列出技能(t *testing.T) {
 	}
 }
 
+// TestScripts_列出脚本并保留相对路径 技能目录除 SKILL.md 外可放脚本；注入沙盒时
+// 子目录结构要保住（`scripts/x.py` 不能塌成 `x.py`），顺序稳定（WalkDir 字典序）。
+func TestScripts_列出脚本并保留相对路径(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "backup", "---\nname: 备份\ndescription: d\n---\n步骤")
+
+	skillDir := filepath.Join(dir, "backup")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "data.json"), []byte(`{"a":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	source := NewSource([]string{dir})
+	files, ok := source.(ScriptProvider).Scripts("备份")
+	if !ok {
+		t.Fatal("技能存在，应返回 true")
+	}
+
+	got := map[string]string{}
+	for _, f := range files {
+		got[f.Name] = string(f.Data)
+	}
+	if got["scripts/run.py"] != "print(1)\n" {
+		t.Errorf("子目录路径该保留：%v", got)
+	}
+	if got["data.json"] != `{"a":1}` {
+		t.Errorf("顶层文件该在：%v", got)
+	}
+	if _, present := got[SkillFile]; !present {
+		t.Errorf("SKILL.md 也算技能目录里的普通文件：%v", got)
+	}
+}
+
+// TestScripts_技能不存在返回false 与「存在但没有脚本」要分得开：前者是模型叫错名字，
+// 后者是技能本来就没脚本，两者给模型的下一步不一样。
+func TestScripts_技能不存在返回false(t *testing.T) {
+	source := NewSource([]string{t.TempDir()})
+	if _, ok := source.(ScriptProvider).Scripts("根本没有"); ok {
+		t.Error("技能不存在该返回 false")
+	}
+}
+
+// TestScripts_跳过符号链接 软链能把技能目录之外的宿主文件（.env、家目录）引进来，
+// 而脚本会被搬进沙盒——等于借技能的手把宿主文件带出去。必须跳过。
+func TestScripts_跳过符号链接(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "backup", "---\nname: 备份\n---\n步骤")
+
+	secret := filepath.Join(t.TempDir(), "secret.env")
+	if err := os.WriteFile(secret, []byte("TOKEN=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "backup", "leak.env")); err != nil {
+		t.Skipf("这个平台建不了软链：%v", err)
+	}
+
+	files, ok := NewSource([]string{dir}).(ScriptProvider).Scripts("备份")
+	if !ok {
+		t.Fatal("技能存在，应返回 true")
+	}
+	for _, f := range files {
+		if f.Name == "leak.env" {
+			t.Errorf("符号链接不该被搬走：%v", f.Name)
+		}
+	}
+}
+
 func TestResolveDirs_相对路径按安装根(t *testing.T) {
 	t.Setenv("FKA_SKILLS_DIR", "")
 	if got := ResolveDirs(); len(got) != 1 || got[0] != filepath.Join(os.Getenv("HOME"), "x") &&
