@@ -1,0 +1,23 @@
+{
+	"mcpServers": {
+		"memory": {
+			"command": "node",
+			"args": ["mcp_memory/server.mjs"],
+			"cwd": "./"
+		},
+		"sqlite": {
+			"command": "node",
+			"args": ["mcp_sqlite/server.mjs"],
+			"cwd": "./"
+		},
+		"time": {
+		  "command": "node",
+		  "args": ["mcp_time/server.mjs"],
+		  "cwd": "./"
+		},
+		"sandbox": {
+			"url": "http://127.0.0.1:8080/mcp",
+			"transport": "http"
+		}
+	}
+}
