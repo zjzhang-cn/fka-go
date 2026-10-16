@@ -420,11 +420,11 @@ func NewSource(dirs []string) tools.Source {
 	return &source{dirs: dirs, warnedDirs: map[string]bool{}, warnedSkills: map[string]bool{}}
 }
 
-// isStandardName 标准 Agent Skills 对 name 的要求：全小写字母/数字/连字符，1..64 字符。
+// IsStandardName 标准 Agent Skills 对 name 的要求：全小写字母/数字/连字符，1..64 字符。
 //
 // fka 自己**不按这条限制**（中文名、大小写、空白都认），但不符合它的人家客户端会
 // 直接拒绝——所以要 Warn 一句，解释「为什么在 Claude 里看不见这个技能」。
-func isStandardName(name string) bool {
+func IsStandardName(name string) bool {
 	if name == "" || len(name) > 64 {
 		return false
 	}
@@ -441,7 +441,7 @@ func isStandardName(name string) bool {
 // warnNonStandard 技能名（或目录名与 name 不一致）不符合标准时告警一次。**只告警，
 // 不拒绝**：宁可让 fka 能用的技能继续可用，也不能因为格式把技能藏起来。
 func (s *source) warnNonStandard(skill Skill, dirName string) {
-	if isStandardName(skill.Name) && normalizeName(skill.Name) == normalizeName(dirName) {
+	if IsStandardName(skill.Name) && normalizeName(skill.Name) == normalizeName(dirName) {
 		return
 	}
 	key := normalizeName(skill.Name)
@@ -685,7 +685,32 @@ func (s *source) Call(ctx context.Context, name string, args map[string]any, tc 
 		return tools.FailResult("没有叫「%s」的技能。可用的有：%s", wanted, strings.Join(names, "、")), nil
 	}
 
-	return tools.OKResult(`{"name":` + quoteJSON(found.Name) + `,"body":` + quoteJSON(found.Body) + `}`), nil
+	return tools.OKResult(marshalLoad(found)), nil
+}
+
+// loadPayload skills__load 的返回体。**name/body 是模型真正要的**；allowedTools 与
+// metadata 是标准 front matter 里的信息，附上供参考（fka 不执行 allowed-tools）。
+type loadPayload struct {
+	Name         string            `json:"name"`
+	Body         string            `json:"body"`
+	AllowedTools []string          `json:"allowedTools,omitempty"`
+	License      string            `json:"license,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+func marshalLoad(skill *Skill) string {
+	encoded, err := json.Marshal(loadPayload{
+		Name:         skill.Name,
+		Body:         skill.Body,
+		AllowedTools: skill.AllowedTools,
+		License:      skill.License,
+		Metadata:     skill.Metadata,
+	})
+	if err != nil {
+		// 这些字段都是普通字符串/切片，编码不会失败；真失败也别让 load 变成一条错误
+		return `{"name":` + quoteJSON(skill.Name) + `,"body":` + quoteJSON(skill.Body) + `}`
+	}
+	return string(encoded)
 }
 
 func (s *source) Close() error { return nil }

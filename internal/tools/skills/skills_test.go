@@ -135,11 +135,11 @@ func TestIsStandardName(t *testing.T) {
 		"under_score":  false,
 	}
 	for name, want := range cases {
-		if got := isStandardName(name); got != want {
-			t.Errorf("isStandardName(%q) = %v，期望 %v", name, got, want)
+		if got := IsStandardName(name); got != want {
+			t.Errorf("IsStandardName(%q) = %v，期望 %v", name, got, want)
 		}
 	}
-	if isStandardName(strings.Repeat("a", 65)) {
+	if IsStandardName(strings.Repeat("a", 65)) {
 		t.Error("超过 64 字符不合标")
 	}
 }
@@ -552,6 +552,27 @@ func TestScripts_跳过符号链接(t *testing.T) {
 	for _, f := range files {
 		if f.Name == "leak.env" {
 			t.Errorf("符号链接不该被搬走：%v", f.Name)
+		}
+	}
+}
+
+// TestCall_load带标准字段 标准 front matter 的 allowedTools/license/metadata 要进
+// load 的返回体（信息性，模型可读；fka 不执行 allowed-tools）。
+func TestCall_load带标准字段(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "a", "---\nname: a\ndescription: d\nlicense: MIT\nallowed-tools: [Read, Write]\nmetadata:\n  version: 1.0\n---\n步骤")
+
+	source := NewSource([]string{dir})
+	result, err := source.Call(context.Background(), ToolLoad, map[string]any{"name": "a"}, tools.Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
+		t.Fatalf("不该失败：%s", result.Content)
+	}
+	for _, want := range []string{`"allowedTools"`, `"Read"`, `"MIT"`, `"version"`, `1.0`} {
+		if !strings.Contains(result.Content, want) {
+			t.Errorf("load 返回体少了 %q：%s", want, result.Content)
 		}
 	}
 }

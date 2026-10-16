@@ -143,7 +143,15 @@ func printSkills(w io.Writer, dirs []string) {
 	for _, skill := range found {
 		// **目录名也打出来**：front matter 里的 name 可能与目录名不同，
 		// 而 skills__load 两个都认——只显示一个会让人搞不清自己建的是哪个
-		fmt.Fprintf(w, "   %-24s %-28s %s\n", skill.Name, "<"+skill.Dir+">", firstLine(skill.Description))
+		mark := ""
+		if !skills.IsStandardName(skill.Name) || skill.Name != skill.Dir {
+			// 那类技能 Claude 等客户端会拒绝；fka 自己仍认，所以只提示不拦
+			mark = "  ⚠ 名字不符合标准 Agent Skills（小写字母/数字/连字符、且与目录名一致）"
+		}
+		fmt.Fprintf(w, "   %-24s %-28s %s%s\n", skill.Name, "<"+skill.Dir+">", firstLine(skill.Description), mark)
+		if len(skill.AllowedTools) > 0 {
+			fmt.Fprintf(w, "      allowed-tools（只展示不执行）：%s\n", strings.Join(skill.AllowedTools, " "))
+		}
 	}
 	fmt.Fprintf(w, "   来自：%s\n", strings.Join(dirs, "、"))
 }
