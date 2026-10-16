@@ -442,7 +442,43 @@ func (r *Runner) runToolCall(ctx context.Context, call llm.ToolCall, tc tools.Co
 	}
 
 	args = injectInbound(r.InboundSink, call.Name, args, tc.Inbound)
+	if result, handled := r.injectSkill(call.Name, args); handled {
+		return result
+	}
 	return r.tools.Call(ctx, call.Name, args, tc)
+}
+
+// injectSkill 给技能落点工具补上被点名技能的脚本字节。
+//
+// ## 与 injectInbound 的两点不同
+//
+//   - `skill` 参数由**模型**填（它从系统提示的清单里知道有哪些技能），字节才由
+//     agent 从技能目录读出来补上——模型手里没有文件内容，这一步非它不可；
+//   - 找不到技能时**当场回一句**（带候选提示）并结束这次调用，而不是静默不注入。
+//     那边注入的是本轮用户字节、工具有自己的话可说；这边技能名是模型自己的参数，
+//     叫错了要把「没有这个技能」直接告诉它，而不是让它对着空 `files` 猜。
+//
+// 返回 handled=true 表示这次调用已被处理（技能不存在 / 没脚本 / 无技能源），不必再进注册表。
+func (r *Runner) injectSkill(toolName string, args map[string]any) (tools.Result, bool) {
+	if r.SkillSink == "" || toolName != r.SkillSink {
+		return tools.Result{}, false
+	}
+	wanted, _ := args["skill"].(string)
+	if r.SkillFiles == nil {
+		return tools.FailResult("技能脚本的落点已配置，但这份安装没有可用的技能源。"), true
+	}
+	files, ok := r.SkillFiles(strings.TrimSpace(wanted))
+	if !ok {
+		return tools.FailResult("没有叫「%s」的技能。可用的技能见系统提示里的清单，或用技能工具的 list 查。", wanted), true
+	}
+	if len(files) == 0 {
+		return tools.FailResult("技能「%s」没有自带脚本，直接用技能正文里的做法即可。", wanted), true
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	args["files"] = tools.FilesArg(files)["files"]
+	return tools.Result{}, false
 }
 
 // injectInbound 给**被指定的**入站落点工具补上本轮附件的原始字节。

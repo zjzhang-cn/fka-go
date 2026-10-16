@@ -139,7 +139,9 @@ func Build(ctx context.Context, opts Options) *App {
 	app.Policy = tools.ReadToolPolicy()
 	app.Tools = tools.NewRegistry(nil, app.Policy)
 	app.SkillsDir = skills.ResolveDirs()
-	app.Tools.Use(skills.NewSource(app.SkillsDir))
+	// 留住源句柄：装配根还要把它接成 runner 的「取技能脚本」函数（见 SkillFiles）。
+	skillSource := skills.NewSource(app.SkillsDir)
+	app.Tools.Use(skillSource)
 	app.Tools.Use(reply.NewSource(reply.Options{}))
 	if app.History != nil {
 		app.Tools.Use(history.NewSource(app.History))
@@ -172,6 +174,10 @@ func Build(ctx context.Context, opts Options) *App {
 			// 入站图片落到哪个工具（如 mcp__sandbox__import）。**显式点名**，不按名字猜：
 			// 没配就没有落点，图片只喂模型（见 agent 的 injectInbound 与那条 Warn）。
 			InboundSink: strings.TrimSpace(os.Getenv(envMediaSink)),
+			// 技能脚本落到哪个工具（如 mcp__sandbox__import_skill）。同一个骨架：
+			// 模型调这个被点名的工具时，循环把 `skill` 指定的脚本字节注进去。
+			SkillSink:  strings.TrimSpace(os.Getenv(envSkillSink)),
+			SkillFiles: skillScripts(skillSource),
 		})
 		if !app.Agent.Enabled() {
 			config.Log().Info(config.TypeSYS, "LLM_TOOLS 已关闭，问答不走工具循环", config.Context{})
@@ -330,6 +336,23 @@ func (a *App) registerChannels(ctx context.Context, providers []channels.Provide
 // **刻意不用「哪个 server 有 import 工具」去猜**：多沙盒时会扇出、且路由随连接状态
 // 静默漂移。点名的失效是可诊断的。
 const envMediaSink = "FKA_MEDIA_SINK"
+
+// envSkillSink 技能脚本的落点：一个**工具全名**（如 mcp__sandbox__import_skill）。设了它，
+// 且模型调用的是这个工具时，循环才把 `skill` 参数指定的技能脚本字节注进去。空 = 没有落点，
+// 技能就只是纯文本做法（脚本跑不起来）。
+//
+// 与 envMediaSink 同一条：**点名而不是按名字猜**，多沙盒时不扇出、不静默漂移。
+const envSkillSink = "FKA_SKILL_SINK"
+
+// skillScripts 把技能源接成 runner 的取脚本函数。源不实现 ScriptProvider（理论上
+// 只有 MCP 那类源）就返回 nil——runner 会据此在落点被调用时说一句「没有可用技能源」。
+func skillScripts(src tools.Source) func(string) ([]tools.Attachment, bool) {
+	provider, ok := src.(skills.ScriptProvider)
+	if !ok {
+		return nil
+	}
+	return provider.Scripts
+}
 
 // drainTimeout 停机时等消息层排空的上限。
 //

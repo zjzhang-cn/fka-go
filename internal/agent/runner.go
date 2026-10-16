@@ -96,6 +96,14 @@ type Runner struct {
 	// 空 = 没有落点，入站图片只喂给模型。只有模型调用**这一个**工具时，循环才把本轮
 	// 字节注进去（见 loop.go 的 injectInbound）。
 	InboundSink string
+	// SkillSink 技能脚本的落点：**工具全名**（如 mcp__sandbox__import_skill），来自
+	// FKA_SKILL_SINK。空 = 技能脚本没有落点——技能就只是纯文本做法，脚本跑不起来。
+	// 只有模型调用**这一个**工具时，循环才把 `skill` 参数指定的技能字节注进去
+	// （见 loop.go 的 injectSkill）。
+	SkillSink string
+	// SkillFiles 按技能名取脚本字节（装配根接到 skills.Scripts）。与 SkillSink 一起用。
+	// nil 或返回 false 时，调用落点工具会得到一句「没有这个技能」而不是空文件。
+	SkillFiles func(name string) ([]tools.Attachment, bool)
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
 	Model           string
@@ -135,6 +143,8 @@ func NewRunner(
 		ContextTokens:   opts.ContextTokens,
 		SystemPrompt:    opts.SystemPrompt,
 		InboundSink:     opts.InboundSink,
+		SkillSink:       opts.SkillSink,
+		SkillFiles:      opts.SkillFiles,
 		Model:           opts.Model,
 		Host:            opts.Host,
 		TimeoutMs:       opts.TimeoutMs,
@@ -154,6 +164,10 @@ type RunnerOptions struct {
 	SystemPrompt  string
 	// InboundSink 入站附件的落点工具全名（见 Runner.InboundSink）。空 = 无落点
 	InboundSink string
+	// SkillSink 技能脚本的落点工具全名（见 Runner.SkillSink）。空 = 无落点
+	SkillSink string
+	// SkillFiles 按技能名取脚本字节（见 Runner.SkillFiles）
+	SkillFiles func(name string) ([]tools.Attachment, bool)
 	// Model / Host / TimeoutMs / StreamTimeoutMs **仅用于日志与 transcript**
 	//（Host 也只进错误信息，绝不含 key）
 	Model           string
