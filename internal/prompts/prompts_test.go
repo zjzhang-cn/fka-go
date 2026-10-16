@@ -14,7 +14,6 @@ package prompts
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestAgent_钉住第一道防线 见文件头。每条都对应一种「从界面上看不出来」的失效。
@@ -119,20 +118,5 @@ const agentRuneBudget = 1800
 func TestAgent_长度不超预算(t *testing.T) {
 	if n := len([]rune(Agent)); n > agentRuneBudget {
 		t.Errorf("Agent 提示词 %d 字，超过预算 %d 字：它每轮都进上下文，加长要有理由", n, agentRuneBudget)
-	}
-}
-
-// TestDateSection_只到日且带星期与时区 见 DateSection 的注释：不含时分，否则前缀缓存每分钟失效。
-func TestDateSection_只到日且带星期与时区(t *testing.T) {
-	now := time.Date(2026, time.October, 10, 15, 4, 5, 0, time.FixedZone("CST", 8*3600))
-	got := DateSection(now)
-
-	for _, need := range []string{"2026-10-10", "星期六", "CST"} {
-		if !strings.Contains(got, need) {
-			t.Errorf("日期段里少了 %q：%s", need, got)
-		}
-	}
-	if strings.Contains(got, "15:04") {
-		t.Errorf("日期段不该含时分（会让前缀缓存每分钟失效）：%s", got)
 	}
 }

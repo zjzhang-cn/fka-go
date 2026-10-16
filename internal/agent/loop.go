@@ -38,7 +38,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/zjzhang-cn/fka-go/internal/config"
 	"github.com/zjzhang-cn/fka-go/internal/llm"
@@ -172,8 +171,7 @@ func (r *Runner) Run(ctx context.Context, input RunnerInput) (RunResult, error) 
 		}
 	}
 	// 段落只算一次：技能目录每次都要扫磁盘，拼 system 与记日志用的必须是同一份。
-	// 日期段放在最后——它是这一轮唯一随时间变化的内容。
-	sections := append(r.tools.PromptSections(tc), prompts.DateSection(time.Now()))
+	sections := r.tools.PromptSections(tc)
 	system := prompts.Compose(pickSystemPrompt(r.SystemPrompt), sections)
 
 	// 历史前缀：会话文件里那份，逐字原样（含工具调用与工具结果）。
