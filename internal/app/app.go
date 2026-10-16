@@ -142,6 +142,7 @@ func Build(ctx context.Context, opts Options) *App {
 	// 留住源句柄：装配根还要把它接成 runner 的「取技能脚本」函数（见 SkillFiles）。
 	skillSource := skills.NewSource(app.SkillsDir)
 	app.Tools.Use(skillSource)
+	warnSkillsWithoutSink(skillSource, app.SkillsDir)
 	app.Tools.Use(reply.NewSource(reply.Options{}))
 	if app.History != nil {
 		app.Tools.Use(history.NewSource(app.History))
@@ -352,6 +353,29 @@ func skillScripts(src tools.Source) func(string) ([]tools.Attachment, bool) {
 		return nil
 	}
 	return provider.Scripts
+}
+
+// warnSkillsWithoutSink 有技能自带脚本、却没配 FKA_SKILL_SINK 时记一条警示。
+//
+// **这是「从界面上完全看不出来」的一类失败**：技能照常列出来、`import_skill` 照常
+// 存在，模型照着 SKILL.md 去调它，得到的是「没有可落地的脚本」——看着像工具坏了，
+// 真相是这份安装没把技能脚本接进循环。所以启动时说清楚「配哪个变量能修」。
+func warnSkillsWithoutSink(src tools.Source, dirs []string) {
+	if strings.TrimSpace(os.Getenv(envSkillSink)) != "" {
+		return
+	}
+	provider, ok := src.(skills.ScriptProvider)
+	if !ok {
+		return
+	}
+	for _, skill := range skills.Discover(dirs) {
+		if files, found := provider.Scripts(skill.Name); found && len(files) > 0 {
+			config.Log().Warn(config.TypeSYS,
+				"有技能自带脚本，但没配 FKA_SKILL_SINK，脚本跑不起来——设它为该落点工具的全名（如 mcp__sandbox__import_skill）后可注入沙盒执行",
+				config.Context{"skill": skill.Name, "files": len(files)})
+			return
+		}
+	}
 }
 
 // drainTimeout 停机时等消息层排空的上限。
