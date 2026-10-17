@@ -33,7 +33,7 @@
 | # | 决策 | 取值 | 要点 |
 |---|---|---|---|
 | D1 | 方向 | **agent 当 server，适配器拨入** | 适配器可在 NAT 后；agent 暴露一组端点 |
-| D2 | 机制 | **复用 web 协议形态并扩展** | 复用线形态与鉴权管道，**不复用 `internal/channels/web` 这个包** |
+| D2 | 机制 | **复用 web 协议形态并扩展** | 复用线形态与鉴权管道，**不复用 `internal/channels/web` 这个包**（线形态见 [`web-channel-protocol.md`](web-channel-protocol.md)） |
 | D3 | 范围 | **渠道细节全在适配器侧** | 登录、账号表、长轮询、游标、CDN、协议解析都搬走 |
 | D4 | 接口形态 | **协议镜像接缝，版本化** | `InboundMessage` + `Senders/SendTarget` + `Capabilities` + `Status` 的线表示 |
 | D5 | 注册 | **动态注册 + 白名单** | 适配器拨入时上报账号与能力；agent 校验唯一性与能力 |

@@ -392,12 +392,14 @@ fka-go/                     **仓库根就是模块根**（没有 go/ 那一层�
 | **[docs/port-plan.md](docs/port-plan.md)** | **先读这个。** 模块清单与进度、**改任何东西都不能破的不变量**、已知的债、本仓库剩下要做的 |
 | **[docs/decisions.md](docs/decisions.md)** | 技术决策与「为什么是它而不是别的」，含每条的**后果**（很多是已接受的代价） |
 | **[docs/permissions.md](docs/permissions.md)** | ⚠️ 权限模型，以及**唯一一处「防线从代码移到模型手上」的地方** |
+| **[docs/web-channel-protocol.md](docs/web-channel-protocol.md)** | 网页渠道（SSE + POST）的**线协议**：端点、认证、SSE 事件、会话键、媒体与 `#引用` |
 | **[mcp/README.md](mcp/README.md)** | 记忆 server：自己管自己的表、schema、迁移、日志与库文件 |
 | **[AGENTS.md](AGENTS.md)** | 给 agent 看的入口：闸门、安装根、零 CGO、**这些名字改了就是改了产品** |
 | [docs/dev-log.md](docs/dev-log.md) | 开发日志（最新在上）。**记的是当时的状态**，里面的路径有的已经搬走了 |
 
 渠道契约目前以**代码与测试**为准：`internal/channels/types.go` 是接口，
 `internal/channels/channels_test.go` 是可执行的契约说明。
+**网页渠道的线协议**单独记在 [docs/web-channel-protocol.md](docs/web-channel-protocol.md)。
 
 **两处「该有而没有」的文档**（别去找）：
 `docs/real-machine-test.md`（`make real-check` 会打印这个名字，但文件没写），
